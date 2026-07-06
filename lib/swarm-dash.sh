@@ -79,6 +79,34 @@ _bar(){ local d="$1" t="${2:-1}" inf="${3:-0}" w=14 fd fi i=0; [ "$t" -lt 1 ] &&
   printf '%s' "$c_gold"; while [ "$i" -lt "$fi" ]; do printf '▓'; i=$((i+1)); done
   printf '%s' "$c_dim"; while [ "$i" -lt "$w" ]; do printf '░'; i=$((i+1)); done; printf '%s' "$c_reset"; }
 
+# a braille heartbeat that advances every frame (DASH_TICK) so the pre-dispatch view is visibly ALIVE.
+_heartbeat(){ local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏); printf '%s' "${f[$(( ${DASH_TICK:-0} % 10 ))]}"; }
+# a small pulsing bar (moves left↔right) — a second "it's alive" cue that needs no data.
+_pulse(){ local w=12 span p i=0; span=$(( w*2 - 2 )); p=$(( ${DASH_TICK:-0} % span )); [ "$p" -ge "$w" ] && p=$(( span - p ))
+  printf '%s' "$c_dim"; while [ "$i" -lt "$w" ]; do [ "$i" = "$p" ] && printf '%s◆%s' "$c_accent$bold" "$c_dim" || printf '·'; i=$((i+1)); done; printf '%s' "$c_reset"; }
+
+# infer the coordinator's PRE-worker phase from its log so the dash NAMES what it's doing (never blank).
+# emits: "human label<TAB>step-idx"  (step: 0 preflight · 1 planning · 2 dispatching)
+_coord_phase(){
+  local l; l="$(grep -avE 'jq:|parse error|Cannot index' "$SWARM_DIR/coordinator.log" 2>/dev/null | grep -vE '^[[:space:]]*$' | tail -n 30 | sed "s/$ESC\\[[0-9;]*m//g" | tr 'A-Z' 'a-z')"
+  case "$l" in
+    *"usage limit"*|*"waiting for reset"*|*"limit — waiting"*|*"limit hasn't reset"*) printf '%s\t%s' "paused — overseer hit a usage limit; resumes automatically on reset" 1 ;;
+    *"syncing objectives"*|*"→ roadmap"*|*"read objectives"*|*"read roadmap"*|*"planning"*|*"chore/plan"*) printf '%s\t%s' "planning — the orchestrator is turning OBJECTIVES into ROADMAP tasks" 1 ;;
+    *"container gate"*|*"ci.sh --container"*|*"verifying ./ci.sh"*|*"resuming"*|*"rescue"*) printf '%s\t%s' "verifying the gate on prior work before dispatch" 0 ;;
+    *"preflight"*|*"consistency"*|*"reconcil"*) printf '%s\t%s' "preflight — reconciling repo state (git · gitnexus · opencode)" 0 ;;
+    *"conflict-policy"*|*"self-heal"*|*"🐝 swarm"*) printf '%s\t%s' "starting up — wiring the swarm + conflict policy" 0 ;;
+    *) printf '%s\t%s' "spinning up workers — they will claim tasks any moment" 2 ;;
+  esac
+}
+# mini step tracker:  preflight ✓ → ▸plan◂ → dispatch
+_coord_steps(){ local a="$1" i=0 out="" s names=(preflight plan dispatch)
+  for s in "${names[@]}"; do
+    [ "$i" -gt 0 ] && out+="${c_dim} → ${c_reset}"
+    if   [ "$i" -lt "$a" ]; then out+="${c_green}${s} ✓${c_reset}"
+    elif [ "$i" -eq "$a" ]; then out+="${c_accent}${bold}▸${s}◂${c_reset}"
+    else out+="${c_dim}${s}${c_reset}"; fi; i=$((i+1))
+  done; printf '%s' "$out"; }
+
 # THE resilient worker source: status/*.stat is authoritative for RENDERING (feat/phase/
 # wall/budget/act), liveness comes from max(stat.ts, wN.log mtime) so a busy worker mid-
 # implement (stat ts stale, but log streaming) never disappears. Paths augmented from
@@ -129,20 +157,31 @@ dash_statusbar(){
 }
 
 # coordinator line + (if no live workers) a clear reason WHY, never a silent blank
+_coord_up(){ [ -f "$SWARM_DIR/coordinator.pid" ] && kill -0 "$(cat "$SWARM_DIR/coordinator.pid" 2>/dev/null)" 2>/dev/null; }
 dash_coord(){
-  local slug cline; slug="$(basename "$REPO")"
-  printf '  %s⚙ coordinator%s %s· %s · reconcile · merge-queue · ROADMAP tick%s\n' \
-    "$c_accent$bold" "$c_reset" "$c_muted" "$slug" "$c_reset"
+  local slug hb=""; slug="$(basename "$REPO")"
+  _coord_up && hb="${c_green}$(_heartbeat)${c_reset} "     # live pulse so you can SEE it's not dead — during dispatch too
+  printf '  %s%s⚙ coordinator%s %s· %s · reconcile · merge-queue · ROADMAP tick%s\n' \
+    "$hb" "$c_accent$bold" "$c_reset" "$c_muted" "$slug" "$c_reset"
 }
+# The reassuring PRE-DISPATCH panel: shown while the coordinator is up but no worker has claimed yet
+# (preflight / gate / planning can take minutes). Names the phase, tracks the step, and BEATS so nobody
+# thinks it hung. ~5 lines — enough to reassure, small enough to leave room for the workers.
 dash_no_workers(){
-  local cline; cline="$(grep -avE 'jq:|parse error|Cannot index' "$SWARM_DIR/coordinator.log" 2>/dev/null | tail -n1 | sed "s/$ESC\\[[0-9;]*m//g" | cut -c1-80)"
   if [ -f "$SWARM_DIR/control.drain" ]; then
-    printf '   %s⌁ finishing current tasks — swarm will STOP once workers are done (no new work claimed)%s\n' "$c_gold" "$c_reset"
-  elif [ -f "$SWARM_DIR/coordinator.pid" ] && kill -0 "$(cat "$SWARM_DIR/coordinator.pid" 2>/dev/null)" 2>/dev/null; then
-    printf '   %s⚙ coordinator up · %s%s%s\n' "$c_accent" "$c_fg" "${cline:-spinning up workers / planning…}" "$c_reset"
-  else
-    printf '   %sno swarm running — start it: %sace autorun%s (pick 2-8) %sor%s ace swarm start%s\n' "$c_dim" "$c_fg" "$c_dim" "$c_muted" "$c_dim" "$c_reset"
+    printf '   %s⌁ finishing current tasks — swarm will STOP once workers are done (no new work claimed)%s\n' "$c_gold" "$c_reset"; return
   fi
+  if ! _coord_up; then
+    printf '   %sno swarm running — start it: %sace autorun%s (pick 2-8) %sor%s ace swarm start%s\n' "$c_dim" "$c_fg" "$c_dim" "$c_muted" "$c_dim" "$c_reset"; return
+  fi
+  local ph si; IFS=$'\t' read -r ph si < <(_coord_phase)
+  local wcol; wcol="$(( $(tput cols 2>/dev/null || echo 100) - 10 ))"
+  local cline; cline="$(grep -avE 'jq:|parse error|Cannot index' "$SWARM_DIR/coordinator.log" 2>/dev/null | grep -vE '^[[:space:]]*$' | tail -n1 | sed "s/$ESC\\[[0-9;]*m//g" | cut -c1-"$wcol")"
+  printf '   %s%s%s %sworking — no workers dispatched yet, and that is normal%s   %s\n' "$c_gold$bold" "$(_heartbeat)" "$c_reset" "$c_fg$bold" "$c_reset" "$(_pulse)"
+  printf '   %s◆%s %s%s%s\n' "$c_accent" "$c_reset" "$c_fg" "$ph" "$c_reset"
+  printf '   %s\n' "$(_coord_steps "$si")"
+  printf '   %s↳ %s%s\n' "$c_dim" "${cline:-…}" "$c_reset"
+  printf '   %sworker boxes appear here the instant one claims its first task%s\n' "$c_dim" "$c_reset"
 }
 
 # The 9 subagents, grouped under the 5 pipeline stages:  id : short-label : stage-idx.
@@ -194,12 +233,17 @@ dash_workers(){
   # size each worker's feed so the WHOLE frame fits the terminal height (never overflow → scroll).
   # fixed chrome = header1+status2+rule1+coord1+blank1+busrule1+footer2 = 9, plus the bus lines;
   # each worker box is 4 chrome rows (top+pipeline+meta+bottom) + its feed.
-  local buslines="${DASH_BUSLINES:-5}" feed
-  feed=$(( (rows_t - 9 - buslines) / (n>0?n:1) - 5 )); [ "$feed" -lt 2 ] && feed=2   # box now 5 chrome rows (+ agents strip)
+  local buslines="${DASH_BL:-${DASH_BUSLINES:-5}}" feed maxbox shown="$n" hidden=0
+  # never overflow a small window: cap boxes to what fits (5 chrome + ≥2 feed = 7 rows each); the rest
+  # get a "+N more — press g for grid" note. This is what keeps ACE inside the terminal.
+  maxbox=$(( (rows_t - 10 - buslines) / 7 )); [ "$maxbox" -lt 1 ] && maxbox=1   # -10: 1 line reserved for the "+N more" note/rounding
+  [ "$n" -gt "$maxbox" ] && { shown="$maxbox"; hidden=$(( n - maxbox )); }
+  feed=$(( (rows_t - 10 - buslines) / (shown>0?shown:1) - 5 )); [ "$feed" -lt 2 ] && feed=2   # box = 5 chrome rows (+ agents strip)
   [ -n "${DASH_FEED_OVR:-}" ] && feed="$DASH_FEED_OVR"; [ "$feed" -gt 24 ] && feed=24
-  local w feat phase wall budget act paths
+  local w feat phase wall budget act paths shown_i=0
   while IFS=$'\t' read -r w feat phase wall budget act paths; do
     [ -z "$w" ] && continue
+    [ "$shown_i" -ge "$shown" ] && continue; shown_i=$(( shown_i + 1 ))   # box budget spent → skip the rest (noted below)
     local wc idx cf="" agent=""; wc="$(_wcol "$w")"; idx="$(_stage_idx "$phase")"; case "$phase" in resolve|conflict) cf=1;; esac
     local _inf; _inf="$(_stage_from_log "$w")"; [ -n "$_inf" ] && { idx="${_inf%%$'\t'*}"; agent="${_inf#*$'\t'}"; }
     [ "$agent" = conflict_resolver ] && cf=1
@@ -221,6 +265,8 @@ dash_workers(){
     else _bx_row "$wc" "$CW" "${c_dim}↳ ${act:-waiting for output…}${c_reset}"; fi
     printf '  %s└%s┘%s\n' "$wc" "$(_dashes $(( CW + 2 )))" "$c_reset"
   done <<< "$rows"
+  [ "$hidden" -gt 0 ] && printf '  %s… +%d more worker%s not shown (window too short) — press %sg%s for the grid view%s\n' \
+    "$c_gold" "$hidden" "$([ "$hidden" -gt 1 ] && echo s)" "$c_accent$bold" "$c_gold" "$c_reset"
 }
 
 # a single bordered content row, padded to CW so the right border lines up. Collapse TABS to a single
@@ -304,7 +350,7 @@ _cell_pad(){ local wc="$1" inner="$2" content="$3" pad; content="${content//$'\t
 dash_bus(){
   [ -s "$SWARM_DIR/events.jsonl" ] || return 0
   _rule "⛧" "BUS" "$c_gold"
-  tail -n "${DASH_BUSLINES:-5}" "$SWARM_DIR/events.jsonl" 2>/dev/null | while IFS= read -r line; do
+  tail -n "${DASH_BL:-${DASH_BUSLINES:-5}}" "$SWARM_DIR/events.jsonl" 2>/dev/null | while IFS= read -r line; do
     local ts w lvl msg wc
     ts="$(printf '%s' "$line" | jq -r '(.ts|strftime("%H:%M:%S"))? // ""' 2>/dev/null)"
     w="$(printf '%s' "$line" | jq -r '.worker // "?"' 2>/dev/null)"; wc="$(_wcol "$w")"; w="$(_wname "$w")"
@@ -325,6 +371,8 @@ dash_footer(){
 
 dash_frame(){
   REPO="${REPO:-${SWARM_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+  local _rt; _rt="$(tput lines 2>/dev/null || echo 42)"
+  DASH_BL="${DASH_BUSLINES:-5}"; [ "$_rt" -lt 30 ] && DASH_BL=3   # tight window → smaller bus so workers + status still fit
   dash_header; dash_statusbar
   _rule "⚙" "WORKERS" "$c_accent"
   if [ "${DASH_MODE:-stacked}" = grid ]; then dash_grid; else dash_workers; fi
@@ -345,7 +393,9 @@ swarm_dash(){
   # Read keys from the controlling terminal. In the normal interactive launch stdin IS the tty; but if
   # the ace CLI ever wraps the dash's stdin, fall back to /dev/tty so p/r/d/k/g/± still respond.
   local key kw _tty=; { [ -t 0 ] || ! [ -r /dev/tty ]; } || _tty=/dev/tty
+  DASH_TICK=0
   while :; do
+    DASH_TICK=$(( DASH_TICK + 1 ))     # advances the heartbeat/pulse every frame
     printf '%s%s%s' "${ESC}[H" "${ESC}[2J" "$(dash_frame)"
     if [ -n "$_tty" ]; then read -rsn1 -t "${DASH_REFRESH:-2}" key <"$_tty" || key=""
     else read -rsn1 -t "${DASH_REFRESH:-2}" key || key=""; fi
