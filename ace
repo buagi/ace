@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ace — Agentic Coding Environment setup (DeepSeek + OpenCode + GitNexus/Serena/Context7)
-# SPDX-License-Identifier: MIT  ·  Copyright (c) 2026 buagi  ·  Provided "AS IS", no warranty (see LICENSE).
+# SPDX-License-Identifier: AGPL-3.0-or-later  ·  Copyright (c) 2026 buagi  ·  Provided "AS IS", no warranty (see LICENSE).
 # AUTONOMOUS AGENT — runs commands, pushes, deploys, spends money. Use at your own risk (see README ◢ DISCLAIMER ◣).
 set -uo pipefail
 ACE_VERSION="0.0.1-alpha"

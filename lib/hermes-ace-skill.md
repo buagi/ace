@@ -3,7 +3,7 @@ name: ace
 description: "Drive ACE from chat as a step-by-step conductor — list options, one menu at a time, no assumptions, no auto-setup. Scaffold/loop/deploy/everything ACE does, via Telegram/Discord/Signal."
 version: 2.3.0
 author: Hermes Agent
-license: MIT
+license: AGPL-3.0-or-later
 platforms: [linux, macos]
 metadata:
   hermes:

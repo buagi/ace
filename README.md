@@ -19,7 +19,7 @@
 
 <img src="https://img.shields.io/badge/RITE-v0.0.1--alpha-8b0000?style=for-the-badge&labelColor=0b0b0b">
 <a href="https://github.com/buagi/ace/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/buagi/ace/ci.yml?branch=main&style=for-the-badge&labelColor=0b0b0b&label=CI"></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-556b2f?style=for-the-badge&labelColor=0b0b0b"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-556b2f?style=for-the-badge&labelColor=0b0b0b"></a>
 <img src="https://img.shields.io/badge/OMNISSIAH-OpenCode_%2B_DeepSeek_V4-b8860b?style=for-the-badge&labelColor=0b0b0b">
 <img src="https://img.shields.io/badge/COHORT-9_agents-7c0a02?style=for-the-badge&labelColor=0b0b0b">
 
@@ -319,8 +319,10 @@ lawyer review your situation.*
 
 ## ◢ LICENSE ◣
 
-[MIT](LICENSE) © 2026 buagi. Permissive: use, modify, and redistribute freely, provided the copyright
-and permission notice travel with it. No warranty; no liability — see the **◢ DISCLAIMER ◣** section above.
+[GNU AGPL-3.0](LICENSE) © 2026 buagi. **Copyleft** — you may use, modify, and redistribute ACE, but any
+version you **distribute _or run as a network service_** must be released under the AGPL **with its complete
+source** (that network-use clause, §13, is the whole point). No warranty; no liability — see the
+**◢ DISCLAIMER ◣** section above.
 
 <div align="center">────────────  ⚜  ────────────</div>
 
