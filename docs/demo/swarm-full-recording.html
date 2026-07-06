@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACE — the swarm cockpit</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body { margin:0; background:#0b0910; color:#d8cfe6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 40px 20px 64px; }
+  h1 { font-size: 20px; color:#b072e6; letter-spacing:.04em; margin:0 0 4px; }
+  .sub { color:#6b5c82; font-size:13px; margin:0 0 28px; }
+  .frame { border:1px solid #241c33; border-radius:14px; overflow:hidden; background:#0e0c15;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .frame img { display:block; width:100%; height:auto; }
+  .note { margin-top:28px; font-size:13px; line-height:1.7; color:#9a8cb2; }
+  .note b { color:#d8cfe6; }
+  code { background:#181322; color:#3fb96a; padding:1px 6px; border-radius:5px; font-size:12.5px; }
+  a { color:#38bdf8; }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:22px; font-size:12.5px; color:#7a6c92; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; }
+  .dot { width:11px; height:11px; border-radius:3px; display:inline-block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⛧ THE SWARM COCKPIT ⛧</h1>
+  <p class="sub">the cohort, in parallel — <code>ace swarm dash</code></p>
+
+  <div class="frame"><img src="swarm-demo.svg" alt="ACE swarm dashboard — three workers in parallel"></div>
+
+  <div class="legend">
+    <span><i class="dot" style="background:#2dd4bf"></i> worker 1 · in REVIEW</span>
+    <span><i class="dot" style="background:#e879c9"></i> worker 2 · in BUILD</span>
+    <span><i class="dot" style="background:#38bdf8"></i> worker 3 · MERGING</span>
+    <span><i class="dot" style="background:#3fb96a"></i> stage done</span>
+    <span><i class="dot" style="background:#b072e6"></i> active stage / agent</span>
+  </div>
+
+  <p class="note">
+    Three feature-streams running at once — each in its own git worktree, taking one ROADMAP item,
+    self-merging to <code>main</code> on a green local gate. Every box shows that worker's live
+    <b>pipeline</b> (PLAN·BUILD·GATE·REVIEW·MERGE, current stage lit), the <b>agents strip</b> (which of
+    the 9 subagents have run · is running · pending), its wall/budget, and its streaming loop feed. The
+    <b>BUS</b> carries cross-worker milestones; the top bar's roadmap meter shows <b>done · in-flight ·
+    remaining</b> live.
+  </p>
+  <p class="note">
+    <b>Watch your own run in motion:</b> <code>ace swarm dash</code> (or record it —
+    <code>asciinema rec -c 'ace swarm dash' swarm.cast</code>). Full guide:
+    <a href="../swarm.md">docs/swarm.md</a>.
+  </p>
+</div>
+</body>
+</html>

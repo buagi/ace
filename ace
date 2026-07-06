@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+# ace — Agentic Coding Environment setup (DeepSeek + OpenCode + GitNexus/Serena/Context7)
+# SPDX-License-Identifier: MIT  ·  Copyright (c) 2026 buagi  ·  Provided "AS IS", no warranty (see LICENSE).
+# AUTONOMOUS AGENT — runs commands, pushes, deploys, spends money. Use at your own risk (see README ◢ DISCLAIMER ◣).
+set -uo pipefail
+ACE_VERSION="0.0.1-alpha"
+ACE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+for m in ui core dash architecture install scaffold gitflow vps audit consistency menu; do source "$ACE_DIR/lib/$m.sh"; done
+
+detect_distro
+log_init
+activate_paths 2>/dev/null || true
+# appearance: env ACE_THEME/ACE_NO_ANIM/ACE_ART win; else fall back to stored prefs
+apply_theme "${ACE_THEME:-$(config_get THEME 2>/dev/null || true)}"
+: "${ACE_NO_ANIM:=$(config_get NO_ANIM 2>/dev/null || true)}"; : "${ACE_ART:=$(config_get ART 2>/dev/null || true)}"; ACE_ART="${ACE_ART:-auto}"
+
+# ----------------------------------------------------------------- doctor / status
+drow() {
+  local s="$1" n="$2" d="${3:-}"
+  case "$s" in
+    ok)   printf '  %s✓%s %-22s %s%s%s\n' "$C_GREEN" "$C_RESET" "$n" "$C_GREY" "$d" "$C_RESET" ;;
+    warn) printf '  %s!%s %-22s %s%s%s\n' "$C_YELLOW" "$C_RESET" "$n" "$C_GREY" "$d" "$C_RESET" ;;
+    bad)  printf '  %s✗%s %-22s %s%s%s\n' "$C_RED" "$C_RESET" "$n" "$C_GREY" "$d" "$C_RESET" ;;
+    *)    printf '  %s·%s %-22s %s%s%s\n' "$C_CYAN" "$C_RESET" "$n" "$C_GREY" "$d" "$C_RESET" ;;
+  esac
+}
+chk() { have "$1" && drow ok "$1" "$(ver "$1")" || drow bad "$1" "not installed"; }
+
+# refuse a dangerous op when running headless (no human) unless --confirm / ACE_CONFIRM=1 was passed
+_gate_destructive() {
+  if _noninteractive && [ "${ACE_CONFIRM:-0}" != 1 ]; then
+    err "'$1' is gated when non-interactive — re-run with --confirm to proceed."; return 1
+  fi
+  return 0
+}
+
+doctor() {
+  banner; step "Status — system check"
+  drow info "distro" "$ACE_DISTRO_PRETTY ($ACE_DISTRO)"
+  local eng; eng="$(container_engine)"
+  [ -n "$eng" ] && drow ok "container engine" "$eng" || drow bad "container engine" "podman/docker missing (ci --container needs it)"
+  hr
+  for t in node fnm uv uvx bun jq opencode npx; do chk "$t"; done
+  hr
+  if have gh; then
+    drow ok "gh" "$(ver gh)"
+    if gh auth status >/dev/null 2>&1; then drow ok "gh auth" "logged in as $(gh api user -q .login 2>/dev/null || echo '?')"
+    else drow warn "gh auth" "not logged in (run: ace git)"; fi
+  else drow bad "gh" "not installed"; fi
+  local gn ge; gn="$(git config --global user.name 2>/dev/null || true)"; ge="$(git config --global user.email 2>/dev/null || true)"
+  [ -n "$gn" ] && [ -n "$ge" ] && drow ok "git identity" "$gn <$ge>" || drow warn "git identity" "set user.name/email (ace git)"
+  hr
+  if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+    if validate_deepseek_key "$DEEPSEEK_API_KEY"; then drow ok "DeepSeek key" "valid (v4 models reachable)"
+    else drow bad "DeepSeek key" "set but REJECTED by API"; fi
+  else drow bad "DeepSeek key" "not set (run: ace keys)"; fi
+  [ -n "${CONTEXT7_API_KEY:-}" ] && drow ok "Context7 key" "set" || drow warn "Context7 key" "unset (works, rate-limited)"
+  [ -f "$HOME/.config/opencode/opencode.json" ] && drow ok "opencode config" "~/.config/opencode/opencode.json" || drow warn "opencode config" "not written (ace opencode)"
+  hr
+  if vps_configured; then drow ok "VPS" "${VPS_USER}@${VPS_HOST}:${VPS_PORT:-22}  os=${VPS_OS:-?}"
+  else drow warn "VPS" "not configured (ace vps)"; fi
+  # Go toolchain — shown when go is installed or the current repo is a Go project
+  if have go || grep -q '^language: go' .opencode/profile.yaml 2>/dev/null; then
+    hr
+    if have go; then drow ok "go" "$(go version 2>/dev/null | awk '{print $3}')"; else drow bad "go" "not installed (run: ace install)"; fi
+    local gt; for gt in gopls staticcheck govulncheck garble; do have "$gt" && drow ok "$gt" "present" || drow warn "$gt" "missing (ace install)"; done
+    if [ -f .opencode/profile.yaml ] && [ -n "$(_prof_get shape 2>/dev/null)" ]; then
+      drow info "go profile" "shape=$(_prof_get shape) · deploy=$(_prof_get deploy_kind) · hardening=$(_prof_get hardening)"
+    fi
+  fi
+  hr
+  local vx=""; for t in chafa figlet toilet freeze ansitoimg; do have "$t" && vx="$vx ${C_GREEN}$t✓${C_RESET}" || vx="$vx ${C_GREY}$t✗${C_RESET}"; done
+  local cap=8color; [ "$ACE_TC" = 1 ] && cap=truecolor || { [ "$ACE_COLOR" = 1 ] && cap=256color || cap=no-color; }
+  drow info "appearance" "theme=${_ACE_THEME:-warp} · $cap · art=${ACE_ART:-auto} · extras:$vx"
+  drow info "hermes/chat" "target=$(hermes_to) · snap=$(have freeze && echo freeze || { have ansitoimg && echo ansitoimg || echo 'none (ace install)'; }) · hermes=$(have hermes && echo wired || echo absent)"
+  local prof; prof="$(config_get MODEL_PROFILE)"
+  printf '\n%s\n' "${C_GREY}profile: ${prof:-unset}  •  dry-run: $ACE_DRY_RUN  •  log: $ACE_LOG_FILE${C_RESET}"
+  # when run inside a repo, also surface repo drift (git/gitnexus/opencode/podman)
+  _con_in_repo && { hr; consistency_report || true; }
+}
+
+logs() {
+  local f; f="$(ls -t "$ACE_LOG_DIR"/ace-*.log 2>/dev/null | head -1)"
+  [ -n "$f" ] || { warn "no logs yet"; return; }
+  step "Logs — $f (last 40 lines)"; tail -n 40 "$f"
+}
+
+update() {
+  banner; step "Update tooling"
+  have opencode && spin "opencode upgrade" opencode upgrade || true
+  have bun      && spin "bun upgrade" bun upgrade || true
+  have fnm      && spin_sh "Node LTS refresh" 'fnm install --lts && fnm default lts-latest' || true
+  have uv       && spin "uv self update" uv self update || true
+  ensure_hermes_skill   # re-sync the Hermes 'ace' skill to this CLI version (no-op without Hermes)
+  ensure_loop_unit      # upgrade an already-installed ace-loop.service to the current OOM/restart guards
+  ok "Done. (gh: re-run 'ace git' to refresh.)"
+}
+
+# ----------------------------------------------------------------- guided
+guided() {
+  banner; step "Full guided setup"
+  box "This will (each step logged; --dry-run to preview)" \
+    "1. host tools (fnm/node, uv, bun, jq, opencode) — user-local" \
+    "2. DeepSeek (validated) + Context7 keys + model profile" \
+    "3. OpenCode config (9 agents: orchestrator/implementer/test_engineer/verifier + 4 critics + conflict_resolver + MCP)" \
+    "4. git identity + GitHub login (gh)" \
+    "5. optional: scaffold a project + VPS deploy"
+  confirm "Proceed?" Y || return
+  ACE_STEP=0; ACE_STEPS=5
+  progress "Host tooling";        install_host_tools
+  progress "API keys";            configure_keys
+  progress "OpenCode config";     write_opencode_config
+  progress "Git + GitHub";        setup_git_github
+  progress "Project (optional)";  confirm "Scaffold a project now?" Y && scaffold_project || info "skipped scaffolding"
+  ensure_hermes_skill   # if Hermes is present, install/refresh its 'ace' chat skill (stamped to this version)
+  ensure_loop_unit      # upgrade an already-installed ace-loop.service to the current OOM/restart guards
+  step "All done"; ok "Run 'ace status' to verify, then 'cd <project> && opencode'."; note_new_shell
+}
+
+# ----------------------------------------------------------------- uninstall
+uninstall() {
+  banner; step "Uninstall / clean (ACE-managed bits only)"
+  warn "Removes ACE's managed pieces only. Your projects and code are NOT touched."
+  if confirm "Remove the managed block from ~/.bashrc?" N; then
+    [ "$ACE_DRY_RUN" = 1 ] || { awk -v b="$ACE_MARK_BEGIN" -v e="$ACE_MARK_END" '$0==b{s=1} !s{print} $0==e{s=0}' "$BASHRC" > "$BASHRC.t" && mv "$BASHRC.t" "$BASHRC"; }
+    ok "bashrc block removed (backup at ~/.bashrc.ace.bak)."
+  fi
+  confirm "Delete ~/.config/ace (keys, vps, config, logs)?" N && { run rm -rf "$ACE_CONFIG_DIR"; ok "ACE config removed."; }
+  confirm "Delete ~/.config/opencode?" N && { run rm -rf "$HOME/.config/opencode"; ok "OpenCode config removed."; }
+  say "${C_GREY}Host tools (fnm/uv/bun/opencode/gh) left in place.${C_RESET}"
+}
+
+# ----------------------------------------------------------------- menu
+# main_menu (thematic) + settings_menu live in lib/menu.sh (sourced above).
+
+usage() {
+  cat <<EOF
+${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode)  v$ACE_VERSION
+
+  ace                 interactive menu
+  ace status|doctor   health check (tools, keys, gh auth, VPS)
+  ace install|guided  full guided setup
+  ace keys            set/validate DeepSeek + Context7 keys, model profile
+  ace opencode        (re)write the OpenCode config
+  ace settings        providers/keys · models per agent · model profile · appearance · toolchain (thematic submenus)
+  ace scaffold        scaffold a project (+ CI + deploy) into the loop
+  ace profile         view/edit the project profile (architecture / domain / audience / hardening / delivery)
+  ace profile --check validate .opencode/profile.yaml (required fields + enums + coherence)
+  ace package <name>  add a correctly-wired TS workspace package (types resolve from source)
+  ace stack [add <n>] list the scaffoldable stacks · 'add' prints the template to register a new one
+  ace import          import existing code/data into brownfield/ and map it (GitNexus+Serena)
+  ace upgrade         adopt an EXISTING repo: add missing ACE machinery (additive, non-destructive)
+  ace graph [--watch] refresh the code map (GitNexus + Serena); --watch = live on change
+  ace autoloop|autorun  autonomous loop: build feature -> watch CI -> auto-fix -> merge when
+                        all-green -> (deploy) -> next roadmap item. Fresh session per feature.
+  ace autorun --explain print the resolved delivery policy (merge_gate/auto_merge/deploy_kind/caps) — no run
+  ace resume          resume the loop after an interruption: rescues gate-green work an
+                        interrupted run left uncommitted, then continues (same as autorun).
+  ace swarm start|stop|dash|split|pause|resume|drain|kill wN|status|tail|sandbox|selftest|wire
+                      PARALLEL loops: N path-disjoint workers, each self-merging, with a live cockpit
+                      ('ace swarm dash'). 'ace autorun' also gates it (pick 2-8). 'sandbox' = free DRY demo.
+                      'drain' = finish current work + stop. See docs/swarm.md.
+  ace loop start|stop|restart|status|logs|stats|update    (stats = per-run timing post-mortem)
+                      run the loop as a detached systemd user service (survives terminal-close
+                      + sleep) — start/stop/restart/status/tail/bring-up-to-date. Steerable from
+                      Hermes/Signal. (bare 'ace loop' = the interactive launcher.)
+  ace awake on|off|status [dur]
+                      keep the machine awake (no idle-sleep / lid-suspend) so you can reach it
+                      from Hermes/Signal while away. 'on 4h' auto-releases; 'on' holds till 'off'.
+  ace git             git identity + GitHub login + credentials
+  ace publish [name]  create + push this repo's private GitHub remote so the loop is ready — re-runnable;
+                      if the name already exists it warns + offers reuse/rename; if 'origin' is set it just re-pushes
+  ace gitflow         apply git-flow to the current repo (main, conv. commits, guards)
+  ace protect         attempt GitHub branch protection on main (ruleset; Pro-aware fallback)
+  ace audit           dependency vuln audit + outdated + secret scan (current repo)
+  ace consistency     drift/scope check: git main↔origin, gitnexus graph, opencode DB, podman (add 'fix' to reconcile)
+  ace vps             VPS menu: configure, bootstrap, wire CI secrets, provision, deploy
+  ace deploy [--force]  pull+rebuild+restart on the VPS (+health check); if DEPLOY_GATE=release, ships only on a new v* tag (--force overrides)
+  ace release [--host]  build hardened static binaries (Go) for the profile's targets — in a container; --host = on host
+  ace release --tag vX.Y.Z   cut a release: push a v* tag → fires the CI release job that builds + publishes binaries
+  ace healthcheck     verify the live deployment is up (container + HTTP, with timeout)
+  ace verify          deep post-deploy verification agent: probe the VPS (reachability,
+                      TLS, service, errors, integrations) -> triage findings into ROADMAP.md
+  ace logs            tail the latest log
+  ace hermes          wire loop milestones + command-back to Hermes (-> Signal/Telegram/phone)
+  ace hermes mcp|webhook  ground the chat agent on this repo (Serena/GitNexus) · GitHub events->chat
+  ace brain           file ACE host-lessons + repo lessons into gbrain (if present)
+  ace approve [tok] yes|no  answer a pending loop approval request (used with MERGE_APPROVAL=hermes)
+  ace schedule '<when>'  recurring autorun for this repo via Hermes cron (e.g. '0 9 * * 1-5' · 'every 6h')
+  ace snap [--to T]   render a screenshot of the real (themed) CLI to a PNG and (with --to)
+                      send it as a Signal/Telegram media attachment. e.g. ace snap --to signal
+  ace update          update opencode / bun / node / uv
+  ace arch            architecture diagram + explainers
+  ace uninstall       remove ACE-managed config  (gated: needs --confirm when non-interactive)
+
+  flags: --dry-run  --version  --help  --yes (assume-yes, headless)  --confirm (unlock gated ops)
+  headless (drive from Signal/Hermes — no prompts): every choice is a flag/env, e.g.
+    DEEPSEEK_API_KEY=… ace keys --profile max --brain deepseek
+    ace install --yes
+    ace scaffold --name myapp --path ~/projects --stack go --shape api [--publish]   # git init local; --publish creates the GitHub remote the autorun loop needs
+    snap: ace snap --to signal   ·   gated: deploy / uninstall / vps harden need --confirm
+EOF
+}
+
+# ----------------------------------------------------------------- dispatch
+# Flags map to ACE_*/PROFILE_* env so any flow runs non-interactively (Hermes drives it step-by-step).
+# Value-taking flags consume the next arg; everything else falls through to cmd / ACE_ARG / ACE_ARG2.
+cmd=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) ACE_DRY_RUN=1; export ACE_DRY_RUN ;;
+    --watch) ACE_WATCH=1 ;;
+    --yes|-y) ACE_YES=1; export ACE_YES ;;
+    --confirm) ACE_CONFIRM=1; export ACE_CONFIRM ;;          # unlock the gated destructive ops
+    --version|-V) echo "ace $ACE_VERSION"; exit 0 ;;
+    --help|-h) usage; exit 0 ;;
+    --name)       ACE_NAME="${2:-}"; export ACE_NAME; shift ;;
+    --path|--dir) ACE_PARENT="${2:-}"; export ACE_PARENT; shift ;;
+    --stack)      ACE_STACK="${2:-}"; export ACE_STACK; shift ;;
+    --shape)      ACE_SHAPE="${2:-}"; export ACE_SHAPE; shift ;;
+    --ci)         ACE_CI="${2:-}"; export ACE_CI; shift ;;
+    --deploy)     ACE_DEPLOY="${2:-}"; export ACE_DEPLOY; shift ;;   # service|none
+    --gitflow)    ACE_GITFLOW=true;  export ACE_GITFLOW ;;
+    --no-gitflow) ACE_GITFLOW=false; export ACE_GITFLOW ;;
+    --no-git)       ACE_GIT=false;       export ACE_GIT ;;        # no git at all (implies no CI/VPS/publish)
+    --no-ci)        ACE_CI=none;         export ACE_CI ;;         # no CI/CD workflow (alias of --ci none)
+    --no-vps)       ACE_DEPLOY=none;     export ACE_DEPLOY ;;     # no VPS deploy (alias of --deploy none)
+    --container)    ACE_CONTAINER=true;  export ACE_CONTAINER ;;  # container parity gate (default)
+    --no-container) ACE_CONTAINER=false; export ACE_CONTAINER ;;  # host-only gate, no Containerfile
+    --audience)   ACE_AUDIENCE="${2:-}";   export ACE_AUDIENCE;   shift ;;  # internal|oss-public|end-customer|enterprise
+    --throughput) ACE_THROUGHPUT="${2:-}"; export ACE_THROUGHPUT; shift ;;  # low|medium|high
+    --domain)     ACE_DOMAIN="${2:-}";     export ACE_DOMAIN;     shift ;;  # one-line description
+    --mission)    ACE_MISSION="${2:-}";    export ACE_MISSION;    shift ;;  # why it exists (one line)
+    --check)      ACE_ARG=check;   export ACE_ARG ;;   # ace profile --check  (also works as 'ace profile check')
+    --force)      ACE_ARG=force;   export ACE_ARG ;;   # ace deploy --force (bypass the DEPLOY_GATE=release milestone gate)
+    --explain)    ACE_ARG=explain; export ACE_ARG ;;   # ace autorun --explain
+    --demo)       ACE_DEMO=1;      export ACE_DEMO ;;  # ace loop dash --demo (scripted preview)
+    --index)      ACE_INDEX=1;   export ACE_INDEX ;;
+    --publish)    ACE_PUBLISH=1; export ACE_PUBLISH ;;
+    --deepseek)   DEEPSEEK_API_KEY="${2:-}"; export DEEPSEEK_API_KEY; shift ;;
+    --context7)   CONTEXT7_API_KEY="${2:-}"; export CONTEXT7_API_KEY; shift ;;
+    --profile)    ACE_PROFILE="${2:-}"; export ACE_PROFILE; shift ;;  # keys: max|high|balanced
+    --brain)      ACE_BRAIN="${2:-}";   export ACE_BRAIN;   shift ;;  # keys: opus(default)|sonnet|gpt|deepseek
+    --to)         ACE_TO="${2:-}";  export ACE_TO;  shift ;;          # snap target
+    --out)        ACE_OUT="${2:-}"; export ACE_OUT; shift ;;          # snap output path
+    --tag)        ACE_RELEASE_TAG="${2:-}"; export ACE_RELEASE_TAG; shift ;;  # ace release --tag vX.Y.Z (cut+push a v* tag → CI release job)
+    --host)       ACE_RELEASE_HOST=1; export ACE_RELEASE_HOST ;;  # ace release --host (build on the host, not in a container)
+    -*) ;;        # ignore unknown flags
+    *) if [ -z "$cmd" ]; then cmd="$1"; elif [ -z "${ACE_ARG:-}" ]; then ACE_ARG="$1"; elif [ -z "${ACE_ARG2:-}" ]; then ACE_ARG2="$1"; fi ;;
+  esac
+  shift
+done
+
+case "${cmd:-menu}" in
+  menu)              main_menu ;;
+  status|doctor)     doctor ;;
+  install|guided)    guided ;;
+  keys)              configure_keys ;;
+  opencode)          write_opencode_config ;;
+  settings|config)   settings_menu ;;
+  scaffold|new)      scaffold_project ;;
+  snap|snapshot)     ace_snap ;;
+  snapcard)          snap_card ;;            # internal: banner + compact status (snapshot content)
+  profile)           cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" 2>/dev/null || true; case "${ACE_ARG:-}" in --check|check) profile_check ;; *) profile_wizard; _profile_postcheck ;; esac ;;
+  publish)           cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" 2>/dev/null || true; publish_repo "${ACE_ARG:-}" ;;   # create+push the GitHub repo, or re-push/rename if it already exists
+  package)           add_workspace_package "${ACE_ARG:-}" ;;
+  stack)             case "${ACE_ARG:-}" in add) stack_add "${ACE_ARG2:-}" ;; *) stack_list ;; esac ;;
+  import)            import_existing ;;
+  graph)             [ "${ACE_WATCH:-0}" = 1 ] && graph_watch || graph_refresh ;;
+  autoloop|autorun|loop|resume)
+    case "${ACE_ARG:-}" in
+      start|stop|restart|status|logs|tail|stats|metrics|up|update) loop_ctl "$ACE_ARG" ;;
+      dash|dashboard)    loop_dash ;;
+      --explain|explain) cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" 2>/dev/null || true; autorun_explain ;;
+      *) autoloop_run ;;
+    esac ;;
+  loop-service)      loop_service_run "${ACE_ARG:-}" ;;   # internal: systemd ExecStart target
+  report|triage)     _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/report.sh"
+                     if [ "$cmd" = triage ] || [ "${ACE_ARG:-}" = triage ]; then ace_triage
+                     else ace_report "${ACE_ARG:-note}" "${ACE_ARG2:-repo}" "manual report via ace report"; fi ;;
+  swarm)             _sr="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; _sl="$(dirname "$(readlink -f "$0")")/lib"
+                     case "${ACE_ARG:-}" in
+                       start)     if [ "${ACE_ARG2:-}" = fg ]; then ( cd "$_sr" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" start )
+                                  else ( cd "$_sr" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" startd )
+                                       # after it prints its flags, drop straight into the live cockpit (unless piped or opted out)
+                                       [ -t 1 ] && [ -t 0 ] && [ "${ACE_NO_DASH:-0}" != 1 ] && ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" dash ); fi ;;
+                       stop)      ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" stop ) ;;
+                       dash|watch)( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" dash ) ;;
+                       split)     ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" split ) ;;
+                       pause)     ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" pause ) ;;
+                       resume)    ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" resume ) ;;
+                       drain)     ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" drain ) ;;
+                       kill)      ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" kill "${ACE_ARG2:?ace swarm kill wN}" ) ;;
+                       status)    ( cd "$_sr" && bash "$_sl/swarm.sh" status ) ;;
+                       tail|logs) ( cd "$_sr" && bash "$_sl/swarm.sh" tail "${ACE_ARG2:-40}" ) ;;
+                       sandbox)   bash "$_sl/swarm-run.sh" sandbox ;;
+                       selftest)  bash "$_sl/swarm.sh" selftest && bash "$_sl/swarm.sh" waittest ;;
+                       policy)    ( cd "$_sr" && bash "$_sl/swarm.sh" policy ) ;;
+                       policy-selftest) bash "$_sl/swarm.sh" policy-selftest ;;
+                       wire)      bash "$_sl/swarm-wire.sh" "${ACE_ARG2:-check}" "$_sr" ;;
+                       *) echo "usage: ace swarm {start[ fg]|stop|dash|split|pause|resume|drain|kill wN|status|tail|sandbox|selftest|policy|wire [check|apply]}" ;;
+                     esac ;;
+  awake|caffeinate)  awake_ctl "${ACE_ARG:-status}" ;;
+  upgrade|adopt)     upgrade_repo ;;
+  git)               setup_git_github ;;
+  gitflow|git-flow)  git_flow_apply "$PWD" ;;
+  protect)           gh_protect_main ;;
+  audit)             ace_audit ;;
+  consistency|drift|scope) consistency_cmd ;;
+  vps)               case "${ACE_ARG:-}" in check|doctor|readiness) vps_check ;; harden) _gate_destructive "vps harden" && vps_harden ;; *) vps_menu ;; esac ;;
+  deploy)            _gate_destructive deploy && vps_deploy ;;
+  release)           release_run ${ACE_ARG:+"$ACE_ARG"} ${ACE_RELEASE_HOST:+--host} ;;
+  healthcheck|health) vps_healthcheck ;;
+  verify)            vps_verify ;;
+  logs)              logs ;;
+  hermes|notify)     case "${ACE_ARG:-}" in mcp) ace_hermes_mcp ;; webhook) ace_hermes_webhook ;; *) ace_hermes ;; esac ;;
+  brain)             ace_brain ;;                                    # file ACE lessons into gbrain (if present)
+  approve)           ace_approve "${ACE_ARG:-}" "${ACE_ARG2:-}" ;;   # answer a pending loop approval (MERGE_APPROVAL=hermes)
+  schedule)          ace_schedule "${ACE_ARG:-}" ;;                  # recurring autorun via hermes cron
+  update)            update ;;
+  arch|architecture) show_architecture ;;
+  uninstall)         _gate_destructive uninstall && uninstall ;;
+  *) err "unknown command: $cmd"; usage; exit 1 ;;
+esac
