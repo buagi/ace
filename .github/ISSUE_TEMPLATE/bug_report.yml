@@ -1,0 +1,67 @@
+name: 🐛 Bug report
+description: Something in ACE didn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! ACE is `0.0.1-alpha`, so rough edges are expected — details help a lot.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you run, and what went wrong vs. what you expected?
+      placeholder: |
+        I ran `ace ...` and expected X, but got Y.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ace ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output / logs
+      description: Paste the error output (redact any secrets/keys). `ace logs` may help.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: ACE version
+      description: Output of `ace --version`
+      placeholder: "0.0.1-alpha"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS / distro
+      options:
+        - Fedora Silverblue/Kinoite
+        - Fedora (Workstation)
+        - Arch
+        - Ubuntu/Debian
+        - Other Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: overseer
+    attributes:
+      label: Overseer brain
+      description: "`ace keys` selection — opus / sonnet / gpt / deepseek"
+      placeholder: "deepseek"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Sanity checks
+      options:
+        - label: I ran `ace status` / `ace doctor` and included anything red above
+        - label: I redacted any API keys, tokens, or private hostnames from the logs
