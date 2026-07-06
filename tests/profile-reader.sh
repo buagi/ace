@@ -10,8 +10,11 @@ export ACE_DIR="$ROOT" ACE_DRY_RUN=0
 source "$ROOT/lib/ui.sh"; source "$ROOT/lib/core.sh" 2>/dev/null || true; source "$ROOT/lib/scaffold.sh"
 fail=0
 
-# --- drift guard: the canonical reader sed must appear exactly 3x (lib + 2 generated readers) ---
-n="$(grep -cF 's/^[^:]*:[[:space:]]*\"([^\"]*)\"' "$ROOT/lib/scaffold.sh")"
+# --- drift guard: the canonical reader sed must appear exactly 3x, across its real homes:
+#   _prof_get + the release.sh `prof` emitter (both in lib/scaffold.sh) and prof_get (lib/autoloop.sh,
+#   embedded into the generated scripts/auto-loop.sh). Generated files can't source a shared function, so
+#   the parsing logic is one canonical sed kept identical and enforced here. ---
+n="$(grep -hcF 's/^[^:]*:[[:space:]]*\"([^\"]*)\"' "$ROOT/lib/scaffold.sh" "$ROOT/lib/autoloop.sh" | awk '{s+=$1} END{print s+0}')"
 if [ "$n" = 3 ]; then echo "✓ reader sed is identical across all 3 copies"
 else echo "✗ reader sed appears $n times (want 3) — the readers drifted; keep them identical"; fail=1; fi
 

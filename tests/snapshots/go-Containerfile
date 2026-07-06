@@ -8,7 +8,7 @@ RUN go mod download || true
 COPY . .
 RUN go build -trimpath -ldflags "-s -w" -o /out/app ./cmd/app
 FROM build AS test
-RUN go vet ./... && go test ./...
+RUN go vet ./... && go test ./... -timeout 120s -count=2
 FROM gcr.io/distroless/static:nonroot AS final
 WORKDIR /
 COPY --from=build /out/app /app

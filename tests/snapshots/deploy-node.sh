@@ -16,11 +16,11 @@ for ex in $(git ls-files '*.example' 2>/dev/null); do
   [ -e "$target" ] || { cp "$ex" "$target"; echo "[deploy] seeded $target from $ex"; }
 done
 
-# 3) build + (re)start
+# 3) build the runtime (final) image and (re)start the service.
+# The start command lives in the Containerfile's `final` stage (CMD) — set it there for your app.
 IMAGE="localhost/app:latest"
-echo "[deploy] building $IMAGE …"
-podman build --target build -t "$IMAGE" -f Containerfile .
+echo "[deploy] building $IMAGE (final image) …"
+podman build --target final -t "$IMAGE" -f Containerfile .
 podman rm -f app 2>/dev/null || true
-# EDIT: set the real run command + published port, e.g.:
-# podman run -d --name app --restart=always --env-file .env -p 3000:3000 "$IMAGE" <start-cmd>
-echo "[deploy] image built; set the run line to serve app."
+podman run -d --name app --restart=always --env-file .env -p 3000:3000 "$IMAGE"
+echo "[deploy] app running on :3000 (set the final-stage CMD if it is not up yet)"
