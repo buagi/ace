@@ -1,0 +1,26 @@
+# ACE project profile — EDITABLE source of truth the autorun loop reads to ground its work.
+# Edit by hand or re-run: ace profile
+schema: 1
+name: app
+language: go
+# --- architecture ---
+shape: api              # api | cli | cli-web | worker | library
+domain: "demo"
+audience: internal        # internal | oss-public | end-customer | enterprise
+throughput: low    # low | medium | high
+hardening: standard      # none | standard | strong  (Phase 2 release.sh consumes; suggested from audience)
+targets: [linux/amd64, linux/arm64]         # build targets (Phase 2 release.sh consumes)
+# --- alignment (the alignment_reviewer agent reviews changes against these) ---
+mission: "mission"
+values: [reliability]
+philosophy: "fail-closed"
+# --- delivery / git policy ---
+git: true              # use git at all
+ci_cd: github-actions              # github-actions | none
+container: true       # true = Containerfile + container parity gate (./ci.sh --container) | false = host-only
+gitflow: true          # apply gitflow (main + conventional commits + guards)
+merge_gate: remote    # remote (wait for Actions green) | local (merge on ./ci.sh --container green) | both (require local AND remote green)
+auto_merge: false    # auto-accept: loop self-merges when the gate is green (env AUTOMERGE overrides)
+deploy_kind: service  # service (VPS deploy) | artifact (binaries ship on v* tags) | none — derived from shape
+created: <ts>
+updated: <ts>

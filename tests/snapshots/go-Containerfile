@@ -1,0 +1,16 @@
+# Multi-stage: build a fully-static binary, test it, ship it on distroless (runs everywhere).
+FROM golang:1.23 AS build
+WORKDIR /src
+ENV CGO_ENABLED=0
+COPY go.mod ./
+# COPY go.sum ./   # add once you have dependencies
+RUN go mod download || true
+COPY . .
+RUN go build -trimpath -ldflags "-s -w" -o /out/app ./cmd/app
+FROM build AS test
+RUN go vet ./... && go test ./...
+FROM gcr.io/distroless/static:nonroot AS final
+WORKDIR /
+COPY --from=build /out/app /app
+EXPOSE 3000
+ENTRYPOINT ["/app"]

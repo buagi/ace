@@ -1,0 +1,6 @@
+.opencode/
+*.bak.*
+.serena/
+# excluded from the public release (kept in the private archive)
+concepts/
+docs/demo/ace-full-recording.html

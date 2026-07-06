@@ -1,0 +1,40 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -race
+      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./... || true
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: Secret scan
+        run: |
+          if git ls-files | grep -vE '(^|/)\.env\.example$' | xargs -r grep -nIE '(-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36})'; then echo "::error::secret committed"; exit 1; fi
+          echo "no secrets found"
+  codemap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: bash scripts/graph-refresh.sh || true
+      - name: Code map must be current
+        run: |
+          if ! git diff --quiet -- docs/architecture.md; then
+            echo "::error::docs/architecture.md is STALE — run scripts/graph-refresh.sh and commit."
+            git --no-pager diff -- docs/architecture.md; exit 1; fi
+          echo "code map current"
