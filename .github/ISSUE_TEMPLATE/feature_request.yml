@@ -1,0 +1,28 @@
+name: 💡 Feature request / idea
+description: Suggest a capability or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the pain or goal — not just the solution. This helps find the best fix.
+      placeholder: |
+        When I ..., ACE ... which means I have to ...
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed idea (optional)
+      description: How you imagine it working — a command, flag, or behavior.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / workarounds you've tried
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: I searched existing issues and this isn't already requested

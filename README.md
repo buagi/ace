@@ -18,6 +18,8 @@
 ✠ &nbsp; *the forge never sleeps · the loop is eternal* &nbsp; ✠
 
 <img src="https://img.shields.io/badge/RITE-v0.0.1--alpha-8b0000?style=for-the-badge&labelColor=0b0b0b">
+<a href="https://github.com/buagi/ace/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/buagi/ace/ci.yml?branch=main&style=for-the-badge&labelColor=0b0b0b&label=CI"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-556b2f?style=for-the-badge&labelColor=0b0b0b"></a>
 <img src="https://img.shields.io/badge/OMNISSIAH-OpenCode_%2B_DeepSeek_V4-b8860b?style=for-the-badge&labelColor=0b0b0b">
 <img src="https://img.shields.io/badge/COHORT-9_agents-7c0a02?style=for-the-badge&labelColor=0b0b0b">
 
@@ -56,7 +58,7 @@
 
 ```bash
 # 1. clone + put it on the grid
-git clone <this-repo> ace && cd ace
+git clone https://github.com/buagi/ace ace && cd ace
 ln -s "$PWD/ace" ~/.local/bin/ace      # now `ace` works anywhere (clone wherever you like)
 
 # 2. wire the rig (host tools + key + 9-agent config + GitHub login)
@@ -72,6 +74,12 @@ ace autorun                       # 🟢 the machine takes the wheel
 ```
 
 `ace status` → confirm the rig is green. `ace --help` → the full deck. `--dry-run` → preview anything, change nothing.
+
+> **⚡ Try it in 2 minutes — $0, no keys, nothing installed:** watch the whole loop run —
+> `ace loop dash --demo` (scripted preview) · `ace swarm sandbox` (live DRY demo) · or add `--dry-run` to any command. Nothing is built, pushed, or spent.
+
+> **💸 No Claude subscription? You don't need one.** The overseer *defaults* to Claude Opus, but ACE runs
+> end-to-end on a cheap **DeepSeek** API key alone — `ace keys --brain deepseek` (switch brains anytime with `ace keys`). The 8 worker agents are always DeepSeek, so the crew is low-cost by design.
 
 > **already set up?** skip `ace install`. just `ace upgrade` your repo, edit `OBJECTIVES.md`, `ace autorun`.
 

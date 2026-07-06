@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 Documentation
+    url: https://github.com/buagi/ace/tree/main/docs
+    about: Install, commands, configuration, and the autorun loop — check here first.
+  - name: 💬 Question / help
+    url: https://github.com/buagi/ace/issues/new
+    about: Not sure if it's a bug? Open a blank issue — no question is too small this early.
