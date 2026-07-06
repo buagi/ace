@@ -16,8 +16,12 @@ else
   go vet ./... || fail=1
   # -race needs cgo, but builds are CGO_ENABLED=0 (fully static) — so enable cgo for the race test ONLY
   # when a C compiler is present (else 'go test -race' errors "requires cgo"); otherwise plain tests.
-  if command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; then CGO_ENABLED=1 go test ./... -race -coverprofile=coverage.out -covermode=atomic || fail=1
-  else go test ./... -coverprofile=coverage.out || fail=1; fi
+  # -timeout 120s: a deadlocked/flaky concurrency test surfaces as RED in 2min, not the 10-min default
+  # (a scheduler-dependent hang once merged silently and poisoned every downstream branch). GO_TEST_COUNT>1
+  # (set by the --container merge gate) re-runs to expose that flakiness before it can merge.
+  _gtc="${GO_TEST_COUNT:-1}"
+  if command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; then CGO_ENABLED=1 go test ./... -race -timeout 120s -count="$_gtc" -coverprofile=coverage.out -covermode=atomic || fail=1
+  else go test ./... -timeout 120s -count="$_gtc" -coverprofile=coverage.out || fail=1; fi
   # coverage is a SIGNAL, not a gate (no blanket % target — that just invites gaming): print the total.
   [ -f coverage.out ] && go tool cover -func=coverage.out 2>/dev/null | tail -1
 fi

@@ -17,7 +17,7 @@ set -uo pipefail
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OC="$HOME/.config/opencode/opencode.json"
 MODE="${1:-check}"; REPO="${2:-$(git rev-parse --show-toplevel 2>/dev/null)}"
-DO(){ [ "$MODE" = apply ]; }
+_apply(){ [ "$MODE" = apply ]; }
 note(){ printf '  %-6s %s\n' "$1" "$2"; }
 
 # swarm MCP command — resolves the ace lib at runtime (survives symlinked ace).
@@ -52,7 +52,7 @@ wire_opencode() {
   else note fast "fast-lane already applied (or clause not found)"; fi
   # validate + commit
   if jq -e . "$tmp" >/dev/null 2>&1; then
-    if DO && [ "$changed" = 1 ]; then cp "$OC" "$OC.bak.$(date +%s)"; mv "$tmp" "$OC"; note done "opencode.json updated (backup written)"
+    if _apply && [ "$changed" = 1 ]; then cp "$OC" "$OC.bak.$(date +%s)"; mv "$tmp" "$OC"; note done "opencode.json updated (backup written)"
     else [ "$changed" = 1 ] && note DRY "opencode.json changes staged (run: apply)"; rm -f "$tmp"; fi
   else note ERROR "patched opencode.json failed jq validation — aborted"; rm -f "$tmp"; return 1; fi
 }
@@ -61,7 +61,7 @@ wire_agents() {
   [ -n "$REPO" ] && [ -f "$REPO/AGENTS.md" ] || { note skip "no $REPO/AGENTS.md"; return 0; }
   if grep -q '^## Swarm coordination' "$REPO/AGENTS.md"; then note agents "protocol already present"; return 0; fi
   note AGENTS "append Swarm coordination protocol"
-  DO || return 0
+  _apply || return 0
   cat >> "$REPO/AGENTS.md" <<'MD'
 
 ## Swarm coordination (parallel flows)
@@ -80,7 +80,7 @@ wire_systemd() {
   local unit="$HOME/.config/systemd/user/ace-swarm.service"
   if [ -f "$unit" ]; then note systemd "ace-swarm.service present"; return 0; fi
   note SYSTEMD "write ace-swarm.service (disabled until you start it)"
-  DO || return 0
+  _apply || return 0
   mkdir -p "$(dirname "$unit")"
   { echo "[Unit]"; echo "Description=ACE swarm (parallel loop)"; echo "After=network-online.target"
     echo "StartLimitIntervalSec=600"; echo "StartLimitBurst=6"

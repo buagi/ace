@@ -59,7 +59,7 @@ jobs:
             git reset --hard origin/main
             ./scripts/deploy.sh
             # post-deploy health check (timeout-bounded). Override with repo Variables VPS_HEALTH_URL / VPS_HEALTH_TIMEOUT.
-            url="${{ vars.VPS_HEALTH_URL || 'http://127.0.0.1:3000/' }}"; to="${{ vars.VPS_HEALTH_TIMEOUT || '90' }}"; n="app"
+            url="${{ vars.VPS_HEALTH_URL || 'http://127.0.0.1:8000/' }}"; to="${{ vars.VPS_HEALTH_TIMEOUT || '90' }}"; n="app"
             dl=$(( $(date +%s) + to )); ok=0
             while [ $(date +%s) -lt $dl ]; do
               if [ "$(podman inspect -f '{{.State.Running}}' "$n" 2>/dev/null)" = true ] && curl -fsS -o /dev/null --max-time 5 "$url"; then ok=1; break; fi
