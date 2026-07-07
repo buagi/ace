@@ -51,6 +51,16 @@ branches, or any observed breakage traced to two concurrent merges interacting.
 lease-free. That kills the *predictable, structural* conflicts up front. What remains deferred
 below is the *semantic* re-gate and the code-convention changes a tool can't auto-apply.
 
+**Update (2026-07-07): the serialized rebase-before-merge queue SHIPPED.** `merge_if_ready`
+(`lib/autoloop.sh`) now, in a swarm (`SWARM_WORKER` set; `SWARM_MERGE_QUEUE=0` disables), takes a
+`flock` on `$SWARM_DIR/.merge.lock` across the whole rebase→merge, `git merge origin/main` onto the
+freshest main, pushes, re-checks mergeability, then merges — fail-safe (rebase-conflict → `return 3`
+→ `conflict_resolver`). This closes the "merge stale-based branch" gap (Design B + Design A's rebase
+step, without rearchitecting to `_merge_real`, which is now redundant — see next-round #9). **Still
+open: the semantic RE-GATE after rebase** (the queue rebases but does NOT re-run `./ci.sh --container`
+on the combined state, so a disjoint-but-interacting semantic break can still reach main). That's
+next-round #2 below.
+
 ---
 
 ## Smarter conflict handling — the parts a policy table can't auto-apply
@@ -91,3 +101,58 @@ structural/convention wins that need per-project code changes or a new coordinat
 
 **Trigger to revisit any of these:** repeated conflicts/escalations on a registry file (→ #1/#2),
 the project gaining migrations (→ #3), or array-manifest escalations (→ #4).
+
+---
+
+## Swarm: next fixing round (2026-07-07) — from the deep validation
+
+Context: a 14h trading-portal run made ~2 PRs. Deep validation (3 audits + reproduction) found the
+"5/5 conflicts" was mostly a **bookkeeping bug** (fixed, PR #7), plus **no rebase-before-merge**
+(fixed, PR #8) and a **RED-main freeze** from a wall-clock golden (hermetic-test mandate, PR #7). The
+prior GitNexus-impact scope work was largely misaimed and is now **off by default + bounded**.
+Remaining backlog, ranked:
+
+1. **Batch / disjoint planning (biggest throughput lever).** The coordinator runs the ~14-min Opus
+   `OBJECTIVES→ROADMAP` sync too often (every reboot) and it BLOCKS dispatch. Plan a BATCH of
+   **path-disjoint** items → workers drain → re-plan only when < N open remain. Prevents collisions
+   by construction + cuts planning overhead. *Where:* the `sync OBJECTIVES → ROADMAP` drive in
+   `autoloop.sh` + a "remaining disjoint items" counter in the coordinator. ~1 day.
+2. **Semantic re-gate after rebase** (the open half of the merge queue). The queue rebases but does
+   NOT re-run `./ci.sh --container` on the combined state → a disjoint-but-interacting break can reach
+   main. Add optional re-gate, ideally scoped to when the rebase pulled in a shared/union/registry
+   file (the policy table already knows which). `SWARM_REQUEUE_GATE=1`.
+3. **Decouple workers from a globally-RED main** (~77% of the lost run). Detect "main was RED BEFORE
+   my change" → route it to ONE designated fixer while the others rebase onto the last-GREEN sha and
+   keep shipping; quarantine/skip a known-poison test so it can't block ALL flows. The hermetic-test
+   mandate (shipped) prevents the *cause*; this is the *runtime resilience*.
+4. **Single-owner hot files** — conflict-policy `assign` for files many items touch (goldens, shared
+   test infra, DI/registry). Complements #1 (registry-as-directory).
+5. **`ace swarm stats` + truthful conflict telemetry.** Classify events: merge-conflict vs gate-RED
+   (pre-existing) vs not-yet-merged; per-run PRs merged / real conflicts / gate-RED time / worker
+   utilization. The broken merged-check corrupted the dashboard/state — this makes regressions visible.
+6. **`swarm_touch` must re-apply meta-free/lease-free on lease GROWTH** — the growth path adds raw
+   paths (e.g. `.opencode/STANDARDS.md`) bypassing the filters `swarm_paths_for_item` applies, so a
+   meta file re-enters a lease mid-flight. Filter on growth too.
+7. **Tighten the base path-scrape** (`swarm_paths_for_item`): never lease bare **directories** (prefix
+   overlap on a dir locks a whole subtree → the observed `apps/portal/lib/` deadlock), and require an
+   extension or an existing path so prose fragments (`sentiment/ratings/…`) stop becoming phantom leases.
+8. **"main advanced" bus notification** (the one safe pub/sub use). Coordinator broadcasts
+   `main advanced → <sha>` on the bus; a worker can rebase its WORKING branch early. Notification →
+   deterministic rebase, NOT agents reasoning over the bus. (Avoid mid-flight rebase while an agent is
+   editing — the merge-time rebase already covers the critical case.)
+9. **Remove the dead `_merge_real`** (or make it canonical). Now that `merge_if_ready` has the rebase
+   queue, `_merge_real` in `swarm-run.sh` is redundant dead code — delete to avoid the two-designs
+   confusion that caused this whole thread.
+10. **Lighter overseer option for cost** — Opus is orchestrator-only (correct); offer Sonnet/DeepSeek
+    overseer for cheap long runs (`ace keys`). The ~35-min implement floor is Opus coordinating; a
+    lighter overseer lifts it.
+
+**Before the next big feature push:** live-validate PR #7 + #8 on ONE real swarm run — first re-plan
+trading-portal's 74 pre-fix items for disjointness, then run measured (watch the new merged-check
+status + the merge-queue rebase logs). Confirm the bookkeeping fix + rebase queue land before building
+#1–#3 on top.
+
+**Reality check (honest):** even fully fixed, 6 workers hit ~⅕ the throughput of ONE sequential loop
+in this run; the merge-lock + shared gate cap the ceiling. The swarm wins only when features are
+genuinely independent AND the gate is fast + hermetic. Measure swarm-vs-single before investing more
+in swarm complexity.
