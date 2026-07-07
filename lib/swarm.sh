@@ -116,6 +116,53 @@ _with_lock() {
 # these made unrelated items falsely contend (the STANDARDS.md dual-create + the
 # OBJECTIVES/main-meta deadlock-dance in the 10h run). Space-padded for substring test.
 SWARM_META_FREE="${SWARM_META_FREE:- ROADMAP.md OBJECTIVES.md AGENTS.md CLAUDE.md docs/architecture.md .opencode/lessons.md .opencode/memory/changelog.md .opencode/STANDARDS.md }"
+
+# Expand a base path set toward the change's TRUE blast radius, so items that WILL collide are detected as
+# OVERLAPPING at claim time (→ serialized) instead of racing and growing into a conflict mid-flight (the #1
+# cause of wasted swarm work — see the 5/5-conflict run). Two layers, BOTH fail-open (any error/timeout →
+# input unchanged, i.e. current behavior):
+#   1) test↔source pairing — deterministic, existence-checked (the dominant observed collision: N items all
+#      grew into the same *.test.ts). Adds only files that actually exist; never phantom paths.
+#   2) GitNexus impact() UPSTREAM (dependants) on symbols named in `backticks` in the item — the ripple a
+#      signature change forces onto callers. Bounded (≤3 symbols, 8s timeout), cached per item under
+#      $SWARM_DIR/scope, skipped when no gitnexus index/runner is present. Disable with SWARM_IMPACT=0.
+_swarm_scope_expand(){
+  local base="$1" text="$2" repo="${REPO:-$PWD}" extra="" p d b e cand
+  for p in $base; do
+    case "$p" in
+      *.test.ts|*.test.tsx|*.spec.ts|*.spec.tsx|*.test.js|*_test.go|*_test.py)      # test → its source
+        cand="$(printf '%s' "$p" | sed -E 's#__tests__/##; s/\.(test|spec)\.(ts|tsx|js|jsx)$/.\2/; s/_test\.(go|py)$/.\1/')"
+        [ "$cand" != "$p" ] && [ -f "$repo/$cand" ] && extra="$extra $cand" ;;
+      *.ts|*.tsx|*.js|*.jsx|*.go|*.py)                                              # source → its test(s)
+        d="$(dirname "$p")"; b="$(basename "$p")"; e="${b##*.}"; b="${b%.*}"
+        for cand in "$d/$b.test.$e" "$d/$b.spec.$e" "$d/__tests__/$b.test.$e" "$d/__tests__/$b.test.tsx" "${d}/${b}_test.${e}"; do
+          [ -f "$repo/$cand" ] && extra="$extra $cand"
+        done ;;
+    esac
+  done
+  if [ "${SWARM_IMPACT:-auto}" != 0 ]; then
+    local runner=""
+    { [ -f "$repo/.gitnexus/run.cjs" ] && command -v node >/dev/null 2>&1; } && runner="node $repo/.gitnexus/run.cjs"
+    [ -z "$runner" ] && command -v gitnexus >/dev/null 2>&1 && runner="gitnexus"
+    if [ -n "$runner" ]; then
+      local cache="${SWARM_DIR:-/tmp}/scope" key sym imp="" n=0 rn
+      rn="$(basename "$repo")"          # the GitNexus index is MULTI-repo — every call MUST pass -r <name>
+      mkdir -p "$cache" 2>/dev/null || true
+      key="$(printf '%s' "$text" | cksum | cut -d' ' -f1)"
+      if [ -s "$cache/$key" ]; then extra="$extra $(cat "$cache/$key" 2>/dev/null)"
+      else
+        for sym in $(printf '%s' "$text" | grep -oE '`[A-Za-z_][A-Za-z0-9_]{2,}`' | tr -d '`' | sort -u); do
+          [ "$n" -ge 3 ] && break; n=$((n+1))                    # cap symbols/item to bound latency
+          imp="$imp $( (cd "$repo" 2>/dev/null && timeout 8 $runner impact "$sym" -r "$rn" -d upstream 2>/dev/null) | grep -oE '"filePath"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/')"
+        done
+        imp="$(printf '%s' "$imp" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
+        printf '%s' "$imp" > "$cache/$key" 2>/dev/null || true
+        extra="$extra $imp"
+      fi
+    fi
+  fi
+  printf '%s %s' "$base" "$extra"
+}
 swarm_paths_for_item() {
   local text="$1" tok paths="" lf
   # lease-free globs from the conflict policy (union/struct/regenerate/assign/allocate/ignore) —
@@ -133,6 +180,15 @@ swarm_paths_for_item() {
     case "$SWARM_META_FREE" in *" $tok "*) continue ;; esac   # never lease coordinator/union/regenerated meta files
     for lf in $_SWARM_LEASEFREE; do case "$tok" in ${lf//\*\*/\*}) continue 2 ;; esac; done  # policy lease-free (glob)
     paths="$paths $tok"
+  done
+  # expand toward the true blast radius, then RE-FILTER the whole set through meta/lease-free so an added
+  # test/impacted file that happens to be policy-managed is never leased. Overlapping items now serialize
+  # at claim time instead of racing into a mid-flight conflict.
+  local _raw _t; _raw="$(_swarm_scope_expand "$paths" "$text")"; paths=""
+  for _t in $_raw; do
+    case "$SWARM_META_FREE" in *" $_t "*) continue ;; esac
+    for lf in $_SWARM_LEASEFREE; do case "$_t" in ${lf//\*\*/\*}) continue 2 ;; esac; done
+    paths="$paths $_t"
   done
   paths="$(printf '%s' "$paths" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
   [ -n "${paths// /}" ] && printf '%s\n' "${paths# }" || printf '.\n'

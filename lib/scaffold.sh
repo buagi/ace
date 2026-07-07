@@ -2464,7 +2464,9 @@ stamp=".gitnexus/.analyze-sig"
 if [ "${GRAPH_FORCE:-0}" != 1 ] && [ -f "$stamp" ] && [ -f docs/architecture.md ] && [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ]; then
   echo "[graph] code unchanged since last analyze — skipping (GRAPH_FORCE=1 to force)"; exit 0
 fi
-out="$(CI=1 timeout -k 10 600 npx -y gitnexus@latest analyze </dev/null 2>&1)"; printf '%s\n' "$out" | tail -3
+# GITNEXUS_PDG=1 → deeper index: build the control-flow/PDG substrate so `impact --mode pdg` gets
+# statement-level blast radius (slower; opt-in). Default stays the fast callgraph index.
+out="$(CI=1 timeout -k 10 900 npx -y gitnexus@latest analyze ${GITNEXUS_PDG:+--pdg} </dev/null 2>&1)"; printf '%s\n' "$out" | tail -3
 printf 'N\nN\nN\n' | CI=1 timeout -k 10 600 uvx --from git+https://github.com/oraios/serena serena project index >/dev/null 2>&1 || true
 mkdir -p docs
 counts="$(printf '%s\n' "$out" | grep -oE '[0-9,]+ nodes \| [0-9,]+ edges \| [0-9,]+ clusters \| [0-9,]+ flows' | head -1)"

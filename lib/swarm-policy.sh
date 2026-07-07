@@ -51,6 +51,7 @@ swarm_policy_defaults() {
   for f in CHANGELOG.md HISTORY.md NEWS.md RELEASES.md; do [ -f "$repo/$f" ] && echo "$f	union"; done
   echo ".opencode/lessons.md	union"
   echo ".opencode/memory/changelog.md	union"
+  echo ".opencode/STANDARDS.md	union"   # many items touch it (standards_keeper) — union > lock-contention
   # --- generated: never leased, tooling regenerates ---
   [ -d "$repo/.gitnexus" ] && echo ".gitnexus/**	ignore"
 }
