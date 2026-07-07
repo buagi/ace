@@ -618,6 +618,27 @@ merge_if_ready(){
     [ "$m" = CONFLICTING ] && { say "PR #$pr CONFLICTS with main"; return 3; }
     say "PR #$pr not mergeable ($m: required reviews / unknown) — not merging"; return 1
   fi
+  # ── SWARM merge queue: serialize the merge + rebase onto the FRESHEST main first ────────────────────
+  # Concurrent flows self-merge feat/<slug> PRs against a MOVING main with no rebase, so siblings touching
+  # shared lines collide at merge (the genuine merge-conflict source). Hold a shared lock across the whole
+  # rebase→merge and bring the branch up to the latest main first. Fail-safe: a rebase that itself conflicts
+  # returns 3 (the caller's conflict path); any lock/fetch error falls through to a normal merge. Default on
+  # in a swarm (SWARM_WORKER set); disable with SWARM_MERGE_QUEUE=0.
+  local _mlk=""
+  if [ "${SWARM_MERGE_QUEUE:-${SWARM_WORKER:+1}}" = 1 ] && [ -n "${SWARM_DIR:-}" ] && exec 9>"$SWARM_DIR/.merge.lock" 2>/dev/null && flock -w 900 9 2>/dev/null; then
+    _mlk=1
+    git fetch -q origin main 2>/dev/null || true
+    if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+      say "swarm merge-queue: $(branch) is behind main — rebasing onto freshest origin/main before merge"
+      if git merge --no-edit -q origin/main 2>/dev/null && git push -q origin "HEAD:$(branch)" 2>/dev/null; then
+        for _ in 1 2 3; do m="$(gh pr view "$pr" --json mergeable -q .mergeable 2>/dev/null)"; [ "$m" = UNKNOWN ] || break; sleep 3; done
+        [ "$m" = CONFLICTING ] && { flock -u 9 2>/dev/null; say "PR #$pr CONFLICTS after rebase"; return 3; }
+      else
+        git merge --abort 2>/dev/null; flock -u 9 2>/dev/null
+        say "PR #$pr: rebase onto main conflicts → deferring to the conflict path"; return 3
+      fi
+    fi
+  fi
   if [ "${LOCAL_VOUCHED:-0}" = 1 ]; then say "PR #$pr: merging on the local ./ci.sh --container gate's authority ($([ "${MERGE_GATE:-remote}" = local ] && echo 'merge_gate=local' || echo 'remote CI blocked'))"
   else say "PR #$pr: ALL green + mergeable -> squash-merging and continuing on main"; fi
   local feat merged=0 mergeerr="" mflags="--squash --delete-branch"; feat="$(branch)"
@@ -629,12 +650,13 @@ merge_if_ready(){
     printf '%s' "$mergeerr" | grep -qi 'already merged' && { merged=1; say "PR #$pr was already merged out-of-band — treating as done."; break; }
     sleep 4
   done
-  [ "$merged" = 1 ] || { say "merge of PR #$pr failed after retries — gh said: ${mergeerr:-<no output>}"; return 1; }
+  [ "$merged" = 1 ] || { [ "$_mlk" = 1 ] && flock -u 9 2>/dev/null; say "merge of PR #$pr failed after retries — gh said: ${mergeerr:-<no output>}"; return 1; }
   git checkout -f main >/dev/null 2>&1 && git pull --ff-only >/dev/null 2>&1 || true
   # delete the merged feature branch when safe: squash-merged via PR, now on main, clean tree
   if [ -n "$feat" ] && [ "$feat" != main ] && [ "$feat" != master ] && [ -z "$(git status --porcelain)" ]; then
     git branch -D "$feat" >/dev/null 2>&1 && say "deleted merged branch '$feat' (local; remote removed by --delete-branch)."
   fi
+  [ "$_mlk" = 1 ] && flock -u 9 2>/dev/null   # release the swarm merge queue
   return 0
 }
 
