@@ -153,11 +153,14 @@ run_worker() {
     if [ "$DRY_RUN" = 1 ]; then
       with_merge_lock _merge_dry "$branch" || ok=0
     else
-      # LIVE: auto-loop already opened + local-gated + SELF-MERGED its PR. Confirm
-      # the item's PR landed; if not (gate red / stuck), it's a retry → conflict.
+      # LIVE: the auto-loop opens + local-gates + SELF-MERGES a feat/<slug> PR (NOT this swarm/* worktree
+      # branch), and ticks the item in ROADMAP.md inside that PR. So the robust merged-signal is: the item's
+      # checkbox is now [x] on origin/main. (The old --head "$branch" check queried the never-PR'd swarm/*
+      # branch → always empty → every merged item was mislabelled "conflict" and re-worked.)
       git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true
-      if gh pr list --repo "$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" \
-           --head "$branch" --state merged --json number -q '.[0].number' 2>/dev/null | grep -q .; then ok=1; else ok=0; fi
+      if git -C "$REPO" show "origin/$MAIN:ROADMAP.md" 2>/dev/null | grep -Fq -- "$item" \
+         && git -C "$REPO" show "origin/$MAIN:ROADMAP.md" 2>/dev/null | grep -F -- "$item" | grep -qE '^[[:space:]]*- \[[xX]\]'
+      then ok=1; else ok=0; fi
     fi
     kill "$bpid" 2>/dev/null
     if [ "$ok" = 1 ]; then

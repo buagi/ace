@@ -124,39 +124,46 @@ SWARM_META_FREE="${SWARM_META_FREE:- ROADMAP.md OBJECTIVES.md AGENTS.md CLAUDE.m
 #   1) test↔source pairing — deterministic, existence-checked (the dominant observed collision: N items all
 #      grew into the same *.test.ts). Adds only files that actually exist; never phantom paths.
 #   2) GitNexus impact() UPSTREAM (dependants) on symbols named in `backticks` in the item — the ripple a
-#      signature change forces onto callers. Bounded (≤3 symbols, 8s timeout), cached per item under
-#      $SWARM_DIR/scope, skipped when no gitnexus index/runner is present. Disable with SWARM_IMPACT=0.
+#      signature change forces onto callers. OPT-IN (SWARM_IMPACT=1; off by default — it is index-gated and
+#      needs bounding); files-only, --depth 1, hub-skip, cached, fail-open. Layer 1 always runs.
 _swarm_scope_expand(){
   local base="$1" text="$2" repo="${REPO:-$PWD}" extra="" p d b e cand
+  # (1) test↔source pairing — deterministic, existence-checked, both directions, broad suffix coverage.
   for p in $base; do
     case "$p" in
-      *.test.ts|*.test.tsx|*.spec.ts|*.spec.tsx|*.test.js|*_test.go|*_test.py)      # test → its source
-        cand="$(printf '%s' "$p" | sed -E 's#__tests__/##; s/\.(test|spec)\.(ts|tsx|js|jsx)$/.\2/; s/_test\.(go|py)$/.\1/')"
+      *.test.*|*.spec.*|*_test.go|*_test.py|test_*.py)                              # test → its source
+        cand="$(printf '%s' "$p" | sed -E 's#(^|/)__tests__/#\1#; s#(^|/)tests?/#\1#; s/\.(test|spec)\.([a-z]+)$/.\2/; s/_test\.(go|py)$/.\1/; s#(^|/)test_([^/]+\.py)$#\1\2#')"
         [ "$cand" != "$p" ] && [ -f "$repo/$cand" ] && extra="$extra $cand" ;;
-      *.ts|*.tsx|*.js|*.jsx|*.go|*.py)                                              # source → its test(s)
+      *.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.go|*.py)                                  # source → its test(s)
         d="$(dirname "$p")"; b="$(basename "$p")"; e="${b##*.}"; b="${b%.*}"
-        for cand in "$d/$b.test.$e" "$d/$b.spec.$e" "$d/__tests__/$b.test.$e" "$d/__tests__/$b.test.tsx" "${d}/${b}_test.${e}"; do
+        for cand in "$d/$b.test.$e" "$d/$b.spec.$e" "$d/__tests__/$b.test.$e" "$d/__tests__/$b.test.tsx" "$d/__tests__/$b.spec.$e" "$d/${b}_test.$e" "$d/test_$b.$e"; do
           [ -f "$repo/$cand" ] && extra="$extra $cand"
         done ;;
     esac
   done
-  if [ "${SWARM_IMPACT:-auto}" != 0 ]; then
+  # (2) GitNexus impact — OPT-IN (SWARM_IMPACT=1); OFF by default because it's index-gated and, unbounded,
+  # can over-lease. Hardened: only when base is non-empty (never narrow the run-alone fail-safe), --depth 1
+  # (direct dependants), FILES-only via -f existence check (drops directory paths that would lock a subtree),
+  # per-symbol hub-skip (>10 files → skip), ≤3 symbols, 8s timeout, atomic HEAD-scoped cache, fully fail-open.
+  if [ "${SWARM_IMPACT:-0}" != 0 ] && [ -n "${base// /}" ]; then
     local runner=""
     { [ -f "$repo/.gitnexus/run.cjs" ] && command -v node >/dev/null 2>&1; } && runner="node $repo/.gitnexus/run.cjs"
     [ -z "$runner" ] && command -v gitnexus >/dev/null 2>&1 && runner="gitnexus"
     if [ -n "$runner" ]; then
-      local cache="${SWARM_DIR:-/tmp}/scope" key sym imp="" n=0 rn
-      rn="$(basename "$repo")"          # the GitNexus index is MULTI-repo — every call MUST pass -r <name>
+      local cache="${SWARM_DIR:-/tmp/ace-scope}/scope" key sym rn head imp="" one nf n=0
+      rn="$(basename "$repo")"; head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo x)"
       mkdir -p "$cache" 2>/dev/null || true
-      key="$(printf '%s' "$text" | cksum | cut -d' ' -f1)"
+      key="$(printf '%s@%s' "$head" "$text" | cksum | cut -d' ' -f1)"        # HEAD-scoped → a new commit invalidates
       if [ -s "$cache/$key" ]; then extra="$extra $(cat "$cache/$key" 2>/dev/null)"
       else
         for sym in $(printf '%s' "$text" | grep -oE '`[A-Za-z_][A-Za-z0-9_]{2,}`' | tr -d '`' | sort -u); do
-          [ "$n" -ge 3 ] && break; n=$((n+1))                    # cap symbols/item to bound latency
-          imp="$imp $( (cd "$repo" 2>/dev/null && timeout 8 $runner impact "$sym" -r "$rn" -d upstream 2>/dev/null) | grep -oE '"filePath"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/')"
+          [ "$n" -ge 3 ] && break; n=$((n+1))
+          one="$( (cd "$repo" 2>/dev/null && timeout 8 $runner impact "$sym" -r "$rn" -d upstream --depth 1 2>/dev/null) | grep -oE '"filePath"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | sort -u)"
+          nf="$(printf '%s\n' "$one" | grep -c .)"; [ "$nf" -gt 10 ] && continue   # hub symbol → don't lease a huge set
+          for cand in $one; do [ -f "$repo/$cand" ] && imp="$imp $cand"; done       # FILES only (no directories)
         done
         imp="$(printf '%s' "$imp" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
-        printf '%s' "$imp" > "$cache/$key" 2>/dev/null || true
+        { printf '%s' "$imp" > "$cache/.$key.$$" && mv -f "$cache/.$key.$$" "$cache/$key"; } 2>/dev/null || true  # atomic write
         extra="$extra $imp"
       fi
     fi
@@ -181,6 +188,9 @@ swarm_paths_for_item() {
     for lf in $_SWARM_LEASEFREE; do case "$tok" in ${lf//\*\*/\*}) continue 2 ;; esac; done  # policy lease-free (glob)
     paths="$paths $tok"
   done
+  # fail-safe: no concrete path token → unknown blast radius → lease "." and run ALONE. Must come BEFORE
+  # expansion so a symbol-only item can never be narrowed to a partial (silently-overlapping) scope.
+  [ -z "${paths// /}" ] && { printf '.\n'; return; }
   # expand toward the true blast radius, then RE-FILTER the whole set through meta/lease-free so an added
   # test/impacted file that happens to be policy-managed is never leased. Overlapping items now serialize
   # at claim time instead of racing into a mid-flight conflict.
