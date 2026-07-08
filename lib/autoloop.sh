@@ -534,6 +534,11 @@ drive(){
         if [ "$charged" -ge "$budget" ] || [ "$(( now - start ))" -ge "${OPENCODE_WALL_MAX:-10800}" ]; then \
           : > .opencode/.timedout; kill_tree "$op" TERM; sleep 3; kill_tree "$op" KILL; break; fi
       done ) & kp=$!
+    # S5 shared prefix cache (swarm): the crew SYSTEM prompt + tool schemas come from the shared, STATIC
+    # ~/.config/opencode/opencode.json, so the request PREFIX is byte-identical across all N workers and
+    # DeepSeek's disk prefix cache bills the shared chunk at hit price. Keep every per-worker/per-run salt
+    # (worker id, timestamp, branch/slug, the claimed item) in the VARIABLE TAIL — the "$task" user message
+    # here — and NEVER prepend it to the system prompt or a shared context block, or the cache forks → misses.
     { opencode run --agent "$AGENT" ${ORCH_MODEL_OVERRIDE:+--model "$ORCH_MODEL_OVERRIDE"} "$task" & echo $! > .opencode/.oppid; wait $!; } 2>&1 | tee .opencode/last-run.log
     rc=${PIPESTATUS[0]}; kill "$kp" 2>/dev/null
     [ -f .opencode/.timedout ] && rc=124
