@@ -19,7 +19,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO="${SWARM_REPO:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 MAIN="${SWARM_MAIN:-main}"
-MAX="${SWARM_MAX:-4}"
+# S3 worker ceiling (B4): 3–5 workers is the evidence-backed max — past that, coordination + the
+# SERIAL merge step (Amdahl) dominate and integration risk climbs without proportional speedup. This
+# is a hard, mechanical floor-of-safety (P8) even if a user forces SWARM_MAX high; NEVER 6+ workers.
+SWARM_CEIL="${SWARM_CEIL:-5}"
+MAX="${SWARM_MAX:-4}"; MAX="${MAX//[!0-9]/}"; [ -z "$MAX" ] && MAX=4   # sanitize a non-numeric request
+_SWARM_REQ="$MAX"                                                     # raw request, so swarm_run can log a ceiling clamp
+[ "$MAX" -gt "$SWARM_CEIL" ] && MAX="$SWARM_CEIL"                     # cap at the ceiling
+[ "$MAX" -lt 1 ] && MAX=1
 DRY_RUN="${DRY_RUN:-1}"
 LIVE="${SWARM_LIVE:-0}"
 WT_ROOT="${SWARM_WT_ROOT:-}"
@@ -307,6 +314,18 @@ swarm_run() {
     git -C "$REPO" fetch -q --prune origin "$MAIN" 2>/dev/null
     git -C "$REPO" checkout -q "$MAIN" 2>/dev/null && git -C "$REPO" reset -q --hard "origin/$MAIN" 2>/dev/null || true
   fi
+  # S3 clamp (B4): allowed = min(requested, disjoint-claimable-now, ceiling). MAX (hence _allowed) is
+  # already capped at SWARM_CEIL on load; surface that to the operator if their raw request was higher.
+  # Then never launch more workers than there are PATH-DISJOINT claimable items right now — extra workers
+  # would only idle or contend on the lease store. Both clamps are logged; both are fail-open (any error
+  # in the disjoint scan leaves `allowed` unchanged, i.e. current behavior).
+  [ "${_SWARM_REQ:-$MAX}" -gt "$SWARM_CEIL" ] 2>/dev/null && \
+    echo "  clamp: requested ${_SWARM_REQ} worker(s) → capped at ceiling $SWARM_CEIL (S3: 3–5 is the max)"
+  local _dj; _dj="$(swarm_disjoint_batch "$REPO/ROADMAP.md" "$allowed" 2>/dev/null || echo "$allowed")"
+  if [ -n "$_dj" ] && [ "$_dj" -ge 1 ] 2>/dev/null && [ "$_dj" -lt "$allowed" ]; then
+    echo "  clamp: $allowed worker(s) → $_dj ($_dj path-disjoint item(s) claimable now; more would idle/contend)"
+    allowed="$_dj"
+  fi
   echo "  spawning $allowed worker(s) — watch: ace swarm dash"
   [ "$WATCH" = 1 ] && { swarm_watch & echo "  watcher pid $!"; }
   # Ctrl-C / TERM: stop the whole fleet cleanly. Backgrounded workers ignore terminal
@@ -461,7 +480,7 @@ swarm_dash_split() {
     echo "Opening the unified dash instead…" >&2; sleep 2; swarm_dash; return
   fi
   local s="aceswarm" nmax i
-  nmax="$(config_get SWARM_MAX 2>/dev/null || echo 2)"; nmax="${nmax//[!0-9]/}"; [ -z "$nmax" ] && nmax=2; [ "$nmax" -gt 8 ] && nmax=8; [ "$nmax" -lt 1 ] && nmax=1
+  nmax="$(config_get SWARM_MAX 2>/dev/null || echo 2)"; nmax="${nmax//[!0-9]/}"; [ -z "$nmax" ] && nmax=2; [ "$nmax" -gt "${SWARM_CEIL:-5}" ] && nmax="${SWARM_CEIL:-5}"; [ "$nmax" -lt 1 ] && nmax=1   # match the S3 worker ceiling (no empty panes)
   tmux kill-session -t "$s" 2>/dev/null
   # pane 0 = the COCKPIT ONLY (boxes/pipeline/status; DASH_FEEDS=0 so feeds aren't doubled —
   # the live feeds live in the separate per-worker panes below).

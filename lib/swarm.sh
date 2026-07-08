@@ -153,9 +153,16 @@ _swarm_scope_expand(){
       local cache="${SWARM_DIR:-/tmp/ace-scope}/scope" key sym rn head imp="" one nf n=0
       rn="$(basename "$repo")"; head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo x)"
       mkdir -p "$cache" 2>/dev/null || true
-      key="$(printf '%s@%s' "$head" "$text" | cksum | cut -d' ' -f1)"        # HEAD-scoped → a new commit invalidates
+      # (query,base-sha) cache — SHARED across ALL workers: claims run in the coordinator's main checkout,
+      # so $head is the base main sha every worker sees at once, and $cache lives under the single
+      # coordinator SWARM_DIR (outside any per-worktree dir). Compute the impact ONCE per (query,sha); the
+      # rest read the slice. A new main sha → new key → automatic invalidation (old entries age out with
+      # the run). Hit/miss appended to .stats so the shared-cache win is measurable (`swarm scope-stats`).
+      key="$(printf '%s@%s' "$head" "$text" | cksum | cut -d' ' -f1)"
       if [ -s "$cache/$key" ]; then extra="$extra $(cat "$cache/$key" 2>/dev/null)"
+        printf 'hit %s\n' "$key" >> "$cache/.stats" 2>/dev/null || true
       else
+        printf 'miss %s\n' "$key" >> "$cache/.stats" 2>/dev/null || true
         for sym in $(printf '%s' "$text" | grep -oE '`[A-Za-z_][A-Za-z0-9_]{2,}`' | tr -d '`' | sort -u); do
           [ "$n" -ge 3 ] && break; n=$((n+1))
           one="$( (cd "$repo" 2>/dev/null && timeout 8 $runner impact "$sym" -r "$rn" -d upstream --depth 1 2>/dev/null) | grep -oE '"filePath"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | sort -u)"
@@ -288,6 +295,46 @@ swarm_next() {
     fi
   done < <(grep -nE '^[[:space:]]*- \[ \] ' "$roadmap")
   return 0   # nothing claimable
+}
+
+# swarm_disjoint_batch [ROADMAP] [CAP] — how many OPEN, deps-met roadmap items could run in PARALLEL
+# right now: a greedy PATH-DISJOINT packing (an item is counted only if its leased paths don't overlap
+# an already-counted item — the same overlap rule swarm_next claims by). READ-ONLY: claims nothing,
+# mutates no state. Stops as soon as CAP items are found (default = SWARM_CEIL, fallback 5) so the scan
+# is bounded by the worker ceiling, not the roadmap length. The coordinator uses this to clamp workers
+# to min(requested, disjoint, ceiling) — spawning more workers than disjoint items just makes idlers that
+# contend on the lease store (S3). Fail-open: any error still prints a number.
+swarm_disjoint_batch() {
+  local roadmap="${1:-ROADMAP.md}" cap="${2:-${SWARM_CEIL:-5}}"
+  case "$cap" in *[!0-9]*|'') cap=5 ;; esac; [ "$cap" -lt 1 ] && cap=1
+  [ -f "$roadmap" ] || { echo 0; return 0; }
+  local line item paths n=0 i clash
+  local -a sets=()
+  while IFS= read -r line; do
+    item="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*- \[ \] //; s/[[:space:]]+$//')"
+    [ -z "$item" ] && continue
+    printf '%s' "$item" | grep -qi 'add your first' && continue
+    _deps_met "$item" "$roadmap" || continue          # prerequisites not merged yet → not claimable now
+    paths="$(swarm_paths_for_item "$item")"
+    clash=0
+    if [ "$n" -gt 0 ]; then
+      for i in "${sets[@]}"; do _overlap "$paths" "$i" && { clash=1; break; }; done
+    fi
+    [ "$clash" = 1 ] && continue                        # overlaps an already-counted item → would serialize
+    sets+=("$paths"); n=$((n+1))
+    [ "$n" -ge "$cap" ] && break
+  done < <(grep -nE '^[[:space:]]*- \[ \] ' "$roadmap")
+  echo "$n"
+}
+
+# swarm_scope_stats — print the shared impact-graph cache hit/miss tally (the SWARM_IMPACT=1 path).
+# Proves the (query,base-sha) cache in _swarm_scope_expand is SHARED across workers: a query repeated at
+# the same base main sha bills as a hit, not a re-query. Empty/absent → 0/0.
+swarm_scope_stats() {
+  local f="${SWARM_DIR:-/tmp/ace-scope}/scope/.stats" h m
+  h="$(grep -c '^hit '  "$f" 2>/dev/null)"; [ -z "$h" ] && h=0
+  m="$(grep -c '^miss ' "$f" 2>/dev/null)"; [ -z "$m" ] && m=0
+  printf 'impact-graph cache: %s hit / %s miss  (%s)\n' "$h" "$m" "$f"
 }
 
 # swarm_touch WORKER HASH ADDPATHS — extend an ACTIVE claim mid-flight when a
@@ -548,6 +595,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     policy)         swarm_policy_table "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" ;;
     policy-selftest) swarm_policy_selftest ;;
     aggregate-lessons) swarm_aggregate_lessons "${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|policy|policy-selftest|aggregate-lessons}" >&2; exit 2 ;;
+    disjoint-batch) swarm_disjoint_batch "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
+    scope-stats)    swarm_scope_stats ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|policy|policy-selftest|aggregate-lessons|disjoint-batch|scope-stats}" >&2; exit 2 ;;
   esac
 fi
