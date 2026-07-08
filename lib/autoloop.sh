@@ -6,6 +6,10 @@
 # ROOT CAUSE; repeat until green; then implement the next ROADMAP item. Capped, no auto-merge.
 #   MAX_FIX=5 MAX_FEATURES=3 AUTOMERGE=0 GENERATE_IDEAS=0 bash scripts/auto-loop.sh
 set -uo pipefail
+# shared-state coordination helpers (swarm_aggregate_lessons — S6 per-worker lessons reduce). Pure
+# function defs, safe to source; guarded so a missing module never breaks the single-flow loop.
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-policy.sh" 2>/dev/null || true
 cd "$(git rev-parse --show-toplevel)" || exit 1
 # delivery policy: defaults come from .opencode/profile.yaml; env still overrides per run.
 prof_get(){ grep -E "^[[:space:]]*$1:[[:space:]]*" .opencode/profile.yaml 2>/dev/null | head -1 | sed -E "s/^[^:]*:[[:space:]]*\"([^\"]*)\".*$/\1/; t; s/^[^:]*:[[:space:]]*'([^']*)'.*$/\1/; t; s/^[^:]*:[[:space:]]*//; s/^#.*$//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//"; }
@@ -244,6 +248,9 @@ refresh_version_cache(){
 # crosses LESSONS_MAX_LINES keep the title + newest items in the live file, archiving older ones.
 compact_lessons(){
   local f=.opencode/lessons.md max="${LESSONS_MAX_LINES:-200}" li
+  # janitor pass (S6): fold any per-branch lessons/<branch>.md shards into the canonical file first,
+  # so the aggregated lessons the planner reads stay current even outside a swarm coordinator run.
+  command -v swarm_aggregate_lessons >/dev/null 2>&1 && swarm_aggregate_lessons "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || true
   [ -f "$f" ] || return 0
   awk '!seen[$0]++ || $0==""' "$f" > "$f.t" 2>/dev/null && mv -f "$f.t" "$f" 2>/dev/null || true   # drop exact-duplicate lines
   li="$(grep -c '^- ' "$f" 2>/dev/null)"; li="${li:-0}"; [ "$li" -gt "$max" ] 2>/dev/null || return 0

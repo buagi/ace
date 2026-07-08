@@ -87,14 +87,21 @@ swarm_policy_apply() {
   git -C "$repo" config merge.structtoml.driver "$drv toml %O %A %B" 2>/dev/null || true
   git -C "$repo" config merge.structyaml.name "3-way YAML merge" 2>/dev/null || true
   git -C "$repo" config merge.structyaml.driver "$drv yaml %O %A %B" 2>/dev/null || true
+  # "ours" driver (S4/P8): lockfiles + other derived files are conflict HUBS — every worker's
+  # dep-add rewrites them, and Git's line-merge serializes all parallel work onto them. Take ONE
+  # side at merge time (keep ours) so the merge never blocks, then let swarm_policy_regenerate
+  # re-derive it deterministically from the merged manifest post-merge. Never hand-merge a lockfile.
+  git -C "$repo" config merge.ours.name "keep ours (regenerate post-merge)" 2>/dev/null || true
+  git -C "$repo" config merge.ours.driver true 2>/dev/null || true
   local glob strat attr
   while IFS=$'\t' read -r glob strat; do
     case "$strat" in
-      union)       attr="merge=union" ;;
-      struct:json) attr="merge=structjson" ;;
-      struct:toml) attr="merge=structtoml" ;;
-      struct:yaml) attr="merge=structyaml" ;;
-      *)           attr="" ;;   # regenerate/assign/allocate/ignore: no per-file merge driver
+      union)        attr="merge=union" ;;
+      struct:json)  attr="merge=structjson" ;;
+      struct:toml)  attr="merge=structtoml" ;;
+      struct:yaml)  attr="merge=structyaml" ;;
+      regenerate:*) attr="merge=ours" ;;   # lockfiles/derived: keep ours at merge, regenerate after (never text-conflict)
+      *)            attr="" ;;   # assign/allocate/ignore: no per-file merge driver
     esac
     [ -n "$attr" ] && ! grep -qF "$glob $attr" "$ga" 2>/dev/null && echo "$glob $attr" >> "$ga"
   done < <(swarm_policy_table "$repo")
@@ -135,6 +142,29 @@ swarm_policy_regenerate() {
     fi
   done < <(swarm_policy_table "$repo")
   [ "$did" = 1 ] && git -C "$repo" push -q origin "$branch" 2>/dev/null || true
+  return 0
+}
+
+# ONE-FILE-PER-WORKER shared state (S6): append logs (lessons) are conflict hotspots — every worker
+# writing the SAME .opencode/lessons.md guarantees merge collisions on the very file meant to reduce
+# rework. Instead each flow appends ONLY to its own .opencode/lessons/<branch>.md shard (no two flows
+# share one, so shards NEVER conflict), and this reduce folds the shards into the canonical
+# .opencode/lessons.md — the file the planner + critics read. Pure working-tree op (the caller decides
+# whether to commit); idempotent (a line already in the canonical file is never re-added).
+swarm_aggregate_lessons() {
+  local repo="${1:-$PWD}" dir canon shard line hdr
+  dir="$repo/.opencode/lessons"; canon="$repo/.opencode/lessons.md"
+  [ -d "$dir" ] || return 0
+  hdr='# Lessons (most useful first) — durable decisions/gotchas the loop learned.'
+  [ -f "$canon" ] || { printf '%s\n# One terse line each, deduped. Read before planning; append after each task.\n' "$hdr" > "$canon"; }
+  for shard in "$dir"/*.md; do
+    [ -e "$shard" ] || continue                      # nullglob-safe: no shards → nothing to fold
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      case "$line" in \#*) continue ;; esac          # skip shard header/comment lines
+      grep -qxF -- "$line" "$canon" 2>/dev/null || printf '%s\n' "$line" >> "$canon"
+    done < "$shard"
+  done
   return 0
 }
 

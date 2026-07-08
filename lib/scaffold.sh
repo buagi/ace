@@ -299,6 +299,7 @@ coverage/
 .opencode/loop-state.env
 .opencode/metrics.csv
 .opencode/run-summary.txt
+.opencode/HANDOVER.md
 .opencode/vps-verify-report.md
 .opencode/cache/
 *.orig
@@ -516,6 +517,7 @@ __pycache__/
 .opencode/loop-state.env
 .opencode/metrics.csv
 .opencode/run-summary.txt
+.opencode/HANDOVER.md
 .opencode/vps-verify-report.md
 .opencode/cache/
 *.orig
@@ -623,7 +625,7 @@ EOF
 
 gen_configonly() {
   local name="$1"
-  printf '.env\n.env.*\n!.env.example\n.DS_Store\n# ACE loop transients (keep git status clean)\n.serena/\n.opencode/.agents\n.opencode/.oppid\n.opencode/.step-budget\n.opencode/.timedout\n.opencode/.rathole\n.opencode/.container-green\n.opencode/.harvested-warnings\n.opencode/.objectives-synced\n.opencode/last-run.log\n.opencode/ci-failure.log\n.opencode/ci-build.log\n.opencode/loop-state.env\n.opencode/metrics.csv\n.opencode/run-summary.txt\n.opencode/vps-verify-report.md\n.opencode/cache/\n*.orig\n*.rej\n' > .gitignore
+  printf '.env\n.env.*\n!.env.example\n.DS_Store\n# ACE loop transients (keep git status clean)\n.serena/\n.opencode/.agents\n.opencode/.oppid\n.opencode/.step-budget\n.opencode/.timedout\n.opencode/.rathole\n.opencode/.container-green\n.opencode/.harvested-warnings\n.opencode/.objectives-synced\n.opencode/last-run.log\n.opencode/ci-failure.log\n.opencode/ci-build.log\n.opencode/loop-state.env\n.opencode/metrics.csv\n.opencode/run-summary.txt\n.opencode/HANDOVER.md\n.opencode/vps-verify-report.md\n.opencode/cache/\n*.orig\n*.rej\n' > .gitignore
   printf '# Declared env vars\n' > .env.example
   cat > ci.sh <<'EOF'
 #!/usr/bin/env bash
@@ -1246,6 +1248,7 @@ coverage.*
 .opencode/loop-state.env
 .opencode/metrics.csv
 .opencode/run-summary.txt
+.opencode/HANDOVER.md
 .opencode/vps-verify-report.md
 .opencode/cache/
 *.orig

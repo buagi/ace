@@ -547,6 +547,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     selftest) swarm_selftest ;;
     policy)         swarm_policy_table "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" ;;
     policy-selftest) swarm_policy_selftest ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|policy|policy-selftest}" >&2; exit 2 ;;
+    aggregate-lessons) swarm_aggregate_lessons "${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|policy|policy-selftest|aggregate-lessons}" >&2; exit 2 ;;
   esac
 fi

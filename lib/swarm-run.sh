@@ -119,6 +119,15 @@ _tick_roadmap() {
   # post-merge, serialized here (under the merge lock): regenerate any derived file (lockfiles)
   # whose manifest moved in the just-merged commit, so main stays coherent without text-merging it.
   command -v swarm_policy_regenerate >/dev/null 2>&1 && swarm_policy_regenerate "$REPO" "$MAIN" || true
+  # fold the just-merged worker's per-branch lessons/<branch>.md shard into the canonical
+  # .opencode/lessons.md on main (S6 one-file-per-worker), then publish it — the planner reads it.
+  if command -v swarm_aggregate_lessons >/dev/null 2>&1; then
+    swarm_aggregate_lessons "$REPO"
+    if ! git -C "$REPO" diff --quiet -- .opencode/lessons.md 2>/dev/null; then
+      git -C "$REPO" commit -q -m "chore(swarm): aggregate lessons after merge" -- .opencode/lessons.md 2>/dev/null \
+        && git -C "$REPO" push -q origin "$MAIN" 2>/dev/null || true
+    fi
+  fi
 }
 
 run_worker() {
