@@ -594,9 +594,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     selftest) swarm_selftest ;;
     policy)         swarm_policy_table "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" ;;
     policy-selftest) swarm_policy_selftest ;;
+    mergiraf-selftest) swarm_mergiraf_selftest ;;
     aggregate-lessons) swarm_aggregate_lessons "${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" ;;
     disjoint-batch) swarm_disjoint_batch "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
     scope-stats)    swarm_scope_stats ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|policy|policy-selftest|aggregate-lessons|disjoint-batch|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|scope-stats}" >&2; exit 2 ;;
   esac
 fi

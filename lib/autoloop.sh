@@ -605,6 +605,30 @@ ci_blocked(){
   ran="$(gh run view "$id" --json jobs -q '[.jobs[].steps[]? | select(.conclusion!=null and .conclusion!="skipped")] | length' 2>/dev/null)"
   [ -n "$ran" ] && [ "$ran" -eq 0 ] 2>/dev/null
 }
+# B3 merge-gate hardening: a PR is verified against the base it BRANCHED FROM, not the CURRENT main — so
+# two PRs that each pass alone can break together ("green-alone, broken-together"). After the merge queue
+# merges the freshest origin/main into the branch (below), the branch holds a TENTATIVE MERGE commit that
+# neither the dev-time FAST gate nor the pre-rebase FULL gate ever saw. Re-run the FULL container CI tier
+# (the same VPS-parity gate merge_gate=local/both already trusts) on THAT tree and land ONLY on green — a
+# semantic integration break surfaces HERE, at the gate, never on main (the GitHub-merge-queue discipline).
+# Cache-aware (reuses the .container-green stamp; skips the rebuild when this exact merged tree already
+# passed). Fails CLOSED on a RED (blocks the land). Fails OPEN only when the gate MECHANISM is unavailable
+# (no ./ci.sh) — a missing gate must not wedge the merge queue, but a real RED always must.
+_tentative_merge_ci_ok(){
+  [ -e ./ci.sh ] || { say "tentative-merge gate: no ./ci.sh here — skipping the re-check (nothing to gate)."; return 0; }
+  local cstate; cstate="$(git rev-parse HEAD 2>/dev/null):$(git status --porcelain 2>/dev/null | sha1sum | cut -c1-12)"
+  if [ "$(cat .opencode/.container-green 2>/dev/null)" = "$cstate" ]; then
+    say "tentative-merge gate: FULL ./ci.sh --container already GREEN for this merged tree (cached)."; return 0
+  fi
+  say "tentative-merge gate: running FULL ./ci.sh --container on the tentative merge with current origin/main…"
+  if timeout "${LOCAL_CI_TIMEOUT:-1800}" ./ci.sh --container > .opencode/ci-failure.log 2>&1; then
+    mkdir -p .opencode; printf '%s\n' "$cstate" > .opencode/.container-green 2>/dev/null || true
+    say "tentative-merge gate: FULL ci GREEN on the merged tree — safe to land."; return 0
+  fi
+  say "tentative-merge gate: FULL ci RED on the merge with current origin/main — a green-alone/broke-together break. NOT landing (.opencode/ci-failure.log)."
+  return 1
+}
+
 # returns: 0 merged now · 2 nothing to merge (already merged / no PR / on main) · 1 PR present but not mergeable -> caller should stop
 # When LOCAL_VOUCHED=1 (remote CI blocked but the local VPS-parity gate is GREEN) it skips the
 # failed-check guard and merges with --admin (in case a required check is later configured).
@@ -645,6 +669,10 @@ merge_if_ready(){
       if git merge --no-edit -q origin/main 2>/dev/null && git push -q origin "HEAD:$(branch)" 2>/dev/null; then
         for _ in 1 2 3; do m="$(gh pr view "$pr" --json mergeable -q .mergeable 2>/dev/null)"; [ "$m" = UNKNOWN ] || break; sleep 3; done
         [ "$m" = CONFLICTING ] && { flock -u 9 2>/dev/null; say "PR #$pr CONFLICTS after rebase"; return 3; }
+        # B3: the branch now MERGES current origin/main — a tree the isolation gate never saw. Re-verify
+        # THAT tentative merge with the FULL container gate before landing; a semantic break is caught here,
+        # not on main. RED → defer to the conflict/fix path (bounded by MAX_CONFLICT), NOT a blind land.
+        if ! _tentative_merge_ci_ok; then flock -u 9 2>/dev/null; return 3; fi
       else
         git merge --abort 2>/dev/null; flock -u 9 2>/dev/null
         say "PR #$pr: rebase onto main conflicts → deferring to the conflict path"; return 3
