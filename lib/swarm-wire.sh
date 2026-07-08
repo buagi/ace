@@ -70,7 +70,7 @@ When `SWARM_WORKER` is set, this repo is being worked by SEVERAL flows at once. 
 - If `busy` and you truly need it → `swarm_wait(paths, timeout)`. On `timeout`, **defer** (finish/abandon and requeue) — never keep other leases while blocked (deadlock).
 - Check `swarm_inbox()` for flows asking you to release a file; if you're done with it, `swarm_release`.
 - Announce cross-cutting needs with `swarm_post(type, body)` (`touching`/`blocked`/`needs-attention`).
-- Do NOT edit `ROADMAP.md` — the coordinator ticks items after merge. `lessons.md`/`changelog.md` are union-merged, so appending is safe.
+- Do NOT edit `ROADMAP.md` — the coordinator ticks items after merge. Write lessons to your OWN `.opencode/lessons/<branch>.md` shard (per-worker; the coordinator aggregates them into the canonical `.opencode/lessons.md` on main), NEVER the shared file; `changelog.md` is union-merged, so appending it is safe.
 MD
 }
 
