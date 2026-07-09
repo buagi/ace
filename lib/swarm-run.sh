@@ -271,6 +271,66 @@ _prune_stale_swarm() {
     git -C "$REPO" push -q origin --delete "$b" >/dev/null 2>&1 && echo "  gc'd merged remote feat/$b" >&2; done
 }
 
+# ---- B2: batch → drain → re-plan (plan-time conflict-aware scheduling) ---------
+# _swarm_plan_sync — the OBJECTIVES → ROADMAP planning pass, extracted so the batch loop can (re)invoke
+# it between generations. Runs on YOUR model (no downgrade); if it hits a usage limit it WAITS for reset.
+# SYNCHRONOUS by design: it runs with NO workers active, so it never races the coordinator's working tree
+# against the workers' ROADMAP ticks. The inner sync_objectives is mtime-guarded, so a re-call once
+# objectives are already covered is a fast no-op — safe to invoke each generation.
+_swarm_plan_sync() {
+  echo "  planning: syncing OBJECTIVES → ROADMAP on your model (waits on a limit; SWARM_SYNC=0 to skip)…"
+  ( cd "$REPO" && LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
+      bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 \
+    || echo "  planning: sync ended (see coordinator.log) — proceeding with the current ROADMAP"
+  # the planner opens a chore/plan PR but (per "never merge your own PR") leaves it open, and
+  # LOOP_SYNC_ONLY exits before the loop's merge step — so the COORDINATOR lands it here, else the
+  # decomposed tasks never reach main and workers have nothing new to claim.
+  local _slug _ppr; _slug="$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
+  _ppr="$(gh pr list --repo "$_slug" --head chore/plan --state open --json number -q '.[0].number' 2>/dev/null)"
+  if [ -n "$_ppr" ]; then
+    echo "  planning: merging plan PR #$_ppr (decomposed tasks → main)"
+    gh pr merge "$_ppr" --repo "$_slug" --squash --admin --delete-branch >/dev/null 2>&1 \
+      || gh pr merge "$_ppr" --repo "$_slug" --squash --delete-branch >/dev/null 2>&1 || true
+  fi
+  git -C "$REPO" fetch -q --prune origin "$MAIN" 2>/dev/null
+  git -C "$REPO" checkout -q "$MAIN" 2>/dev/null && git -C "$REPO" reset -q --hard "origin/$MAIN" 2>/dev/null || true
+}
+
+# _swarm_should_plan GEN — should this generation (re)plan? Gen 1: yes, when sync is enabled and
+# OBJECTIVES has open goals (the original single upfront pass). Gen > 1: only when the path-disjoint
+# claimable batch has DRAINED below the re-plan floor (SWARM_REPLAN_MIN, default = the ceiling) — so a
+# freshly-added objective or a deferred slice gets decomposed, but we do NOT re-run the ~14-min sync per
+# item. Returns 0 (plan) / 1 (skip).
+_swarm_should_plan() {
+  local gen="$1" dj floor
+  [ "$DRY_RUN" != 1 ] || return 1
+  [ "${SWARM_SYNC:-1}" = 1 ] || return 1
+  [ -f "$REPO/OBJECTIVES.md" ] || return 1
+  grep -qE '^[[:space:]]*- \[ \] ' "$REPO/OBJECTIVES.md" 2>/dev/null || return 1
+  [ "$gen" -le 1 ] && return 0
+  dj="$(swarm_disjoint_batch "$REPO/ROADMAP.md" "${SWARM_CEIL:-5}" 2>/dev/null || echo 99)"
+  case "$dj" in ''|*[!0-9]*) dj=99 ;; esac
+  floor="${SWARM_REPLAN_MIN:-${SWARM_CEIL:-5}}"; case "$floor" in ''|*[!0-9]*) floor="${SWARM_CEIL:-5}" ;; esac
+  [ "$dj" -lt "$floor" ]
+}
+
+# _swarm_emit_batch_plan CAP — state the plan-time conflict-aware batch plan (which items run in parallel,
+# which SERIALIZE because they share a file, which are dep-BLOCKED) to the coordinator log + a run artifact
+# BEFORE dispatch. This is the mechanical, race-free form of the planner prompt's "state the batch plan
+# before dispatch": it does NOT write the tracked ROADMAP.md (workers own its ticks — writing it here would
+# race them), so it is pure telemetry. Fail-open: any error is swallowed and dispatch proceeds.
+_swarm_emit_batch_plan() {
+  local cap="$1" plan npar nser nblk
+  plan="$(swarm_disjoint_plan "$REPO/ROADMAP.md" "$cap" 2>/dev/null)" || return 0
+  [ -n "$plan" ] || return 0
+  { printf 'swarm batch plan @%s (cap=%s):\n' "$(date -u +%FT%TZ)" "$cap"; printf '%s\n' "$plan"; } \
+    > "$SWARM_DIR/batch-plan.txt" 2>/dev/null || true
+  npar="$(printf '%s\n' "$plan" | grep -c '^parallel')"
+  nser="$(printf '%s\n' "$plan" | grep -c '^serialize')"
+  nblk="$(printf '%s\n' "$plan" | grep -c '^blocked')"
+  echo "  batch plan: $npar parallel · $nser serialized (share a file) · $nblk dep-blocked  (→ $SWARM_DIR/batch-plan.txt)"
+}
+
 swarm_run() {
   swarm_init; WT_ROOT="${WT_ROOT:-$SWARM_DIR/worktrees}"; mkdir -p "$WT_ROOT"
   # record the TRUE coordinator pid (== its process-group id under setsid) so the start-guard and
@@ -290,53 +350,54 @@ swarm_run() {
   printf '%s🐝 swarm%s %s%s/%s workers%s %s· live=%s dry=%s · %s · self-heal TTL=%ss tries=%s%s\n' \
     "${_B:-}${_PUR:-}" "${_R:-}" "${_GRN:-}" "$allowed" "$MAX" "${_R:-}" "${_MUT:-}" "$LIVE" "$DRY_RUN" "$(basename "$REPO")" "${LEASE_TTL}" "${MAX_TRIES}" "${_R:-}"
   echo "  watch: ace swarm dash  ·  columns: ace swarm split  ·  controls: pause|drain|kill wN"
-  # OBJECTIVES → ROADMAP: one planning pass before spawning workers, so any goal added to
-  # OBJECTIVES.md is decomposed into claimable ROADMAP items (the swarm draws from BOTH).
-  if [ "$DRY_RUN" != 1 ] && [ "${SWARM_SYNC:-1}" = 1 ] && [ -f "$REPO/OBJECTIVES.md" ] && grep -qE '^[[:space:]]*- \[ \] ' "$REPO/OBJECTIVES.md" 2>/dev/null; then
-    # Runs on YOUR model (no downgrade) — if it hits a usage limit it WAITS for reset (watch it in the
-    # dash: 'coordinator up · ⏳ … limit'). Usually a fast no-op once objectives are covered. Skip with
-    # SWARM_SYNC=0. It's synchronous by design so it never races the coordinator's working tree with the
-    # workers' ROADMAP ticks; whatever's already in ROADMAP is what workers build.
-    echo "  planning: syncing OBJECTIVES → ROADMAP on your model (waits on a limit; SWARM_SYNC=0 to skip)…"
-    ( cd "$REPO" && LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
-        bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 \
-      || echo "  planning: sync ended (see coordinator.log) — proceeding with the current ROADMAP"
-    # the planner opens a chore/plan PR but (per "never merge your own PR") leaves it open, and
-    # LOOP_SYNC_ONLY exits before the loop's merge step — so the COORDINATOR lands it here, else the
-    # decomposed tasks never reach main and workers have nothing new to claim.
-    local _slug _ppr; _slug="$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
-    _ppr="$(gh pr list --repo "$_slug" --head chore/plan --state open --json number -q '.[0].number' 2>/dev/null)"
-    if [ -n "$_ppr" ]; then
-      echo "  planning: merging plan PR #$_ppr (decomposed tasks → main)"
-      gh pr merge "$_ppr" --repo "$_slug" --squash --admin --delete-branch >/dev/null 2>&1 \
-        || gh pr merge "$_ppr" --repo "$_slug" --squash --delete-branch >/dev/null 2>&1 || true
-    fi
-    git -C "$REPO" fetch -q --prune origin "$MAIN" 2>/dev/null
-    git -C "$REPO" checkout -q "$MAIN" 2>/dev/null && git -C "$REPO" reset -q --hard "origin/$MAIN" 2>/dev/null || true
-  fi
-  # S3 clamp (B4): allowed = min(requested, disjoint-claimable-now, ceiling). MAX (hence _allowed) is
-  # already capped at SWARM_CEIL on load; surface that to the operator if their raw request was higher.
-  # Then never launch more workers than there are PATH-DISJOINT claimable items right now — extra workers
-  # would only idle or contend on the lease store. Both clamps are logged; both are fail-open (any error
-  # in the disjoint scan leaves `allowed` unchanged, i.e. current behavior).
-  [ "${_SWARM_REQ:-$MAX}" -gt "$SWARM_CEIL" ] 2>/dev/null && \
-    echo "  clamp: requested ${_SWARM_REQ} worker(s) → capped at ceiling $SWARM_CEIL (S3: 3–5 is the max)"
-  local _dj; _dj="$(swarm_disjoint_batch "$REPO/ROADMAP.md" "$allowed" 2>/dev/null || echo "$allowed")"
-  if [ -n "$_dj" ] && [ "$_dj" -ge 1 ] 2>/dev/null && [ "$_dj" -lt "$allowed" ]; then
-    echo "  clamp: $allowed worker(s) → $_dj ($_dj path-disjoint item(s) claimable now; more would idle/contend)"
-    allowed="$_dj"
-  fi
-  echo "  spawning $allowed worker(s) — watch: ace swarm dash"
+  # Ctrl-C / TERM: stop the whole fleet cleanly. Backgrounded workers ignore terminal SIGINT (no job
+  # control in a script), so we signal them explicitly: TERM the worker loops → each autoloop's cleanup
+  # preserves in-flight WIP + kills its opencode subtree → wait → force-kill stragglers.
   [ "$WATCH" = 1 ] && { swarm_watch & echo "  watcher pid $!"; }
-  # Ctrl-C / TERM: stop the whole fleet cleanly. Backgrounded workers ignore terminal
-  # SIGINT (no job control in a script), so we signal them explicitly: TERM the worker
-  # loops → each autoloop's cleanup preserves in-flight WIP + kills its opencode subtree
-  # → wait → force-kill stragglers. "Kill everything, but don't lose stuff."
   trap _swarm_trap INT TERM
   _reaper & _RPID=$!
   _WPIDS=""
-  for i in $(seq 1 "$allowed"); do run_worker "$i" & _WPIDS="$_WPIDS $!"; done
-  wait $_WPIDS 2>/dev/null
+  # BATCH → DRAIN → RE-PLAN (B2 phase 2): each GENERATION (re)plans OBJECTIVES→ROADMAP only when warranted
+  # (_swarm_should_plan — so the ~14-min Opus sync doesn't re-run per item), states the conflict-aware batch
+  # plan, clamps workers to the PATH-DISJOINT claimable set (reusing swarm_disjoint_batch), spawns them, and
+  # waits for the batch to DRAIN. Planning is synchronous (no workers active during it) so it never races
+  # their ROADMAP ticks. Bounded by SWARM_MAX_BATCHES + a no-progress guard → for the common case
+  # (objectives decomposed up front) it is exactly ONE generation (identical to the prior single-shot run).
+  local _maxbatch="${SWARM_MAX_BATCHES:-6}" _gen=0 _dj _before _after
+  case "$_maxbatch" in ''|*[!0-9]*) _maxbatch=6 ;; esac
+  [ "$DRY_RUN" = 1 ] && _maxbatch=1                       # sandbox/dry: one generation over the fixed ROADMAP
+  while [ "$_gen" -lt "$_maxbatch" ]; do
+    _gen=$((_gen+1))
+    if _swarm_should_plan "$_gen"; then
+      [ "$_gen" -gt 1 ] && echo "  re-plan (batch $_gen): path-disjoint claimable set drained below floor — topping up ROADMAP"
+      _swarm_plan_sync
+    fi
+    # S3 clamp: allowed = min(requested→ceiling, resource-aware, path-disjoint-claimable-now). Fail-open:
+    # any error in the disjoint scan leaves `allowed` unchanged. Log the ceiling clamp once (gen 1).
+    allowed="$(_allowed)"
+    [ "$_gen" = 1 ] && [ "${_SWARM_REQ:-$MAX}" -gt "$SWARM_CEIL" ] 2>/dev/null && \
+      echo "  clamp: requested ${_SWARM_REQ} worker(s) → capped at ceiling $SWARM_CEIL (S3: 3–5 is the max)"
+    _dj="$(swarm_disjoint_batch "$REPO/ROADMAP.md" "$allowed" 2>/dev/null || echo "$allowed")"
+    if [ -n "$_dj" ] && [ "$_dj" -ge 1 ] 2>/dev/null && [ "$_dj" -lt "$allowed" ]; then
+      echo "  clamp: $allowed worker(s) → $_dj ($_dj path-disjoint item(s) claimable now; more would idle/contend)"
+      allowed="$_dj"
+    fi
+    _swarm_emit_batch_plan "$allowed"                      # state the batch plan (telemetry) BEFORE dispatch
+    if [ -z "$_dj" ] || ! [ "$_dj" -ge 1 ] 2>/dev/null; then
+      echo "  no path-disjoint claimable item — nothing to dispatch (batch $_gen)"; break
+    fi
+    echo "  spawning $allowed worker(s) (batch $_gen) — watch: ace swarm dash"
+    _before="$(grep -cE '^[[:space:]]*- \[ \] ' "$REPO/ROADMAP.md" 2>/dev/null)"; _before="${_before:-0}"
+    _WPIDS=""
+    for i in $(seq 1 "$allowed"); do run_worker "$i" & _WPIDS="$_WPIDS $!"; done
+    wait $_WPIDS 2>/dev/null
+    # another generation only if there's more work AND this one made progress: stop on drain, in dry mode,
+    # or when the generation ticked NOTHING (remainder is parked/unclaimable → re-spawning would churn).
+    [ "$DRY_RUN" = 1 ] && break
+    [ -f "$SWARM_DIR/control.drain" ] && break
+    _after="$(grep -cE '^[[:space:]]*- \[ \] ' "$REPO/ROADMAP.md" 2>/dev/null)"; _after="${_after:-0}"
+    [ "$_after" -ge "$_before" ] 2>/dev/null && { echo "  batch $_gen made no progress — coordinator stopping"; break; }
+  done
   kill "$_RPID" 2>/dev/null
   # all workers have finished (ROADMAP exhausted, or the operator chose finish/drain) → shut the
   # coordinator DOWN cleanly: drop the pidfile + any control files so the dash flips to "no swarm
