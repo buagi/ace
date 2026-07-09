@@ -16,6 +16,10 @@
 #
 # The FIX for a failure is always the same: pin the version and verify a sha256 — copy the mergiraf
 # block or route the download through fetch_verified (see the jq/gh/upx/go blocks in lib/install.sh).
+#
+# PERF: comments are stripped once per file (one sed), then each rule is a single grep pass whose few
+# hits are checked with pure-bash predicates. An earlier version shelled out ~6 processes PER LINE
+# (~9.4k lines), which took ~40s — slow enough that a CI guard gets disabled. Keep it subprocess-light.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ALLOWLIST="$ROOT/tests/supply-chain-allowlist.txt"
@@ -37,10 +41,6 @@ else
   echo "✗ supply-chain: allowlist missing: $ALLOWLIST"; exit 1
 fi
 
-# strip a shell comment: a '#' at line-start or after whitespace begins a comment; a '#' inside
-# ${#arr} or a URL fragment (preceded by a non-space) is preserved.
-strip_comment() { printf '%s' "$1" | sed -E 's/(^|[[:space:]])#.*$/\1/'; }
-
 report() { echo "✗ supply-chain: $1"; fail=1; }
 
 is_allowlisted() {  # <code-line> -> 0 if any allowlist url-substring occurs in it
@@ -49,34 +49,43 @@ is_allowlisted() {  # <code-line> -> 0 if any allowlist url-substring occurs in 
   return 1
 }
 
+# A '#' at line-start or after whitespace begins a comment; a '#' inside ${#arr} or a URL fragment
+# (preceded by a non-space) is preserved. Done once per file, not once per line.
+STRIP_RE='s/(^|[[:space:]])#.*$/\1/'
+
+# pipe-into-a-shell: `| sh`, `| bash`, tolerating a trailing quote/paren (…| bash') but not `| shellcheck`
+PIPE_SH_RE='[|][[:space:]]*(ba)?sh([^[:alnum:]_]|$)'
+
+# Stripped output goes to a temp file, never through a shell variable: command substitution drops NUL
+# bytes and prints a `ignored null byte in input` warning for some inputs (seen on lib/merge-structured.sh).
+STRIPPED="$(mktemp)"; trap 'rm -f "$STRIPPED"' EXIT
+
 for file in "${FILES[@]}"; do
   rel="${file#"$ROOT"/}"
-  n=0
-  while IFS= read -r raw || [ -n "$raw" ]; do
-    n=$((n+1))
-    code="$(strip_comment "$raw")"
-    [ -z "${code//[[:space:]]/}" ] && continue
+  sed -E "$STRIP_RE" "$file" > "$STRIPPED" 2>/dev/null
 
-    # (a) unpinned/floating version resolution in a download context
-    if printf '%s' "$code" | grep -Eq 'releases/latest|go\.dev/VERSION'; then
-      report "$rel:$n — UNPINNED version resolution ('releases/latest' or 'go.dev/VERSION'). Pin an exact version and verify a sha256 (see the mergiraf/jq/gh/upx/go blocks in lib/install.sh)."
-    fi
+  # (a) unpinned/floating version resolution in a download context
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    report "$rel:${hit%%:*} — UNPINNED version resolution ('releases/latest' or 'go.dev/VERSION'). Pin an exact version and verify a sha256 (see the mergiraf/jq/gh/upx/go blocks in lib/install.sh)."
+  done < <(grep -nE 'releases/latest|go\.dev/VERSION' "$STRIPPED" || true)
 
-    # (b) curl|wget piped into a shell, not on the allowlist
-    if printf '%s' "$code" | grep -Eq '(curl|wget)' \
-       && printf '%s' "$code" | grep -Eq '\|[[:space:]]*(ba)?sh([[:space:]]|$|\b)'; then
-      if ! is_allowlisted "$code"; then
-        report "$rel:$n — un-allowlisted 'curl … | sh|bash' remote-script install. Either pin+verify a release binary (fetch_verified), or add the URL to tests/supply-chain-allowlist.txt with a reason + follow-up."
-      fi
-    fi
+  # (b) curl|wget piped into a shell, not on the allowlist
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    code="${hit#*:}"
+    [[ $code =~ $PIPE_SH_RE ]] || continue
+    is_allowlisted "$code" && continue
+    report "$rel:${hit%%:*} — un-allowlisted 'curl … | sh|bash' remote-script install. Either pin+verify a release binary (fetch_verified), or add the URL to tests/supply-chain-allowlist.txt with a reason + follow-up."
+  done < <(grep -nE 'curl|wget' "$STRIPPED" || true)
 
-    # (c) release-artifact fetch with no integrity check on the same line
-    if printf '%s' "$code" | grep -Eq 'releases/download/|go\.dev/dl/'; then
-      if ! printf '%s' "$code" | grep -Eq 'sha256sum[[:space:]]+-c|fetch_verified'; then
-        report "$rel:$n — release-artifact download with NO sha256 verification on the line. Route it through fetch_verified, or add an inline 'sha256sum -c' (see the mergiraf block in lib/install.sh)."
-      fi
-    fi
-  done < "$file"
+  # (c) release-artifact fetch with no integrity check on the same line
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    code="${hit#*:}"
+    [[ $code =~ (sha256sum[[:space:]]+-c|fetch_verified) ]] && continue
+    report "$rel:${hit%%:*} — release-artifact download with NO sha256 verification on the line. Route it through fetch_verified, or add an inline 'sha256sum -c' (see the mergiraf block in lib/install.sh)."
+  done < <(grep -nE 'releases/download/|go\.dev/dl/' "$STRIPPED" || true)
 done
 
 # --- integrity of the verifier itself: fetch_verified must actually check a sha256 ---
