@@ -65,6 +65,16 @@ install_host_tools() {
     have upx || { info "Installing UPX (optional release packer; user-local)…"; run_sh 'ua=amd64; case "$(uname -m)" in aarch64|arm64) ua=arm64 ;; esac; uv=4.2.4; curl -fsSL "https://github.com/upx/upx/releases/download/v${uv}/upx-${uv}-${ua}_linux.tar.xz" -o /tmp/ace-upx.txz && tar -C /tmp -xf /tmp/ace-upx.txz && install -m755 "/tmp/upx-${uv}-${ua}_linux/upx" "$HOME/.local/bin/upx"; rm -rf /tmp/ace-upx.txz /tmp/upx-*_linux 2>/dev/null || true'; }
   fi
 
+  # Mergiraf (structural/AST 3-way merge) — deterministic FRONT-END to the LLM conflict_resolver.
+  # User-local prebuilt STATIC (musl) binary → ~/.local/bin (never rpm-ostree; matches jq/upx). OPTIONAL:
+  # every merge path feature-detects `mergiraf` and falls back to git + conflict_resolver when absent.
+  if have mergiraf; then ok "mergiraf present ($(ver mergiraf 2>/dev/null))"
+  else
+    info "Installing Mergiraf (structural merge driver; user-local static binary)…"
+    run_sh 'case "$(uname -m)" in x86_64) ma=x86_64 ;; aarch64|arm64) ma=aarch64 ;; *) ma="" ;; esac; [ -n "$ma" ] || { echo "mergiraf: unsupported arch $(uname -m) — skipping (optional)"; exit 0; }; mv="$(curl -fsSL https://codeberg.org/api/v1/repos/mergiraf/mergiraf/releases/latest 2>/dev/null | grep -o "\"tag_name\":\"[^\"]*\"" | head -1 | cut -d\" -f4)"; [ -n "$mv" ] || mv=v0.17.0; mkdir -p "$HOME/.local/bin" /tmp/ace-mergiraf.d && curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/${mv}/mergiraf_${ma}-unknown-linux-musl.tar.gz" -o /tmp/ace-mergiraf.tgz && tar -C /tmp/ace-mergiraf.d -xzf /tmp/ace-mergiraf.tgz && mbin="$(find /tmp/ace-mergiraf.d -type f -name mergiraf | head -1)" && [ -n "$mbin" ] && install -m755 "$mbin" "$HOME/.local/bin/mergiraf"; rm -rf /tmp/ace-mergiraf.tgz /tmp/ace-mergiraf.d 2>/dev/null || true'
+    have mergiraf && ok "Mergiraf $(ver mergiraf 2>/dev/null)" || info "Mergiraf not installed (optional) — swarm merges fall back to git + conflict_resolver."
+  fi
+
   ensure_serena_quiet
   ensure_container_engine
   ensure_visual_extras
