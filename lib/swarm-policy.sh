@@ -76,6 +76,26 @@ swarm_policy_leasefree() {
 swarm_policy_apply() {
   local repo="${1:-}"; [ -n "$repo" ] || repo="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   local ga="$repo/.gitattributes"; touch "$ga"
+  # B3: structural (AST) pre-merge driver in FRONT of the LLM conflict_resolver. git's line merge invents
+  # FALSE conflicts when two workers edit DIFFERENT functions in the SAME file (the dominant parallel-agent
+  # conflict mode); Mergiraf resolves those deterministically so the resolver only handles genuine SEMANTIC
+  # overlap. It is an ASSIST, never an auto-lander — the hardened merge gate (ci.sh --container + verifier
+  # PASS) still decides what lands. FEATURE-GATED + FAIL-OPEN: the driver is registered and `* merge=mergiraf`
+  # is written ONLY when the `mergiraf` binary is on PATH. When it is ABSENT we touch NOTHING here, so git's
+  # plain 3-way merge escalates to the conflict_resolver EXACTLY as before — a missing tool never breaks the
+  # merge flow (mirrors the shellcheck-absent pattern in A1/B1).
+  if command -v mergiraf >/dev/null 2>&1; then
+    git -C "$repo" config merge.mergiraf.name "mergiraf structural merge" 2>/dev/null || true
+    git -C "$repo" config merge.mergiraf.driver 'mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L' 2>/dev/null || true
+    # `* merge=mergiraf` is the FRONT-LINE default. It must sit ABOVE the specific struct/union/ours rules
+    # appended below so that .gitattributes' last-match-wins lets THOSE win for the manifests ACE merges with
+    # its own data-aware drivers (package.json→structjson, lockfiles→ours, changelogs→union). Mergiraf itself
+    # falls back to git's line merge for file types it can't parse, so a catch-all `*` is safe. Idempotent:
+    # written once, kept at the top on every re-apply.
+    if ! grep -qxF '* merge=mergiraf' "$ga" 2>/dev/null; then
+      { printf '* merge=mergiraf\n'; cat "$ga"; } > "$ga.tmp" 2>/dev/null && mv "$ga.tmp" "$ga"
+    fi
+  fi
   # union driver (append-only) — keep both sides; never lose an entry.
   git -C "$repo" config merge.union.name "line-union" 2>/dev/null || true
   git -C "$repo" config merge.union.driver 'git merge-file --union -L %O -L %A -L %B %A %O %B >/dev/null 2>&1 || cat %A %B > %A; true' 2>/dev/null || true
@@ -180,5 +200,98 @@ swarm_policy_selftest() {
   printf '{"v":"1"}\n' > "$t/O"; printf '{"v":"2"}\n' > "$t/A"; printf '{"v":"3"}\n' > "$t/B"
   if bash "$ms" json "$t/O" "$t/A" "$t/B"; then echo "[policy] true-clash escalation: FAIL ✗ (should conflict)"; rc=1
   else echo "[policy] true-clash escalation: PASS ✓ (left as conflict)"; fi
+  rm -rf "$t"
+  swarm_mergiraf_selftest || rc=1
+  return $rc
+}
+
+# B3 selftest — the Mergiraf structural-merge FRONT-END wiring. Proves:
+#  (a) ABSENT → FAIL-OPEN: with no `mergiraf` on PATH, swarm_policy_apply registers NO driver and writes NO
+#      `* merge=mergiraf`, so git's plain 3-way merge escalates to conflict_resolver exactly as before. This
+#      is THE critical proof, since real mergiraf isn't installed on this host.
+#  (b) PRESENT (stubbed): the driver is registered, `* merge=mergiraf` FRONTS the specific data-merge rules
+#      (so package.json→structjson etc. still win via last-match), and a real git merge INVOKES the driver —
+#      resolving a FALSE (disjoint-function) conflict cleanly while leaving a GENUINE clash as markers to
+#      escalate. The stub stands in for the AST merger; it proves the front-end runs BEFORE the LLM fallback.
+swarm_mergiraf_selftest() {
+  local rc=0 t stub
+  t="$(mktemp -d)"; stub="$t/bin"; mkdir -p "$stub"
+  # stub `mergiraf`: record each invocation, then mimic mergiraf's contract — cleanly 3-way-merge what it
+  # can (exit 0), leave a genuine clash as conflict markers (exit 1) so git escalates to conflict_resolver.
+  cat > "$stub/mergiraf" <<'STUB'
+#!/usr/bin/env bash
+[ -n "${MERGIRAF_STUB_SENTINEL:-}" ] && printf '%s\n' "$*" >> "$MERGIRAF_STUB_SENTINEL"
+# driver args are: merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L  → O=$3 A=$4(ours+output) B=$5.
+# git merge-file takes <current/ours> <base> <other/theirs> and writes the result into the first arg (=%A).
+git merge-file "$4" "$3" "$5" >/dev/null 2>&1 && exit 0 || exit 1
+STUB
+  chmod +x "$stub/mergiraf"
+
+  # ---- (a) ABSENT → fail-open -------------------------------------------------------------------------
+  ( set +e
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    if command -v mergiraf >/dev/null 2>&1; then echo "SKIP(real-mergiraf-present)"; exit 0; fi
+    mkdir -p "$t/absent" && cd "$t/absent" || exit 1
+    git init -q . && git symbolic-ref HEAD refs/heads/main 2>/dev/null
+    git config user.email a@b.c; git config user.name t
+    printf '{"deps":{"a":"1"}}\n' > package.json
+    swarm_policy_apply "$PWD" >/dev/null 2>&1
+    grep -q 'merge=mergiraf' .gitattributes 2>/dev/null && { echo "FAIL(wrote mergiraf line)"; exit 1; }
+    git config --get merge.mergiraf.driver >/dev/null 2>&1 && { echo "FAIL(registered driver)"; exit 1; }
+    grep -q 'package.json merge=structjson' .gitattributes || { echo "FAIL(struct rule missing)"; exit 1; }
+    exit 0
+  ) >/dev/null 2>&1 && echo "[mergiraf] absent → fail-open (no driver / no '* merge=mergiraf'; struct rules intact): PASS ✓" \
+     || { echo "[mergiraf] absent → fail-open: FAIL ✗"; rc=1; }
+
+  # ---- (b) PRESENT (stub) → registered, fronting, invoked-first -------------------------------------
+  ( set +e
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PATH="$stub:$PATH"
+    command -v mergiraf >/dev/null 2>&1 || { echo "FAIL(stub not on PATH)"; exit 1; }
+    mkdir -p "$t/present" && cd "$t/present" || exit 1
+    git init -q . && git symbolic-ref HEAD refs/heads/main 2>/dev/null
+    git config user.email a@b.c; git config user.name t
+    printf 'func a() {\n  return 1\n}\n\nfunc b() {\n  return 2\n}\n' > foo.go
+    printf '{"deps":{"x":"1"}}\n' > package.json
+    printf 'x = 1\n' > clash.txt
+    git add -A && git commit -q -m base
+    swarm_policy_apply "$PWD" >/dev/null 2>&1
+    git add .gitattributes && git commit -q -m attrs
+    # wiring: driver registered + `* merge=mergiraf` present and ABOVE package.json's structjson rule
+    grep -qxF '* merge=mergiraf' .gitattributes || { echo "FAIL(no catch-all line)"; exit 1; }
+    git config --get merge.mergiraf.driver | grep -q 'mergiraf merge --git' || { echo "FAIL(driver not registered)"; exit 1; }
+    aln="$(grep -n '^\* merge=mergiraf$' .gitattributes | head -1 | cut -d: -f1)"
+    pln="$(grep -n 'package.json merge=structjson' .gitattributes | head -1 | cut -d: -f1)"
+    { [ -n "$aln" ] && [ -n "$pln" ] && [ "$aln" -lt "$pln" ]; } || { echo "FAIL(precedence a=$aln p=$pln)"; exit 1; }
+    # branches: theirs edits the 2nd function; main edits the 1st (disjoint) + diverges clash.txt
+    git checkout -q -b theirs
+    printf 'func a() {\n  return 1\n}\n\nfunc b() {\n  return 20\n}\n' > foo.go
+    git commit -q -am theirs
+    git checkout -q main
+    printf 'func a() {\n  return 10\n}\n\nfunc b() {\n  return 2\n}\n' > foo.go
+    printf 'x = 2\n' > clash.txt
+    git commit -q -am ours
+    ours_sha="$(git rev-parse HEAD)"
+    git checkout -q -b theirs2 theirs
+    printf 'x = 3\n' > clash.txt
+    git commit -q -am theirs-clash
+    git checkout -q main
+    # false conflict (disjoint functions) → driver resolves CLEAN, both intents kept, no markers
+    export MERGIRAF_STUB_SENTINEL="$t/sentinel1"; : > "$MERGIRAF_STUB_SENTINEL"
+    git merge --no-edit -q theirs >/dev/null 2>&1
+    [ -s "$t/sentinel1" ] || { echo "FAIL(false: driver not invoked)"; exit 1; }
+    grep -q '^<<<<<<<' foo.go && { echo "FAIL(false: unexpected markers)"; exit 1; }
+    { grep -q 'return 10' foo.go && grep -q 'return 20' foo.go; } || { echo "FAIL(false: lost an edit)"; exit 1; }
+    git reset -q --hard "$ours_sha"
+    # genuine clash → driver leaves MARKERS so it escalates to conflict_resolver
+    export MERGIRAF_STUB_SENTINEL="$t/sentinel2"; : > "$MERGIRAF_STUB_SENTINEL"
+    git merge --no-edit -q theirs2 >/dev/null 2>&1
+    [ -s "$t/sentinel2" ] || { echo "FAIL(clash: driver not invoked)"; exit 1; }
+    grep -q '^<<<<<<<' clash.txt || { echo "FAIL(clash: not escalated as markers)"; exit 1; }
+    git merge --abort 2>/dev/null
+    exit 0
+  ) >/dev/null 2>&1 && echo "[mergiraf] present(stub) → driver registered + fronts struct rules; false conflict resolved CLEAN (both intents), genuine clash escalated: PASS ✓" \
+     || { echo "[mergiraf] present(stub): FAIL ✗"; rc=1; }
+
   rm -rf "$t"; return $rc
 }
