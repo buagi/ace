@@ -1,0 +1,12 @@
+# supply-chain-allowlist.txt — the ONLY `curl … | sh|bash` remote-script installs tests/supply-chain.sh
+# permits in `ace` + `lib/*.sh`. Anything not listed here fails CI. Each entry is an upstream-maintained
+# installer whose script contents (and therefore hash) rotate on every upstream release, so pinning the
+# SCRIPT's sha256 would brick `ace install` on rotation; converting each to a pinned, sha256-verified
+# release BINARY via fetch_verified (see the jq/gh/upx/go blocks in lib/install.sh) is a separate,
+# larger follow-up tracked below. Blank lines and lines starting with '#' are ignored.
+#
+# Format (one per line):  <url-substring>   <reason + follow-up>
+fnm.vercel.app/install       fnm (Node version manager) upstream installer; rotates per release — FOLLOW-UP: replace with pinned fnm release binary via fetch_verified
+astral.sh/uv/install.sh      uv/uvx (Python tool runner for Serena) upstream installer; rotates per release — FOLLOW-UP: replace with pinned uv release binary via fetch_verified
+bun.sh/install               bun (OpenCode plugin runtime) upstream installer; rotates per release — FOLLOW-UP: replace with pinned bun release binary via fetch_verified
+opencode.ai/install          OpenCode CLI upstream installer; rotates per release — FOLLOW-UP: replace with pinned opencode release binary via fetch_verified
