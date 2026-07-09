@@ -327,6 +327,47 @@ swarm_disjoint_batch() {
   echo "$n"
 }
 
+# swarm_disjoint_plan [ROADMAP] [CAP] — the PLAN-TIME conflict-aware SCHEDULE (B2). READ-ONLY: claims
+# nothing, mutates no state. Walks OPEN roadmap items top-down and greedily packs a MAXIMAL PATH-DISJOINT
+# batch using the SAME _overlap rule swarm_next/swarm_try_claim enforce at runtime, so the plan matches
+# what workers will actually be able to claim. Each item's FOOTPRINT = swarm_paths_for_item (its leased
+# edit set ∪ the test↔source pairing ∪ the bounded, OPT-IN SWARM_IMPACT blast radius — all fail-open).
+# Classifies every item and prints TAB-separated "<tag>\t<paths>\t<item>":
+#   parallel  — footprint disjoint from every already-picked item AND the batch isn't full → run NOW
+#   serialize — footprint intersects a picked item (shares a file) OR the CAP is reached → a later lane
+#   blocked   — declared deps: not yet merged ([x]) → not claimable until its prerequisites land
+# The PARALLEL set is capped at CAP (default = SWARM_CEIL) so the plan never exceeds the worker ceiling
+# (S3). The count of `parallel` lines equals swarm_disjoint_batch (same greedy packing). Deterministic +
+# idempotent for a fixed (ROADMAP, base-main-sha): footprints are cache-keyed on the base sha inside
+# _swarm_scope_expand, so re-running at the same sha re-uses them (no re-query). Fail-open: any error
+# still yields a well-formed (possibly empty) plan — the coordinator never blocks dispatch on it.
+swarm_disjoint_plan() {
+  local roadmap="${1:-ROADMAP.md}" cap="${2:-${SWARM_CEIL:-5}}"
+  case "$cap" in *[!0-9]*|'') cap=5 ;; esac; [ "$cap" -lt 1 ] && cap=1
+  [ -f "$roadmap" ] || return 0
+  local line item paths n=0 i clash tag
+  local -a sets=()
+  while IFS= read -r line; do
+    item="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*- \[ \] //; s/[[:space:]]+$//')"
+    [ -z "$item" ] && continue
+    printf '%s' "$item" | grep -qi 'add your first' && continue
+    if ! _deps_met "$item" "$roadmap"; then
+      printf 'blocked\t%s\t%s\n' '-' "$item"; continue
+    fi
+    paths="$(swarm_paths_for_item "$item")"
+    clash=0
+    if [ "$n" -gt 0 ]; then
+      for i in "${sets[@]}"; do _overlap "$paths" "$i" && { clash=1; break; }; done
+    fi
+    if [ "$clash" = 1 ] || [ "$n" -ge "$cap" ]; then
+      tag=serialize                                    # shares a file with a picked item, or batch full
+    else
+      tag=parallel; sets+=("$paths"); n=$((n+1))       # disjoint + room → this generation's parallel batch
+    fi
+    printf '%s\t%s\t%s\n' "$tag" "$paths" "$item"
+  done < <(grep -nE '^[[:space:]]*- \[ \] ' "$roadmap")
+}
+
 # swarm_scope_stats — print the shared impact-graph cache hit/miss tally (the SWARM_IMPACT=1 path).
 # Proves the (query,base-sha) cache in _swarm_scope_expand is SHARED across workers: a query repeated at
 # the same base main sha bills as a hit, not a re-query. Empty/absent → 0/0.
@@ -571,6 +612,56 @@ swarm_selftest() {
     && echo "[selftest] PASS ✓" || { echo "[selftest] FAIL ✗"; return 1; }
 }
 
+# swarm_sched_selftest — prove the B2 plan-time scheduler (swarm_disjoint_plan) is correct + deterministic
+# on a synthetic ROADMAP with known footprints. HERMETIC: a scratch REPO with no real files, impact OFF,
+# and the policy lease-free filter neutralized, so an item's footprint is exactly the path tokens in its
+# text (no environment dependence). Asserts the core safety property (the parallel batch is pairwise
+# path-disjoint — two items sharing a file are NEVER co-scheduled), plus classification, the worker-ceiling
+# cap, agreement with swarm_disjoint_batch, and idempotency.
+swarm_sched_selftest() {
+  export SWARM_DIR; SWARM_DIR="$(mktemp -d)/swarm"; LOCK="$SWARM_DIR/.lock"; STATE="$SWARM_DIR/state.json"; MSG="$SWARM_DIR/messages.jsonl"
+  swarm_init
+  local d rm; d="$(mktemp -d)"; rm="$d/ROADMAP.md"
+  export REPO="$d"; export SWARM_IMPACT=0; _SWARM_LEASEFREE=" "   # hermetic footprints: no repo, no impact, no policy filter
+  cat > "$rm" <<'EOF'
+# ROADMAP
+## Next
+- [ ] add `foo` endpoint  Files: apps/web/foo.ts
+- [ ] add `bar` model  Files: apps/api/bar.ts
+- [ ] restyle the foo page  Files: apps/web/foo.ts
+- [ ] add `baz` util  Files: packages/util/baz.ts
+- [ ] wire baz into the CLI  Files: scripts/cli.sh  deps: baz
+EOF
+  echo "[sched-selftest] store: $SWARM_DIR  roadmap: $rm"
+  local plan; plan="$(swarm_disjoint_plan "$rm" 5)"
+  printf '%s\n' "$plan" | sed 's/^/[sched-selftest]   /'
+  # A) core safety: the PARALLEL batch is pairwise PATH-DISJOINT — no two co-scheduled items share a file.
+  local -a psets=(); local tag paths _item dis=1 np i j
+  while IFS=$'\t' read -r tag paths _item; do [ "$tag" = parallel ] && psets+=("$paths"); done <<< "$plan"
+  np="${#psets[@]}"
+  for ((i=0;i<np;i++)); do for ((j=i+1;j<np;j++)); do _overlap "${psets[i]}" "${psets[j]}" && dis=0; done; done
+  # B) classification: foo/bar/baz are the 3 disjoint → parallel; the restyle shares foo.ts → serialize;
+  #    the CLI task deps: on the still-OPEN baz → blocked.
+  local n_par n_ser n_blk restyle_tag baz_dep_tag
+  n_par="$(printf '%s\n' "$plan" | grep -c '^parallel')"
+  n_ser="$(printf '%s\n' "$plan" | grep -c '^serialize')"
+  n_blk="$(printf '%s\n' "$plan" | grep -c '^blocked')"
+  restyle_tag="$(printf '%s\n' "$plan" | awk -F'\t' '/restyle the foo/{print $1}')"
+  baz_dep_tag="$(printf '%s\n' "$plan" | awk -F'\t' '/wire baz into the CLI/{print $1}')"
+  # C) worker-ceiling cap: CAP=2 → only two go parallel, the 3rd disjoint item serializes into a later lane.
+  local n_par_cap2; n_par_cap2="$(swarm_disjoint_plan "$rm" 2 | grep -c '^parallel')"
+  # D) the plan's parallel count agrees with swarm_disjoint_batch (both use the same greedy packing).
+  local n_batch; n_batch="$(swarm_disjoint_batch "$rm" 5)"
+  # E) idempotent — same (roadmap, sha) → byte-identical plan (footprints are cache-keyed on the base sha).
+  local plan2 idem=0; plan2="$(swarm_disjoint_plan "$rm" 5)"; [ "$plan" = "$plan2" ] && idem=1
+  echo "[sched-selftest] parallel=$n_par serialize=$n_ser blocked=$n_blk  pairwise-disjoint=$dis  (expect 3/1/1/1)"
+  echo "[sched-selftest] restyle-foo=$restyle_tag (expect serialize)  baz-dependent=$baz_dep_tag (expect blocked)"
+  echo "[sched-selftest] cap=2 → parallel=$n_par_cap2 (expect 2)  ·  disjoint_batch=$n_batch == parallel=$n_par  ·  idempotent=$idem"
+  [ "$dis" = 1 ] && [ "$n_par" = 3 ] && [ "$restyle_tag" = serialize ] && [ "$baz_dep_tag" = blocked ] \
+    && [ "$n_par_cap2" = 2 ] && [ "$n_batch" = "$n_par" ] && [ "$idem" = 1 ] \
+    && echo "[sched-selftest] PASS ✓" || { echo "[sched-selftest] FAIL ✗"; return 1; }
+}
+
 # Only run the CLI when executed directly — stay quiet when sourced (swarm-run.sh).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   case "${1:-}" in
@@ -592,12 +683,14 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     statusline) swarm_statusline ;;
     paths)    swarm_paths_for_item "${2:?item text}" ;;
     selftest) swarm_selftest ;;
+    sched-selftest) swarm_sched_selftest ;;
     policy)         swarm_policy_table "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" ;;
     policy-selftest) swarm_policy_selftest ;;
     mergiraf-selftest) swarm_mergiraf_selftest ;;
     aggregate-lessons) swarm_aggregate_lessons "${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" ;;
     disjoint-batch) swarm_disjoint_batch "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
+    disjoint-plan)  swarm_disjoint_plan "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
     scope-stats)    swarm_scope_stats ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|scope-stats}" >&2; exit 2 ;;
   esac
 fi
