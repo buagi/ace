@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 # install.sh — host tools, API keys, OpenCode config, gh/git wiring.
 
+# ---------------------------------------------------------------- supply chain
+# fetch_verified <url> <sha256> <outfile> — download a release artifact and verify its sha256
+# BEFORE anything uses it. This is the ONE choke point every pinned binary install goes through
+# (jq, gh, UPX, Go); the mergiraf block predates it and inlines the same fail-closed check.
+# It FAILS CLOSED: a hash mismatch removes the artifact and refuses to install an unverified binary.
+# The return code lets each caller keep its own optional/required semantics AND tells a transient
+# NETWORK problem apart from a supply-chain INTEGRITY failure:
+#   0  downloaded and sha256 VERIFIED (safe to install)
+#   1  DOWNLOAD/NETWORK failure — nothing written (caller may treat as non-fatal / retry next run)
+#   2  SHA256 MISMATCH — FAIL CLOSED; artifact deleted; never install it (a real supply-chain event)
+# In dry-run it prints intent and returns 0 without touching the network.
+fetch_verified() {
+  local url="$1" want="$2" out="$3"
+  if [ "$ACE_DRY_RUN" = 1 ]; then
+    printf '%s %s\n' "${C_YELLOW}[dry-run]${C_RESET}" "would fetch+verify $url (sha256 ${want:0:12}…)"
+    return 0
+  fi
+  log "FETCH: $url"
+  if ! curl -fsSL "$url" -o "$out" 2>/dev/null; then
+    log "FETCH network-fail: $url"; rm -f "$out" 2>/dev/null || true; return 1
+  fi
+  if ! printf '%s  %s\n' "$want" "$out" | sha256sum -c - >/dev/null 2>&1; then
+    err "supply-chain: SHA256 MISMATCH for $url — refusing to install (expected $want, got $(sha256sum "$out" 2>/dev/null | awk '{print $1}'))"
+    log "FETCH sha256-mismatch: $url"; rm -f "$out" 2>/dev/null || true; return 2
+  fi
+  log "FETCH verified: $url"; return 0
+}
+
 # Make freshly-installed user-local tools visible to the rest of this run.
 activate_paths() {
   export PATH="$HOME/.local/bin:$HOME/.local/share/fnm:$HOME/.bun/bin:$HOME/.opencode/bin:$HOME/.local/go/bin:$HOME/go/bin:$PATH"
@@ -9,11 +37,111 @@ activate_paths() {
   [ -f "$ACE_SECRETS" ] && { set -a; . "$ACE_SECRETS"; set +a; }
 }
 
+# ---------------------------------------------------------------- pinned tool installs
+# Each tool below is PINNED to a specific version and its release artifact is sha256-verified via
+# fetch_verified BEFORE install — never `releases/latest`, never `go.dev/VERSION` (floating). Per-arch
+# hashes were computed from the real upstream artifacts with `sha256sum`. To move a pin deliberately,
+# set <TOOL>_VERSION together with a matching <TOOL>_SHA256 (same escape hatch as MERGIRAF_*). A hash
+# mismatch FAILS CLOSED (refuses to install); a download failure stays non-fatal where it already was.
+
+# jq — user-local static binary. Optional-ish: a download failure is non-fatal (retried next run).
+install_jq_verified() {
+  local ver="${JQ_VERSION:-1.8.2}" arch sha rc tmp
+  case "$(uname -m)" in
+    x86_64)        arch=amd64; sha=b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f ;;
+    aarch64|arm64) arch=arm64; sha=8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 ;;
+    *) warn "jq: unsupported arch $(uname -m) — skipping (optional)."; return 0 ;;
+  esac
+  [ "$ver" = 1.8.2 ] || sha="${JQ_SHA256:-}"
+  [ -n "$sha" ] || { warn "jq: no pinned sha256 for $ver — set JQ_SHA256 to install it (skipping)."; return 0; }
+  [ "$ACE_DRY_RUN" = 1 ] && { info "[dry-run] would install jq $ver ($arch), sha256-verified."; return 0; }
+  mkdir -p "$HOME/.local/bin"; tmp="$HOME/.local/bin/.jq.$$"
+  fetch_verified "https://github.com/jqlang/jq/releases/download/jq-${ver}/jq-linux-${arch}" "$sha" "$tmp"; rc=$?
+  case $rc in
+    0) chmod +x "$tmp" && mv -f "$tmp" "$HOME/.local/bin/jq" ;;
+    1) warn "jq: download failed — skipping (optional; retried next run)." ;;
+    *) err "jq: refused to install (sha256 mismatch) — leaving jq absent." ;;
+  esac
+  rm -f "$tmp" 2>/dev/null || true; return 0
+}
+
+# UPX — OPTIONAL release packer (tar.xz). All failures are non-fatal; a mismatch fails closed.
+install_upx_verified() {
+  local ver="${UPX_VERSION:-5.2.0}" arch sha rc d f
+  case "$(uname -m)" in
+    x86_64)        arch=amd64; sha=3db5d3294707439db97866feab8d75d800f028f48481a40547411824da4288a1 ;;
+    aarch64|arm64) arch=arm64; sha=55d48a61e8ffd17152db871c855376cba7f08e830b37799d0947a16dff8ec36c ;;
+    *) warn "upx: unsupported arch $(uname -m) — skipping (optional)."; return 0 ;;
+  esac
+  [ "$ver" = 5.2.0 ] || sha="${UPX_SHA256:-}"
+  [ -n "$sha" ] || { warn "upx: no pinned sha256 for $ver — set UPX_SHA256 to install it (skipping)."; return 0; }
+  [ "$ACE_DRY_RUN" = 1 ] && { info "[dry-run] would install UPX $ver ($arch), sha256-verified."; return 0; }
+  d="$(mktemp -d)"; f="$d/upx.tar.xz"
+  fetch_verified "https://github.com/upx/upx/releases/download/v${ver}/upx-${ver}-${arch}_linux.tar.xz" "$sha" "$f"; rc=$?
+  case $rc in
+    0) mkdir -p "$HOME/.local/bin"; tar -C "$d" -xf "$f" && install -m755 "$d/upx-${ver}-${arch}_linux/upx" "$HOME/.local/bin/upx" || warn "upx: extract/install failed (optional)." ;;
+    1) warn "upx: download failed — skipping (optional)." ;;
+    *) : ;;  # mismatch already reported by fetch_verified (fail closed)
+  esac
+  rm -rf "$d" 2>/dev/null || true; return 0
+}
+
+# Go toolchain — user-local tarball into ~/.local/go (no root). Non-fatal on failure (the Go stack's
+# gate needs it, but `ace install` proceeds). Only wipes an existing ~/.local/go AFTER a verified DL.
+install_go_verified() {
+  local ver="${GO_VERSION:-go1.26.5}" arch sha rc d f
+  case "$(uname -m)" in
+    x86_64)        arch=amd64; sha=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053 ;;
+    aarch64|arm64) arch=arm64; sha=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49 ;;
+    *) warn "go: unsupported arch $(uname -m) — skipping."; return 0 ;;
+  esac
+  [ "$ver" = go1.26.5 ] || sha="${GO_SHA256:-}"
+  [ -n "$sha" ] || { warn "go: no pinned sha256 for $ver — set GO_SHA256 to install it (skipping)."; return 0; }
+  [ "$ACE_DRY_RUN" = 1 ] && { info "[dry-run] would install Go $ver ($arch), sha256-verified."; return 0; }
+  d="$(mktemp -d)"; f="$d/go.tar.gz"
+  fetch_verified "https://go.dev/dl/${ver}.linux-${arch}.tar.gz" "$sha" "$f"; rc=$?
+  case $rc in
+    0) mkdir -p "$HOME/.local" && rm -rf "$HOME/.local/go" && tar -C "$HOME/.local" -xzf "$f" || warn "go: extract failed." ;;
+    1) warn "go: download failed — skipping (Go stack gate unavailable until next run)." ;;
+    *) : ;;  # mismatch already reported by fetch_verified (fail closed)
+  esac
+  rm -rf "$d" 2>/dev/null || true; return 0
+}
+
+# gh (GitHub CLI) — user-local tarball. Returns 0 on success, 1 on any failure (caller decides).
+install_gh_verified() {
+  local ver="${GH_VERSION:-2.96.0}" arch sha rc d f
+  case "$(uname -m)" in
+    x86_64)        arch=amd64; sha=83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60 ;;
+    aarch64|arm64) arch=arm64; sha=06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909 ;;
+    *) err "gh: unsupported arch $(uname -m)."; return 1 ;;
+  esac
+  [ "$ver" = 2.96.0 ] || sha="${GH_SHA256:-}"
+  [ -n "$sha" ] || { err "gh: no pinned sha256 for $ver — set GH_SHA256 to install it."; return 1; }
+  [ "$ACE_DRY_RUN" = 1 ] && { info "[dry-run] would install gh $ver ($arch), sha256-verified."; return 0; }
+  d="$(mktemp -d)"; f="$d/gh.tar.gz"
+  info "Downloading gh ${ver} (user-local, ${arch}; sha256-verified)…"
+  fetch_verified "https://github.com/cli/cli/releases/download/v${ver}/gh_${ver}_linux_${arch}.tar.gz" "$sha" "$f"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    mkdir -p "$HOME/.local/bin"
+    tar -xzf "$f" -C "$d" && install -m755 "$d/gh_${ver}_linux_${arch}/bin/gh" "$HOME/.local/bin/gh" || rc=1
+  fi
+  rm -rf "$d" 2>/dev/null || true
+  return "$rc"
+}
+
 # ---------------------------------------------------------------- host tools
 install_host_tools() {
   step "Host tooling (all user-local, no root)"
   info "Distro: ${ACE_DISTRO_PRETTY} (${ACE_DISTRO}, pkg=${ACE_PKG:-n/a})"
 
+  # VENDOR INSTALL SCRIPTS (fnm · uv · bun · opencode) — these four deliberately run upstream's
+  # `curl … | bash` installer. Their CONTENTS (and therefore their hash) rotate on every upstream
+  # release, so pinning the SCRIPT's sha256 would brick `ace install` whenever upstream re-cuts it;
+  # converting them to pinned release BINARIES (like jq/gh/upx/go below) is a separate, larger change.
+  # They are ALLOWLISTED (with a per-entry reason + follow-up) in tests/supply-chain-allowlist.txt and
+  # enforced by tests/supply-chain.sh — adding a NEW `curl | bash` fails CI until it is pinned or listed.
+  # FOLLOW-UP (#supply-chain): replace each with fetch_verified over a pinned release binary.
   if have fnm; then ok "fnm present ($(ver fnm))"
   else
     info "Installing fnm (Node manager)…"
@@ -36,8 +164,9 @@ install_host_tools() {
 
   if have jq; then ok "jq present ($(ver jq))"
   else
-    info "Installing jq (user-local static binary)…"
-    run_sh 'case "$(uname -m)" in aarch64|arm64) ja=arm64 ;; *) ja=amd64 ;; esac; curl -fsSL "https://github.com/jqlang/jq/releases/latest/download/jq-linux-${ja}" -o "$HOME/.local/bin/jq" && chmod +x "$HOME/.local/bin/jq"'
+    info "Installing jq v${JQ_VERSION:-1.8.2} (pinned; sha256-verified; user-local static binary)…"
+    install_jq_verified
+    have jq && ok "jq $(ver jq) (sha256-verified)"
   fi
 
   if have opencode; then ok "opencode present ($(ver opencode))"
@@ -52,8 +181,8 @@ install_host_tools() {
   # Go toolchain (user-local tarball into ~/.local/go, no root) + go-installed linters — for the Go stack's gate.
   if have go; then ok "Go present ($(go version 2>/dev/null | awk '{print $3}'))"
   else
-    info "Installing Go (user-local tarball into ~/.local/go)…"
-    run_sh 'set -e; gv="$(curl -fsSL "https://go.dev/VERSION?m=text" 2>/dev/null | head -1)"; [ -n "$gv" ] || gv=go1.23.4; case "$(uname -m)" in x86_64) ga=amd64 ;; aarch64|arm64) ga=arm64 ;; *) ga=amd64 ;; esac; curl -fsSL "https://go.dev/dl/${gv}.linux-${ga}.tar.gz" -o /tmp/ace-go.tgz && rm -rf "$HOME/.local/go" && mkdir -p "$HOME/.local" && tar -C "$HOME/.local" -xzf /tmp/ace-go.tgz && rm -f /tmp/ace-go.tgz'
+    info "Installing Go ${GO_VERSION:-go1.26.5} (pinned; sha256-verified; user-local tarball into ~/.local/go)…"
+    install_go_verified
   fi
   export PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH"
   if have go; then
@@ -62,7 +191,7 @@ install_host_tools() {
     have govulncheck || { info "Installing govulncheck (Go vuln scanner)…"; run_sh 'go install golang.org/x/vuln/cmd/govulncheck@latest >/dev/null 2>&1 || true'; }
     have gopls || { info "Installing gopls (official Go MCP server + LSP)…"; run_sh 'go install golang.org/x/tools/gopls@latest >/dev/null 2>&1 || true'; }
     have garble || { info "Installing garble (Go obfuscator for 'strong' hardened release builds)…"; run_sh 'go install mvdan.cc/garble@latest >/dev/null 2>&1 || true'; }
-    have upx || { info "Installing UPX (optional release packer; user-local)…"; run_sh 'ua=amd64; case "$(uname -m)" in aarch64|arm64) ua=arm64 ;; esac; uv=4.2.4; curl -fsSL "https://github.com/upx/upx/releases/download/v${uv}/upx-${uv}-${ua}_linux.tar.xz" -o /tmp/ace-upx.txz && tar -C /tmp -xf /tmp/ace-upx.txz && install -m755 "/tmp/upx-${uv}-${ua}_linux/upx" "$HOME/.local/bin/upx"; rm -rf /tmp/ace-upx.txz /tmp/upx-*_linux 2>/dev/null || true'; }
+    have upx || { info "Installing UPX v${UPX_VERSION:-5.2.0} (pinned; sha256-verified; optional release packer; user-local)…"; install_upx_verified; }
   fi
 
   # Mergiraf (structural/AST 3-way merge) — deterministic FRONT-END to the LLM conflict_resolver.
@@ -662,16 +791,11 @@ ensure_gh() {
   if [ "$ACE_DISTRO" = arch ] && confirm "Install via 'sudo pacman -S github-cli'?" Y; then
     run sudo pacman -S --needed github-cli; have gh && return 0
   fi
-  # user-local install (no root) — fetch latest release tarball
-  local v url tmp ga
-  v="$(curl -s https://api.github.com/repos/cli/cli/releases/latest 2>/dev/null | grep -m1 '"tag_name"' | sed 's/.*"v\?\([0-9.]*\)".*/\1/')"
-  [ -z "$v" ] && { err "Couldn't resolve latest gh version. Install gh manually."; return 1; }
-  case "$(uname -m)" in aarch64|arm64) ga=arm64 ;; *) ga=amd64 ;; esac
-  url="https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${ga}.tar.gz"
-  tmp="$(mktemp -d)"
-  info "Downloading gh ${v} (user-local, ${ga})…"
-  run_sh "curl -fsSL '$url' -o '$tmp/gh.tgz' && tar -xzf '$tmp/gh.tgz' -C '$tmp' && install -m755 '$tmp/gh_${v}_linux_${ga}/bin/gh' '$HOME/.local/bin/gh'"
-  rm -rf "$tmp"; have gh && ok "gh installed ($(ver gh))" || err "gh install failed."
+  # user-local install (no root) — PINNED + sha256-verified release tarball (see install_gh_verified;
+  # was: api.github.com/.../releases/latest → unpinned + unverified). Move the pin via GH_VERSION+GH_SHA256.
+  install_gh_verified || warn "gh: pinned install failed (network or hash) — install manually, or set GH_VERSION + GH_SHA256 to move the pin."
+  if have gh; then ok "gh installed ($(ver gh), sha256-verified)"; return 0; fi
+  err "gh install failed."; return 1
 }
 
 setup_git_github() {

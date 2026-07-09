@@ -30,3 +30,5 @@ jobs:
         run: bash tests/profile-reader.sh
       - name: generator snapshots must be current
         run: bash tests/snapshot-generators.sh
+      - name: supply-chain guard (no unpinned/unverified installs)
+        run: bash tests/supply-chain.sh
