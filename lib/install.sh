@@ -68,11 +68,15 @@ install_host_tools() {
   # Mergiraf (structural/AST 3-way merge) — deterministic FRONT-END to the LLM conflict_resolver.
   # User-local prebuilt STATIC (musl) binary → ~/.local/bin (never rpm-ostree; matches jq/upx). OPTIONAL:
   # every merge path feature-detects `mergiraf` and falls back to git + conflict_resolver when absent.
+  # SUPPLY CHAIN: the release is PINNED and its tarball is sha256-verified before install. A mismatch
+  # FAILS CLOSED (refuses to install) rather than executing an unverified binary; a download failure is
+  # non-fatal (the driver already falls open). Never resolves "latest" — that is an unpinned download.
+  # To move the pin deliberately, set MERGIRAF_VERSION together with a matching MERGIRAF_SHA256.
   if have mergiraf; then ok "mergiraf present ($(ver mergiraf 2>/dev/null))"
   else
-    info "Installing Mergiraf (structural merge driver; user-local static binary)…"
-    run_sh 'case "$(uname -m)" in x86_64) ma=x86_64 ;; aarch64|arm64) ma=aarch64 ;; *) ma="" ;; esac; [ -n "$ma" ] || { echo "mergiraf: unsupported arch $(uname -m) — skipping (optional)"; exit 0; }; mv="$(curl -fsSL https://codeberg.org/api/v1/repos/mergiraf/mergiraf/releases/latest 2>/dev/null | grep -o "\"tag_name\":\"[^\"]*\"" | head -1 | cut -d\" -f4)"; [ -n "$mv" ] || mv=v0.17.0; mkdir -p "$HOME/.local/bin" /tmp/ace-mergiraf.d && curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/${mv}/mergiraf_${ma}-unknown-linux-musl.tar.gz" -o /tmp/ace-mergiraf.tgz && tar -C /tmp/ace-mergiraf.d -xzf /tmp/ace-mergiraf.tgz && mbin="$(find /tmp/ace-mergiraf.d -type f -name mergiraf | head -1)" && [ -n "$mbin" ] && install -m755 "$mbin" "$HOME/.local/bin/mergiraf"; rm -rf /tmp/ace-mergiraf.tgz /tmp/ace-mergiraf.d 2>/dev/null || true'
-    have mergiraf && ok "Mergiraf $(ver mergiraf 2>/dev/null)" || info "Mergiraf not installed (optional) — swarm merges fall back to git + conflict_resolver."
+    info "Installing Mergiraf v0.17.0 (pinned; sha256-verified; user-local static binary)…"
+    run_sh 'mv="${MERGIRAF_VERSION:-v0.17.0}"; case "$(uname -m)" in x86_64) ma=x86_64; msum=e52f375111dba2030686e910a69536390b8f8071313ccbd39d6cc63fbf23e764 ;; aarch64|arm64) ma=aarch64; msum=ff60601cc5a7e987573685413230ced2d83b8e9f171658347de428c7edaf963b ;; *) ma="" ;; esac; [ -n "$ma" ] || { echo "mergiraf: unsupported arch $(uname -m) - skipping (optional)"; exit 0; }; [ "$mv" = v0.17.0 ] || msum="${MERGIRAF_SHA256:-}"; [ -n "$msum" ] || { echo "mergiraf: no pinned sha256 for $mv - set MERGIRAF_SHA256 to install it (skipping)"; exit 0; }; f=/tmp/ace-mergiraf.tgz; d=/tmp/ace-mergiraf.d; mkdir -p "$HOME/.local/bin" "$d"; curl -fsSL "https://codeberg.org/mergiraf/mergiraf/releases/download/${mv}/mergiraf_${ma}-unknown-linux-musl.tar.gz" -o "$f" || { echo "mergiraf: download failed - skipping (optional)"; rm -rf "$f" "$d"; exit 0; }; printf "%s  %s\n" "$msum" "$f" | sha256sum -c - >/dev/null 2>&1 || { echo "mergiraf: SHA256 MISMATCH for $mv ($ma) - refusing to install"; rm -rf "$f" "$d"; exit 0; }; tar -C "$d" -xzf "$f" && mbin="$(find "$d" -type f -name mergiraf | head -1)" && [ -n "$mbin" ] && install -m755 "$mbin" "$HOME/.local/bin/mergiraf"; rm -rf "$f" "$d" 2>/dev/null || true'
+    have mergiraf && ok "Mergiraf $(ver mergiraf 2>/dev/null) (sha256-verified)" || info "Mergiraf not installed (optional) — swarm merges fall back to git + conflict_resolver."
   fi
 
   ensure_serena_quiet
