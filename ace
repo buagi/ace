@@ -182,6 +182,7 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace verify          deep post-deploy verification agent: probe the VPS (reachability,
                       TLS, service, errors, integrations) -> triage findings into ROADMAP.md
   ace logs            tail the latest log
+  ace stats [global|N] per-subagent × worker token/cost from the opencode session DB (this project; 'global'=all projects, N=last-N-days). ACE_TELEMETRY=0 turns OFF all run logging
   ace hermes          wire loop milestones + command-back to Hermes (-> Signal/Telegram/phone)
   ace hermes mcp|webhook  ground the chat agent on this repo (Serena/GitNexus) · GitHub events->chat
   ace brain           file ACE host-lessons + repo lessons into gbrain (if present)
@@ -278,6 +279,7 @@ case "${cmd:-menu}" in
   report|triage)     _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/report.sh"
                      if [ "$cmd" = triage ] || [ "${ACE_ARG:-}" = triage ]; then ace_triage
                      else ace_report "${ACE_ARG:-note}" "${ACE_ARG2:-repo}" "manual report via ace report"; fi ;;
+  stats)             _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/telemetry.sh"; ace_stats "${ACE_ARG:-}" "${ACE_ARG2:-}" ;;
   swarm)             _sr="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; _sl="$(dirname "$(readlink -f "$0")")/lib"
                      case "${ACE_ARG:-}" in
                        start)     if [ "${ACE_ARG2:-}" = fg ]; then ( cd "$_sr" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" start )
