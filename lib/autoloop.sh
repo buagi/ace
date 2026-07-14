@@ -141,6 +141,33 @@ ci_signature(){
     { printf '# CI log tail (no error signature matched — last lines of the raw log):\n'; tail -40 "$raw"; } > "$out.d2sig" && mv -f "$out.d2sig" "$out"
   fi
 }
+# D3: per-agent token/cost report at end-of-run — aggregates the D1 `usage` rows in metrics.csv per agent,
+# names the cost HOG (usually the 4-critic panel at max effort), and appends `opencode stats` if available.
+# ONE file per run; in a swarm each worker writes its OWN .opencode/token-report.md (B1 one-file-per-worker,
+# no shared-file clash). Empty offline (needs D1's live usage rows); the aggregation is proven in
+# scratchpad/d3-tokenreport-test.sh. Fail-soft — never breaks the run report.
+token_report(){
+  local f=.opencode/metrics.csv out=.opencode/token-report.md
+  [ -f "$f" ] || return 0
+  { printf '# Token report — run %s (%s)\n\n' "${RUN_ID:-?}" "$(date +%FT%T 2>/dev/null || echo '?')"
+    printf '| agent | calls | input | cache_read | output | cache-read%% |\n|---|--:|--:|--:|--:|--:|\n'
+    awk -F, -v r="${RUN_ID:-0}" 'NR>1 && $1==r && $4=="usage" {
+        a=$5; n[a]++; chr=inp=out=0;
+        if (match($6,/cache_read=[0-9]+/)) chr=substr($6,RSTART+11,RLENGTH-11);
+        if (match($6,/in=[0-9]+/))        inp=substr($6,RSTART+3,RLENGTH-3);
+        if (match($6,/out=[0-9]+/))       out=substr($6,RSTART+4,RLENGTH-4);
+        CR[a]+=chr; IN[a]+=inp; OUT[a]+=out; TOT[a]+=inp+out
+      } END {
+        hog=""; hv=0;
+        for (a in n){ pct=(IN[a]>0?int(CR[a]*100/IN[a]):0); printf "| %s | %d | %d | %d | %d | %d%% |\n",a,n[a],IN[a],CR[a],OUT[a],pct; if(TOT[a]>hv){hv=TOT[a];hog=a} }
+        if (hog!="") printf "\n**Cost hog:** %s (~%d input+output tokens this run). If one agent dominates it is usually the HIGH-risk 4-critic panel at max effort — risk-tier the panel or shorten its prompt.\n",hog,hv
+      }' "$f"
+    printf '\n## opencode stats (per-session token/cost, if available)\n\n```\n'
+    opencode stats 2>/dev/null | head -40 || true
+    printf '```\n'
+  } > "$out" 2>/dev/null || true
+  grep -qE '^\| [A-Za-z_]+ \| [0-9]' "$out" 2>/dev/null && say "token report → .opencode/token-report.md (per-agent input/cache/output + cost hog)" || true
+}
 # Post-mortem: append THIS run's time breakdown (by phase + slowest steps) to .opencode/run-summary.txt
 # (rolling history, newest at bottom) and a closing `run` row to the CSV. Reads only this run's rows (run_id).
 write_run_summary(){
@@ -1018,6 +1045,7 @@ while :; do
   fi
 done
 write_run_summary   # post-mortem → .opencode/run-summary.txt (this run's time-by-phase + slowest steps)
+token_report        # D3: per-agent token/cost + cost-hog → .opencode/token-report.md (from D1's usage rows)
 say "──────── run report ────────"
 say "laps=$lap · features=$features · CI-fixes=$fixes · plans=$plans · conflicts=$conflicts · branch=$(branch)"
 say "policy: merge_gate=${MERGE_GATE:-remote} · auto_merge=$AUTOMERGE · deploy_kind=${DEPLOY_KIND:-service}"
