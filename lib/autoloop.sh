@@ -123,6 +123,24 @@ capture_usage(){
   [ -n "$ratio" ] && say "prefix cache-read: ${ratio}% of input (in=${inp:-?} cache_read=${chr:-0} out=${out:-0}) — target ≥60% Opus / ≥70% DeepSeek"
   return 0
 }
+# D2: reduce a raw CI / gh-run log to its ERROR SIGNATURE before it's fed back to the fixer — the model needs
+# the FAILURE, not the build noise. Keeps failing-test / error / assertion / panic / stack-frame (file:line)
+# lines, drops passing tests + build/setup noise + timestamps + ANSI + spinners, dedups, and HARD-CAPS the
+# payload (CI_SIG_LINES, default 120) so a pathological log can't blow the context. FAIL-SOFT: if nothing
+# matches, keeps a tail of the raw log rather than emptying the feedback. Proven: scratchpad/d2-cisig-test.sh.
+ci_signature(){
+  local raw="$1" out="${2:-$1}" cap="${CI_SIG_LINES:-120}" sig
+  [ -f "$raw" ] || return 0
+  sig=$(sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$raw" 2>/dev/null \
+    | grep -iE '\b(fail|failed|error|assert|assertion|expected|panic|exception|traceback|denied|undefined|referenceerror|typeerror|syntaxerror)\b|--- FAIL|✗|✘|✕|✖|×|not ok|exit (code |status )?[1-9]|::error|\[blocker\]|\[major\]|[A-Za-z0-9_./-]+\.(go|ts|tsx|js|jsx|mjs|cjs|py|rb|rs|java|php|c|cpp|h):[0-9]+|File "[^"]*", line [0-9]+|\bat .+:[0-9]+' 2>/dev/null \
+    | grep -viE '\b(0 (failed|errors?)|no (errors?|failures?)|passed|passing|✓|✔|success|all good)\b' 2>/dev/null \
+    | awk '!seen[$0]++' | head -"$cap")
+  if [ -n "$sig" ]; then
+    { printf '# CI failure signature (reduced from the raw log — the failure, not the build noise):\n'; printf '%s\n' "$sig"; } > "$out.d2sig" && mv -f "$out.d2sig" "$out"
+  else
+    { printf '# CI log tail (no error signature matched — last lines of the raw log):\n'; tail -40 "$raw"; } > "$out.d2sig" && mv -f "$out.d2sig" "$out"
+  fi
+}
 # Post-mortem: append THIS run's time breakdown (by phase + slowest steps) to .opencode/run-summary.txt
 # (rolling history, newest at bottom) and a closing `run` row to the CSV. Reads only this run's rows (run_id).
 write_run_summary(){
@@ -987,8 +1005,16 @@ while :; do
     mkdir -p .opencode
     # remote gate: pull the failed-job log. local gate (MERGE_GATE=local, $id empty): ci-failure.log already holds ./ci.sh --container output.
     [ -n "$id" ] && { gh run view "$id" --log-failed > .opencode/ci-failure.log 2>&1 || gh run view "$id" --log > .opencode/ci-failure.log 2>&1; }
+    # D2: reduce the raw log to its error signature before the fixer reads it, + dedupe across attempts so a
+    # repeated failure nudges a DIFFERENT approach instead of silently re-pasting the same noise.
+    ci_signature .opencode/ci-failure.log
+    _sig_now=$(cksum < .opencode/ci-failure.log 2>/dev/null | awk '{print $1}')
+    if [ -n "${_sig_prev:-}" ] && [ "${_sig_now:-x}" = "$_sig_prev" ]; then
+      _dedupe="NOTE: this is the SAME failure signature as your previous attempt — that fix did NOT address the ROOT CAUSE. Do something DIFFERENT (deeper diagnosis, not a repeat or a band-aid). "
+    else _dedupe=""; fi
+    _sig_prev="$_sig_now"
     agent_state implementer
-    drive "fix CI from logs" "CI failed on branch $(branch). Read .opencode/ci-failure.log, find the ROOT CAUSE (not a band-aid, not 'as any', not a skipped test), fix it properly via the full loop (impact -> implement -> verify -> both reviewers), and push. Do NOT merge." || { say "fix step failed (opencode error / model not found?) — stopping for review."; break; }
+    drive "fix CI from logs" "${_dedupe}CI failed on branch $(branch). Read .opencode/ci-failure.log (already reduced to the failure signature), find the ROOT CAUSE (not a band-aid, not 'as any', not a skipped test), fix it properly via the full loop (impact -> implement -> verify -> both reviewers), and push. Do NOT merge." || { say "fix step failed (opencode error / model not found?) — stopping for review."; break; }
   fi
 done
 write_run_summary   # post-mortem → .opencode/run-summary.txt (this run's time-by-phase + slowest steps)
