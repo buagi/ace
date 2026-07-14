@@ -1,0 +1,33 @@
+name: agent-goldens
+# Behavioural regression goldens for the read-only critics (Part F / F3, Edit 2). NIGHTLY / on-demand —
+# NEVER per-PR (tests/prompt-contracts.sh is the free per-PR gate). The `--check` step is free (validates
+# the committed goldens' schema + invariants + that the harness stays sound). The real `--capture` (live
+# critic runs) needs opencode + provider keys as repo secrets — see the commented block below.
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC nightly
+  workflow_dispatch: {}
+concurrency:
+  group: agent-goldens
+  cancel-in-progress: true
+jobs:
+  goldens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check behavioural goldens (verdict schema + invariants; reproduce-twice)
+        run: |
+          bash tests/agent-goldens.sh
+          # flake guard: a real regression must reproduce on a second run before it's actionable
+          bash tests/agent-goldens.sh
+      # --- Live capture (uncomment once opencode + provider keys are provisioned as repo secrets) ---
+      # Refreshes tests/snapshots/agents/*.txt from real critic runs, then re-checks + reports spend.
+      # - name: capture real critic verdicts + track spend
+      #   env:
+      #     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      #     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      #   run: |
+      #     curl -fsSL https://opencode.ai/install | bash        # (pin + sha256 per supply-chain policy)
+      #     bash tests/agent-goldens.sh --capture
+      #     bash tests/agent-goldens.sh                          # re-check the freshly captured goldens
+      #     ace stats 1                                          # the harness's own token/cost (telemetry)

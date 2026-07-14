@@ -1,0 +1,5 @@
+# UX / product review
+
+This diff touches only internal/scheduler/queue.go — a backend job queue with no user-facing surface. No UX findings apply (backend-only, out of scope for UX).
+
+**Verdict: APPROVE**

@@ -1,0 +1,7 @@
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -10,6 +10,7 @@ export function parseConfig(raw: string): Config {
+   const o = JSON.parse(raw);
++  if (!o || typeof o !== 'object') throw new ConfigError('config must be an object');
+   return { port: o.port ?? 3000, host: o.host ?? '127.0.0.1' };
+ }

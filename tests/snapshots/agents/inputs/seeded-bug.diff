@@ -1,0 +1,6 @@
+--- a/lib/auth.ts
++++ b/lib/auth.ts
+@@ -20,7 +20,7 @@ export function verifySession(token: string, expected: string): boolean {
+-  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
++  return token == expected;   // SEEDED BUG: loose, timing-unsafe compare — forgeable session
+ }

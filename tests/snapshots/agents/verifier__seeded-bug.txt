@@ -1,0 +1,5 @@
+# Verifier
+
+Ran ./ci.sh — RED: lib/auth.test.ts:12 "forged session rejected" FAILED.
+
+**FAIL** — see the failing assertion above.
