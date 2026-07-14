@@ -1,0 +1,5 @@
+--- a/services/billing/reconcile.ts
++++ b/services/billing/reconcile.ts
+@@ (context not provided: reconcile.ts body + its tests are outside this diff) @@
+-  // reconcile logic changed; full file not in review context
++  // claims to fix the double-charge invariant

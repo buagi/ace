@@ -72,6 +72,7 @@ for f in "$OUT"/*; do
   fi
 done
 for f in "$SNAP"/*; do
+  [ -d "$f" ] && continue   # subdirs (e.g. agents/ — F3 behavioural goldens) aren't generator snapshots
   name="$(basename "$f")"; [ -f "$OUT/$name" ] || { echo "REMOVED (snapshot has no match): $name"; fail=1; }
 done
 # YAML-validity gate: a text diff can't catch invalid YAML (e.g. ${{ }} inside a flow mapping parse-breaks).

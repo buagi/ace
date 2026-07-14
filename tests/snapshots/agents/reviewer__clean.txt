@@ -1,0 +1,6 @@
+# Engineering review
+
+Scope: adds an object-type guard to parseConfig(). Read the changed lines + callers.
+No correctness, security, or performance issue; the new branch is covered.
+
+**Verdict: APPROVE**

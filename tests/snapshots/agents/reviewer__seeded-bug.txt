@@ -1,0 +1,7 @@
+# Engineering review
+
+Scope: session token comparison in lib/auth.ts.
+
+[blocker] lib/auth.ts:23 — token compared with `==` (loose + timing-unsafe) instead of `crypto.timingSafeEqual`; an attacker can forge a session by timing. Restore the constant-time compare.
+
+**Verdict: CHANGES_REQUESTED**

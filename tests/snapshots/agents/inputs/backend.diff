@@ -1,0 +1,9 @@
+--- a/internal/scheduler/queue.go
++++ b/internal/scheduler/queue.go
+@@ -5,4 +5,7 @@ package scheduler
+ func (q *Queue) drain(ctx context.Context) error {
++	for q.len() > 0 {
++		if err := q.pop(ctx); err != nil { return err }
++	}
+ 	return nil
+ }

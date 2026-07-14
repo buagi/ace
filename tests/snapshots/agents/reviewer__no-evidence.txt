@@ -1,0 +1,5 @@
+# Engineering review
+
+The diff references services/billing/reconcile.ts but that file + its tests are not in the review context, so I cannot verify the double-charge invariant it claims to fix.
+
+**Verdict: UNVERIFIED** — need reconcile.ts + its tests before I can approve a money path.

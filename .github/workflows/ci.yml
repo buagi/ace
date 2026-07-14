@@ -32,3 +32,5 @@ jobs:
         run: bash tests/snapshot-generators.sh
       - name: supply-chain guard (no unpinned/unverified installs)
         run: bash tests/supply-chain.sh
+      - name: prompt contracts (agent output-contract regression gate — F3)
+        run: bash tests/prompt-contracts.sh
