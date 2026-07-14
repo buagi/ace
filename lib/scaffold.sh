@@ -431,10 +431,18 @@ EOF
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && MODE="container"
+[ "${1:-}" = "--launch" ] && MODE="launch"   # pre-promotion launch-readiness gate (see the launch_readiness_reviewer agent)
 [ "$MODE" = container ] && [ ! -f Containerfile ] && { echo "[ci] no Containerfile — running the host gate."; MODE="fast"; }
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+if [ "$MODE" = launch ]; then
+  section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
+  if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
+  [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
+  for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  [ "$fail" = 0 ] && { echo -e "\nLAUNCH GREEN (mechanical checks pass — now run the launch_readiness_reviewer agent for the full GO/NO-GO)"; exit 0; } || { echo -e "\nLAUNCH RED — NO-GO (fix the [blocker] artifacts above)"; exit 1; }
+fi
 section "[1/13] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
@@ -681,10 +689,18 @@ EOF
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && MODE="container"
+[ "${1:-}" = "--launch" ] && MODE="launch"   # pre-promotion launch-readiness gate (see the launch_readiness_reviewer agent)
 [ "$MODE" = container ] && [ ! -f Containerfile ] && { echo "[ci] no Containerfile — running the host gate."; MODE="fast"; }
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+if [ "$MODE" = launch ]; then
+  section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
+  if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
+  [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
+  for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  [ "$fail" = 0 ] && { echo -e "\nLAUNCH GREEN (mechanical checks pass — now run the launch_readiness_reviewer agent for the full GO/NO-GO)"; exit 0; } || { echo -e "\nLAUNCH RED — NO-GO (fix the [blocker] artifacts above)"; exit 1; }
+fi
 section "[1/12] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
@@ -1454,9 +1470,17 @@ EOF
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && MODE="container"
+[ "${1:-}" = "--launch" ] && MODE="launch"   # pre-promotion launch-readiness gate (see the launch_readiness_reviewer agent)
 [ "$MODE" = container ] && [ ! -f Containerfile ] && { echo "[ci] no Containerfile — running the host gate."; MODE="fast"; }
 export CGO_ENABLED=0 CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+if [ "$MODE" = launch ]; then
+  section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
+  if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
+  [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
+  for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  [ "$fail" = 0 ] && { echo -e "\nLAUNCH GREEN (mechanical checks pass — now run the launch_readiness_reviewer agent for the full GO/NO-GO)"; exit 0; } || { echo -e "\nLAUNCH RED — NO-GO (fix the [blocker] artifacts above)"; exit 1; }
+fi
 section "[1/13] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
@@ -2134,6 +2158,47 @@ RPGO
       ok "payment provider detected → scaffolded jobs/reconcile-payments.$_pay_ext + ROADMAP item"
     fi
   fi
+  # Launch-readiness scaffolds (C6) — idempotent, create-if-absent. The launch_readiness_reviewer agent +
+  # './ci.sh --launch' verify these before promotion to the live VPS; a backup isn't done until a restore runs.
+  mkdir -p ops
+  [ -f LAUNCH-READINESS.md ] || cat > LAUNCH-READINESS.md <<'LRMD'
+# Launch readiness — verified ONCE before promotion to the live VPS (launch_readiness_reviewer gate).
+# Legend: [ ] not-started · [~] present-untested · [x] verified. NO-GO until every BLOCK item is [x].
+
+## BLOCK (launch must not proceed until all are [x])
+- [ ] Tested restore — run ops/restore-drill.sh; ops/restore-drill.result shows rows_verified (non-zero) + RPO/RTO
+- [ ] Rollback — ops/rollback.md documents the tested revert for the last deploy
+- [ ] Secrets & env separation — prod secrets least-privilege, not in the client bundle, separated from staging
+- [ ] Money paths — webhook signature verify + reconciliation job (if the app takes payments)
+- [ ] Spend caps — token/iteration caps + a per-user/session budget (if the app calls an LLM)
+
+## WARN (note, don't block)
+- [ ] SLO + alerting (ops/slo.md: golden signals, error-rate + burn-rate)
+- [ ] Incident runbook (ops/runbook.md: symptoms -> diagnostics -> remediation)
+- [ ] Load/capacity test evidence for the expected launch traffic
+- [ ] GDPR: retention + a verifiable PII erasure path (not soft-delete only)
+- [ ] Health/readiness endpoints wired to the platform
+LRMD
+  [ -f ops/restore-drill.sh ] || { cat > ops/restore-drill.sh <<'RDSH'
+#!/usr/bin/env bash
+# Restore drill — a backup is NOT done until a restore has been executed and the data queried (AWS REL09-BP04).
+# WIRE ME: restore the LATEST backup into a scratch DB, run a data-presence query, then record the result.
+set -uo pipefail
+rows_verified=0; rpo="UNKNOWN"; rto="UNKNOWN"; status="UNVERIFIED"
+# EDIT: 1) restore latest backup into a throwaway DB  2) query key tables for row counts
+#       3) set rows_verified to the real count and rpo/rto to measured figures, then status=verified.
+echo "restore-drill: WIRE ME — restore a real backup, query it, set rows_verified/rpo/rto/status" >&2
+{ printf 'date=%s\n' "$(date -u +%FT%TZ 2>/dev/null || echo unknown)"; printf 'rows_verified=%s\n' "$rows_verified"; printf 'RPO=%s\n' "$rpo"; printf 'RTO=%s\n' "$rto"; printf 'status=%s\n' "$status"; } > ops/restore-drill.result
+echo "wrote ops/restore-drill.result (status=UNVERIFIED until you wire a real restore)"
+RDSH
+  chmod +x ops/restore-drill.sh; }
+  [ -f ops/rollback.md ] || printf '# Rollback — the tested revert path for the last deploy\n\n1. Identify the last-good release/sha.\n2. Redeploy the last-good image/binary (or git revert + redeploy).\n3. If a migration ran: apply its reverse (expand-contract makes this safe) — never drop data blind.\n4. Verify /health + a smoke check; confirm the SLO recovered.\n\nRecord the date + result of your last rollback rehearsal here.\n' > ops/rollback.md
+  [ -f ops/runbook.md ] || printf '# Incident runbook — symptoms -> diagnostics -> remediation\n\n> Committed in-repo (versioned with the code), not a wiki.\n\n## <symptom, e.g. 5xx spike>\n- Diagnose: <exact commands> (logs, /health, recent deploys)\n- Remediate: <steps>\n- Roll back: see ops/rollback.md\n' > ops/runbook.md
+  [ -f ops/slo.md ] || printf '# SLOs + alerting (golden signals)\n\n| Signal | SLO | Alert |\n|---|---|---|\n| Availability | 99.9%% | error-rate > 1%% for 5m; burn-rate fast+slow |\n| Latency | p95 < 300ms, p99 < 1s | p95 breach for 10m |\n| Errors | < 1%% 5xx | as above |\n| Saturation | CPU/mem < 80%% | sustained > 85%% |\n\nWire these to your alerting; EDIT thresholds for this service.\n' > ops/slo.md
+  for _ri in "run + verify the restore drill (ops/restore-drill.sh -> non-zero rows_verified) before promotion" "document + rehearse the rollback (ops/rollback.md); wire SLO alerts (ops/slo.md)"; do
+    grep -qF "$_ri" ROADMAP.md 2>/dev/null || { awk -v it="$_ri" 'BEGIN{d=0}{print}/^## Next/&&!d{print "- [ ] " it; d=1}END{if(!d)print "- [ ] " it}' ROADMAP.md > ROADMAP.md.tmp && mv ROADMAP.md.tmp ROADMAP.md; }
+  done
+  ok "launch-readiness scaffolds ready: LAUNCH-READINESS.md + ops/{restore-drill.sh,rollback.md,runbook.md,slo.md}"
   # Thin wrapper — the loop logic is PURE ACE (single source: lib/autoloop.sh);
   # only this project's ROADMAP/OBJECTIVES/.opencode/ci.sh are project-specific.
   { echo '#!/usr/bin/env bash'

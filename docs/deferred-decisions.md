@@ -156,3 +156,21 @@ status + the merge-queue rebase logs). Confirm the bookkeeping fix + rebase queu
 in this run; the merge-lock + shared gate cap the ceiling. The swarm wins only when features are
 genuinely independent AND the gate is fast + hermetic. Measure swarm-vs-single before investing more
 in swarm complexity.
+
+---
+
+## Launch-readiness gate (C6) — deferred extensions
+
+**Status:** deferred (2026-07-14). The `launch_readiness_reviewer` agent + `./ci.sh --launch` gate + the
+`ops/` scaffolds shipped (Part C, C6). Two extensions are intentionally NOT built:
+
+1. **Cross-family model for the launch gate.** The agent inherits the default worker model (per the
+   "prompts before models" deferral). Running the decisive GO/NO-GO on a cross-family model
+   (Opus/GPT overseer) would break DeepSeek↔DeepSeek correlated blindness for the highest-stakes
+   decision. *Trigger to revisit:* when the model-routing deferral lifts (see the Part D / D4 stub) —
+   wire it into the existing agent, don't add a new one.
+2. **Blue-green / canary + multi-region DR.** The BLOCK items (tested restore, rollback, env separation,
+   reconciliation, spend caps) are required regardless of scale; heavier infra (blue-green/canary
+   deploys, multi-region disaster recovery) is kept as a WARN because ACE targets a single VPS.
+   *Trigger to revisit:* if ACE ever promotes to more than one VPS / needs zero-downtime deploys —
+   promote the relevant WARN items to BLOCK and add the deploy-strategy checks.
