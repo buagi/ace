@@ -176,3 +176,83 @@ ace_stats(){
   [ "$rc" = 2 ] && echo "no opencode sessions matched (scope: $scope). Run the loop first, or widen with --all / --global."
   return 0
 }
+
+# --- F4: QUALITY metrics — the leading indicators telemetry's COST view doesn't cover -------------------
+# .opencode/quality-metrics.csv rows (type,agent,detail,outcome):
+#   finding,<critic>,<severity>,accepted|rejected   a critic finding + whether the implementer accepted it
+#   retry,<task>,<n>,                                CI-fix attempts for a task (catches a cheaper config
+#                                                    that causes MORE retries — a false economy)
+# The FALSE-POSITIVE rate is the most important missing metric: in an autonomous loop a wrong finding
+# doesn't just annoy — it sends the implementer to "fix" a non-bug, burning a retry and sometimes creating
+# a real defect. quality_record appends (the loop calls it at the review->fix seam); quality_report renders.
+# Gated by ACE_TELEMETRY; fail-soft.
+
+quality_record(){ # <type> <agent> <detail> [outcome]  — append one quality row
+  [ "${ACE_TELEMETRY:-1}" = 1 ] || return 0
+  mkdir -p .opencode 2>/dev/null
+  local f=.opencode/quality-metrics.csv
+  [ -f "$f" ] || printf 'type,agent,detail,outcome\n' > "$f" 2>/dev/null
+  printf '%s,%s,%s,%s\n' "$1" "${2:-?}" "$(printf '%s' "${3:-}" | tr ',\n' '; ')" "${4:-}" >> "$f" 2>/dev/null || true
+}
+
+quality_report(){ # aggregate -> .opencode/quality-report.md
+  [ "${ACE_TELEMETRY:-1}" = 1 ] || return 0
+  local f=.opencode/quality-metrics.csv out=.opencode/quality-report.md
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$f" ] || return 0
+  python3 - "$f" ".opencode/eval-report.md" <<'PY' > "$out" 2>/dev/null
+import sys, csv, math
+from collections import defaultdict
+f, evalrep = sys.argv[1], sys.argv[2]
+crit = defaultdict(lambda: [0,0])   # critic -> [total, rejected]
+retries = []
+with open(f) as fh:
+    for r in csv.reader(fh):
+        if not r or r[0] in ('type',''): continue
+        r=(r+['','','',''])[:4]
+        if r[0]=='finding':
+            crit[r[1]][0]+=1
+            if r[3].strip().lower()=='rejected': crit[r[1]][1]+=1
+        elif r[0]=='retry':
+            try: retries.append(int(r[2]))
+            except: pass
+def wilson(k,n,z=1.96):
+    if n==0: return (0,0,0)
+    p=k/n; d=1+z*z/n; c=(p+z*z/(2*n))/d; h=(z*math.sqrt(p*(1-p)/n+z*z/(4*n*n)))/d
+    return (p,max(0,c-h),min(1,c+h))
+print("# Quality report  (leading indicators — predict pass^k / escaped-bug that the nightly eval measures)\n")
+print("## Critic false-positive rate  (rejected findings ÷ total — target <10%, <5% good, >20% = noise, prune it)")
+if crit:
+    print("| critic | findings | rejected | FP rate | flag |")
+    print("|---|--:|--:|--:|:--|")
+    for c in sorted(crit, key=lambda c:-(crit[c][1]/crit[c][0] if crit[c][0] else 0)):
+        t,rej=crit[c]; p,lo,hi=wilson(rej,t)
+        flag = "🔴 NOISE — prune/tighten" if p>0.20 else ("✅ good" if p<0.05 else "ok")
+        print(f"| {c} | {t} | {rej} | {p*100:.0f}% (CI {lo*100:.0f}–{hi*100:.0f}%) | {flag} |")
+else:
+    print("_no critic findings recorded yet — the loop records them at the review→fix seam on live runs._")
+print("\n## Retry / rework rate  (CI-fix attempts per task — a config causing MORE retries is a false economy)")
+if retries:
+    import statistics
+    print(f"- tasks: {len(retries)} · mean fixes/task: **{statistics.mean(retries):.2f}** · max: {max(retries)} · zero-retry: {sum(1 for x in retries if x==0)}/{len(retries)}")
+else:
+    print("_no retry rows yet (loop logs `retry,<task>,<n>`); the run summary's ci_fixes counter is the live source._")
+print("\n## Escaped-bug rate  (LAGGING — the honest measure of whether the verifier+critic panel earns its cost)")
+esc="_run the nightly eval (tests/eval-run.sh → eval-report.sh) — it computes escaped-bug from the seeded-mutant tasks._"
+try:
+    for line in open(evalrep):
+        if 'escaped-bug' in line.lower(): esc="- from the eval: "+line.strip().lstrip('- '); break
+except: pass
+print(esc)
+print("\n_Leading (critic FP, retry, tokens/task via `ace stats`) move first and predict the lagging (pass^k, escaped-bug) the nightly eval measures._")
+PY
+  command -v say >/dev/null 2>&1 && say "quality report → .opencode/quality-report.md (per-critic FP rate + retry rate)"
+}
+
+# ace quality — on-demand quality report (per-critic FP rate, retry rate, escaped-bug)
+ace_quality(){
+  telemetry_on || { echo "telemetry is OFF (ACE_TELEMETRY=0) — nothing logged."; return 0; }
+  quality_report
+  [ -f .opencode/quality-report.md ] && cat .opencode/quality-report.md \
+    || echo "no quality metrics yet — the loop records critic findings + resolutions (.opencode/quality-metrics.csv) as it runs."
+}

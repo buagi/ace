@@ -1122,6 +1122,7 @@ while :; do
 done
 write_run_summary   # post-mortem → .opencode/run-summary.txt (this run's time-by-phase + slowest steps)
 subagent_report     # per-subagent × worker tokens/cost from the opencode session DB → .opencode/token-report.md (falls back to token_report if the DB is unavailable)
+command -v quality_report >/dev/null 2>&1 && quality_report   # F4: per-critic FP + retry + escaped-bug → .opencode/quality-report.md (leading quality indicators)
 say "──────── run report ────────"
 say "laps=$lap · features=$features · CI-fixes=$fixes · plans=$plans · conflicts=$conflicts · branch=$(branch)"
 say "policy: merge_gate=${MERGE_GATE:-remote} · auto_merge=$AUTOMERGE · deploy_kind=${DEPLOY_KIND:-service}"
