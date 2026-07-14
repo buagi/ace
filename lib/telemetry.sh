@@ -22,17 +22,17 @@ _telemetry_db(){
   printf '%s' "$HOME/.local/share/opencode/opencode.db"   # per-worker DB may not exist for a solo run
 }
 
-# _telemetry_render <since_ms> <root_prefix> <scope_label>  — print the markdown report to stdout.
+# _telemetry_render <since_ms> <root_prefix> <scope_label> [by:agent|task]  — print the markdown report.
 # rc 0 = report printed · 1 = unavailable (no python3/DB) · 2 = no sessions matched.
 _telemetry_render(){
-  local db since="${1:-0}" root="${2:-}" scope="${3:-}"
+  local db since="${1:-0}" root="${2:-}" scope="${3:-}" by="${4:-agent}"
   db="$(_telemetry_db)"
   [ -f "$db" ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
-  python3 - "$db" "$since" "$root" "$scope" "${RUN_ID:-?}" <<'PY'
+  python3 - "$db" "$since" "$root" "$scope" "$by" "${RUN_ID:-?}" <<'PY'
 import sqlite3, sys, re
 from collections import defaultdict
-db, since, root, scope, run_id = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3], sys.argv[4], sys.argv[5]
+db, since, root, scope, by, run_id = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 try:
     con = sqlite3.connect(f'file:{db}?mode=ro', uri=True); con.execute('PRAGMA busy_timeout=2000'); cur = con.cursor()
 except Exception:
@@ -40,16 +40,7 @@ except Exception:
 where, args = ["time_created >= ?"], [since]
 if root:
     where.append("(directory = ? OR directory LIKE ?)"); args += [root, root.rstrip('/') + '/%']
-try:
-    rows = cur.execute(
-        "SELECT directory, COALESCE(NULLIF(agent,''),'(root)') ag, model, COUNT(*) n, "
-        "SUM(tokens_input), SUM(tokens_cache_read), SUM(tokens_cache_write), "
-        "SUM(tokens_output), SUM(tokens_reasoning), SUM(cost) "
-        "FROM session WHERE " + " AND ".join(where) + " GROUP BY directory, ag, model", args).fetchall()
-except Exception:
-    sys.exit(1)
-if not rows:
-    sys.exit(2)
+W = " AND ".join(where)
 def worker(d):
     m = re.search(r'worktrees/([^/]+)', d or ''); return m.group(1) if m else 'main'
 def h(n):
@@ -67,32 +58,74 @@ def cachepct(inp, cr):
     # cache-hit% = cached input / TOTAL prompt (fresh input + cache_read); opencode's tokens_input is
     # the FRESH (uncached) portion only, so dividing by it alone yields nonsense >100%.
     t = (inp or 0) + (cr or 0); return int((cr or 0)*100/t) if t else 0
-agg = defaultdict(lambda: [0,0,0,0,0,0,0.0]); model = {}
-for d,ag,mdl,n,tin,tcr,tcw,tout,treas,cost in rows:
-    k=(worker(d),ag); a=agg[k]
-    a[0]+=n; a[1]+=tin or 0; a[2]+=tcr or 0; a[3]+=tcw or 0; a[4]+=tout or 0; a[5]+=treas or 0; a[6]+=cost or 0.0
-    model[k]=modelname(mdl)
-T=[0,0,0,0,0,0,0.0]
-for a in agg.values():
-    for i in range(6): T[i]+=a[i]
-    T[6]+=a[6]
+try:
+    if by == 'task':
+        rows = cur.execute(
+            "SELECT id, parent_id, COALESCE(NULLIF(agent,''),'(root)'), COALESCE(NULLIF(title,''),'(untitled)'), "
+            "directory, tokens_input, tokens_cache_read, tokens_output, cost FROM session WHERE " + W, args).fetchall()
+    else:
+        rows = cur.execute(
+            "SELECT directory, COALESCE(NULLIF(agent,''),'(root)') ag, model, COUNT(*) n, "
+            "SUM(tokens_input), SUM(tokens_cache_read), SUM(tokens_cache_write), "
+            "SUM(tokens_output), SUM(tokens_reasoning), SUM(cost) "
+            "FROM session WHERE " + W + " GROUP BY directory, ag, model", args).fetchall()
+except Exception:
+    sys.exit(1)
+if not rows:
+    sys.exit(2)
 print(f"# Token & cost report — {scope}")
 print(f"\n_run `{run_id}` · source: opencode session DB (authoritative per-subagent)_\n")
-print("| worker | subagent | model | sess | input | cache_read | cache% | output | cost |")
-print("|---|---|---|--:|--:|--:|--:|--:|--:|")
-for (wk,ag) in sorted(agg, key=lambda k: -agg[k][6]):
-    a=agg[(wk,ag)]; pct=cachepct(a[1],a[2])
-    print(f"| {wk} | {ag} | {model.get((wk,ag),'')} | {a[0]} | {h(a[1])} | {h(a[2])} | {pct}% | {h(a[4])} | ${a[6]:.4f} |")
-tpct=cachepct(T[1],T[2])
-print(f"| **TOTAL** | | | **{T[0]}** | **{h(T[1])}** | **{h(T[2])}** | **{tpct}%** | **{h(T[4])}** | **${T[6]:.2f}** |")
-# cost hog + cache efficiency — the two actionable signals
-if agg:
-    hog=max(agg, key=lambda k: agg[k][6]); hv=agg[hog][6]
-    share=int(hv*100/T[6]) if T[6] else 0
-    print(f"\n**Cost hog:** `{hog[1]}` on `{hog[0]}` — ${hv:.2f} ({share}% of the total). "
-          f"If a single agent dominates it is usually the overseer holding context or the HIGH-risk critic panel at max effort — risk-tier the panel or shorten its prompt.")
-    print(f"\n**Cache efficiency:** {tpct}% of input served from prefix cache "
-          f"(target ≥60% Opus / ≥70% DeepSeek). cache_write={h(T[3])}, reasoning={h(T[5])} tokens.")
+
+if by == 'task':
+    # roll every subagent session up to its ROOT task: walk parent_id to the top-most in-scope session,
+    # whose title is the ROADMAP item the run was working. Answers "which task cost what, how many agents".
+    sess = {r[0]: r for r in rows}
+    def rootkey(sid):
+        seen = set()
+        while sid in sess and sess[sid][1] and sess[sid][1] in sess and sid not in seen:
+            seen.add(sid); sid = sess[sid][1]
+        r = sess.get(sid)
+        return (worker(r[4]), r[3]) if r else ('main', '(untitled)')
+    agg = defaultdict(lambda: [0, set(), 0, 0, 0, 0.0])   # sess, agents, in, cache_read, out, cost
+    for r in rows:
+        a = agg[rootkey(r[0])]
+        a[0]+=1; a[1].add(r[2]); a[2]+=r[5] or 0; a[3]+=r[6] or 0; a[4]+=r[7] or 0; a[5]+=r[8] or 0.0
+    T=[0,0,0,0,0.0]
+    for a in agg.values():
+        T[0]+=a[0]; T[1]+=a[2]; T[2]+=a[3]; T[3]+=a[4]; T[4]+=a[5]
+    print("| task | worker | subagents | sess | input | cache_read | output | cost |")
+    print("|---|---|--:|--:|--:|--:|--:|--:|")
+    for k in sorted(agg, key=lambda k: -agg[k][5]):
+        a=agg[k]
+        print(f"| {k[1][:48]} | {k[0]} | {len(a[1])} | {a[0]} | {h(a[2])} | {h(a[3])} | {h(a[4])} | ${a[5]:.4f} |")
+    print(f"| **TOTAL** | | | **{T[0]}** | **{h(T[1])}** | **{h(T[2])}** | **{h(T[3])}** | **${T[4]:.2f}** |")
+    if agg:
+        hog=max(agg, key=lambda k: agg[k][5]); hv=agg[hog][5]; share=int(hv*100/T[4]) if T[4] else 0
+        print(f"\n**Costliest task:** `{hog[1][:60]}` on `{hog[0]}` — ${hv:.2f} ({share}% of the total, {len(agg[hog][1])} subagents).")
+else:
+    agg = defaultdict(lambda: [0,0,0,0,0,0,0.0]); model = {}
+    for d,ag,mdl,n,tin,tcr,tcw,tout,treas,cost in rows:
+        k=(worker(d),ag); a=agg[k]
+        a[0]+=n; a[1]+=tin or 0; a[2]+=tcr or 0; a[3]+=tcw or 0; a[4]+=tout or 0; a[5]+=treas or 0; a[6]+=cost or 0.0
+        model[k]=modelname(mdl)
+    T=[0,0,0,0,0,0,0.0]
+    for a in agg.values():
+        for i in range(6): T[i]+=a[i]
+        T[6]+=a[6]
+    print("| worker | subagent | model | sess | input | cache_read | cache% | output | cost |")
+    print("|---|---|---|--:|--:|--:|--:|--:|--:|")
+    for (wk,ag) in sorted(agg, key=lambda k: -agg[k][6]):
+        a=agg[(wk,ag)]; pct=cachepct(a[1],a[2])
+        print(f"| {wk} | {ag} | {model.get((wk,ag),'')} | {a[0]} | {h(a[1])} | {h(a[2])} | {pct}% | {h(a[4])} | ${a[6]:.4f} |")
+    tpct=cachepct(T[1],T[2])
+    print(f"| **TOTAL** | | | **{T[0]}** | **{h(T[1])}** | **{h(T[2])}** | **{tpct}%** | **{h(T[4])}** | **${T[6]:.2f}** |")
+    if agg:
+        hog=max(agg, key=lambda k: agg[k][6]); hv=agg[hog][6]
+        share=int(hv*100/T[6]) if T[6] else 0
+        print(f"\n**Cost hog:** `{hog[1]}` on `{hog[0]}` — ${hv:.2f} ({share}% of the total). "
+              f"If a single agent dominates it is usually the overseer holding context or the HIGH-risk critic panel at max effort — risk-tier the panel or shorten its prompt.")
+        print(f"\n**Cache efficiency:** {tpct}% of input served from prefix cache "
+              f"(target ≥60% Opus / ≥70% DeepSeek). cache_write={h(T[3])}, reasoning={h(T[5])} tokens.")
 PY
 }
 
@@ -114,25 +147,31 @@ subagent_report(){
   command -v token_report >/dev/null 2>&1 && token_report   # fallback: legacy metrics.csv aggregate
 }
 
-# ace_stats — ON-DEMAND CLI: `ace stats [--days N|--all|--global]`. Prints the same report to stdout
-# for the current project (default: all time) or --global (every project).
+# ace_stats — ON-DEMAND CLI: `ace stats [global] [N] [task]`. Prints the report to stdout for the
+# current project (default: all time) or 'global' (every project); 'task' (or --by task) rolls up by
+# ROADMAP task instead of the default per-subagent view; a bare number / --days N windows to N days.
 ace_stats(){
   telemetry_on || { echo "telemetry is OFF (ACE_TELEMETRY=0) — nothing logged."; return 0; }
-  local days="" all=1 global=0 since=0 root scope
+  local days="" all=1 global=0 since=0 root scope by=agent
   while [ $# -gt 0 ]; do
     case "$1" in
       --days) days="${2:-7}"; all=0; shift; [ $# -gt 0 ] && shift ;;
       --days=*) days="${1#*=}"; all=0; shift ;;
       --all|all) all=1; days=""; shift ;;
       --global|global) global=1; shift ;;
+      --by) by="${2:-agent}"; shift; [ $# -gt 0 ] && shift ;;
+      --by=*) by="${1#*=}"; shift ;;
+      task|--task) by=task; shift ;;
+      agent|--agent) by=agent; shift ;;
       [0-9]*) days="$1"; all=0; shift ;;      # bare number = last-N-days (fits `ace stats 7`)
       *) shift ;;
     esac
   done
+  [ "$by" = task ] || by=agent   # normalize any unrecognized --by value
   if [ -n "$days" ]; then since=$(( ( $(date +%s) - days*86400 ) * 1000 )); fi
-  if [ "$global" = 1 ]; then root=""; scope="ALL projects$([ -n "$days" ] && echo ", last ${days}d")";
-  else root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; scope="$(basename "$root")$([ -n "$days" ] && echo " · last ${days}d" || echo " · all time")"; fi
-  local rc; _telemetry_render "$since" "$root" "$scope"; rc=$?
+  if [ "$global" = 1 ]; then root=""; scope="ALL projects$([ -n "$days" ] && echo ", last ${days}d")$([ "$by" = task ] && echo " · by task")";
+  else root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; scope="$(basename "$root")$([ -n "$days" ] && echo " · last ${days}d" || echo " · all time")$([ "$by" = task ] && echo " · by task")"; fi
+  local rc; _telemetry_render "$since" "$root" "$scope" "$by"; rc=$?
   [ "$rc" = 1 ] && echo "no per-subagent telemetry available (needs python3 + opencode's session DB at ${OPENCODE_DB:-~/.local/share/opencode/opencode.db})."
   [ "$rc" = 2 ] && echo "no opencode sessions matched (scope: $scope). Run the loop first, or widen with --all / --global."
   return 0
