@@ -1,0 +1,7 @@
+--- a/parse.sh
++++ b/parse.sh
+@@ -1,3 +1,3 @@
+ #!/usr/bin/env bash
+ # parse KEY=VALUE -> prints VALUE. BUG: accepts empty/malformed input silently.
+-parse(){ printf '%s' "$1" | cut -d= -f2; }
++parse(){ case "$1" in *=*) : ;; *) echo "error: expected KEY=VALUE" >&2; return 1 ;; esac; printf '%s' "$1" | cut -d= -f2; }
