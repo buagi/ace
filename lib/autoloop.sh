@@ -30,6 +30,7 @@ CLAUDE_RESET_WAIT="${CLAUDE_RESET_WAIT:-21600}"  # keep polling this long (6h �
 CLAUDE_POLL="${CLAUDE_POLL:-120}"                # poll interval while waiting — resumes within ~this long of a reset
 OPENCODE_TIMEOUT="${OPENCODE_TIMEOUT:-2700}"     # base per-run budget (s, +50%); on overrun it's a BIG TASK -> retried with a larger budget (not failed)
 OPENCODE_TIMEOUT_MAX="${OPENCODE_TIMEOUT_MAX:-8100}"  # ceiling (s, +50%) the escalating big-task budget grows to
+export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS="${OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS:-300000}"  # E4: raise the inner bash cap to 5m for legit-long commands (opencode env, verified present on 1.17.x). The 120s streamText step ceiling (#25509) may STILL fire — so keep the FULL/--container build OUT of the inner agent loop (FAST ci.sh inner; FULL at the merge gate).
 OPENCODE_RETRIES="${OPENCODE_RETRIES:-2}"        # extra big-task attempts (each with a larger budget) before stopping for review
 HEARTBEAT="${HEARTBEAT:-60}"                     # seconds between live "still running" elapsed/remaining ticks
 WATCH_POLL="${WATCH_POLL:-10}"                    # seconds between activity samples (budget-accounting granularity)
