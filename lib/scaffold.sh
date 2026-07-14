@@ -435,7 +435,7 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
-section "[1/8] Build + test ($MODE)"
+section "[1/9] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
   podman image prune -f >/dev/null 2>&1 || true  # reclaim this build's dangling layers (prevents disk bloat)
@@ -458,18 +458,18 @@ else
   # full suite under vitest --coverage (provider: @vitest/coverage-v8). No % threshold — gaps, not numbers.
   [ "${COVERAGE:-}" = 1 ] && { echo "[ci] coverage (vitest --coverage; informational)"; pnpm -r exec vitest run --coverage || true; }
 fi
-section "[2/8] Env integrity — process.env vars declared in .env.example"
+section "[2/9] Env integrity — process.env vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
 used=$(grep -rhoP 'process\.env\.\K[A-Z0-9_]+' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' apps packages 2>/dev/null | sort -u | grep -vE '^(NODE_ENV|NEXT_|__NEXT_|VERCEL|PORT)$')
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars:"; echo "$miss"; fail=1; }
-section "[3/8] Typecheck + lint (no any / no @ts-ignore / no unused)"
+section "[3/9] Typecheck + lint (no any / no @ts-ignore / no unused)"
 pnpm -r --if-present typecheck >/tmp/ci-tc.log 2>&1 || { echo "RED: typecheck"; tail -20 /tmp/ci-tc.log; fail=1; }
 pnpm lint >/tmp/ci-lint.log 2>&1 || { echo "RED: lint (any / @ts-ignore / unused)"; tail -30 /tmp/ci-lint.log; fail=1; }
-section "[4/8] No stubs / placeholders (depth gate)"
+section "[4/9] No stubs / placeholders (depth gate)"
 stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE '/(node_modules|dist|\.next|brownfield|\.serena)/' | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move real notes to .opencode/specs/):"; echo "$stub"; fail=1; }
-section "[5/8] Client-bundle secret scan (leaked provider/service keys)"
+section "[5/9] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
 # source, never server-only .env. Add literal substrings to .ci-secretignore to suppress false positives.
 csec_dirs=""; for d in dist build .next public; do [ -d "$d" ] && csec_dirs="$csec_dirs $d"; done
@@ -479,7 +479,7 @@ if [ -n "$csec_dirs" ]; then
   if [ -n "$csec_hits" ] && [ -s .ci-secretignore ]; then csec_hits=$(printf '%s\n' "$csec_hits" | grep -vFf <(grep -v '^$' .ci-secretignore) || true); fi
   if [ -n "$csec_hits" ]; then echo "RED [blocker]: secret/credential shipped in client bundle — move it to server-only env:"; printf '%s\n' "$csec_hits" | head -20; fail=1; else echo "(client bundle clean)"; fi
 else echo "(no client bundle dir — skipping)"; fi
-section "[6/8] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
+section "[6/9] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
 if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
   rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
@@ -491,7 +491,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
-section "[7/8] LLM call-site guards (cost / abuse)"
+section "[7/9] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
@@ -500,7 +500,21 @@ if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-
     grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
-section "[8/8] New source needs tests (parity/CI tier only — never blocks the fast pre-commit)"
+section "[8/9] Webhook handler integrity (payment/event webhooks)"
+# Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
+wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
+money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
+if [ -n "$money_wh" ]; then
+  wh_sig='constructEvent|verifyHeader|verifySignature|Stripe-Signature|X-Hub-Signature|createHmac|compare_digest|hmac\.new|ConstructEvent|ValidateSignature|WebhookSignature'
+  if printf '%s\n' "$money_wh" | xargs grep -lIE "$wh_sig" 2>/dev/null | grep -q .; then
+    echo "(webhook signature verification present)"
+    wh_dedupe='event[._]?id|eventId|idempotenc|processed|dedup|on conflict|already|\bseen\b'
+    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || echo "WARN [major]: money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
+  else
+    echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
+  fi
+else echo "(no payment webhook handler — skipping)"; fi
+section "[9/9] New source needs tests (parity/CI tier only — never blocks the fast pre-commit)"
 if [ "$MODE" = container ]; then
   base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || true)"
   if [ -n "$base" ]; then
@@ -628,7 +642,7 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
-section "[1/7] Build + test ($MODE)"
+section "[1/8] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
   podman image prune -f >/dev/null 2>&1 || true  # reclaim this build's dangling layers (prevents disk bloat)
@@ -638,17 +652,17 @@ else
   if python -c 'import pytest_cov' >/dev/null 2>&1; then python -m pytest -q --ignore=brownfield --cov=src --cov-report=term-missing:skip-covered || fail=1
   else python -m pytest -q --ignore=brownfield || fail=1; fi
 fi
-section "[2/7] Env integrity — os.getenv vars declared in .env.example"
+section "[2/8] Env integrity — os.getenv vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
 used=$(grep -rhoP 'os\.(getenv|environ\.get)\("\K[A-Z0-9_]+' --include='*.py' . 2>/dev/null | sort -u)
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars:"; echo "$miss"; fail=1; }
-section "[3/7] Compile"
+section "[3/8] Compile"
 python -m py_compile $(find . -name '*.py' -not -path './.serena/*' -not -path './brownfield/*') 2>/tmp/ci-pc.log || { echo "RED: compile"; cat /tmp/ci-pc.log; fail=1; }
-section "[4/7] No stubs / placeholders (depth gate)"
+section "[4/8] No stubs / placeholders (depth gate)"
 stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE '/(node_modules|dist|\.next|brownfield|\.serena)/' | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move real notes to .opencode/specs/):"; echo "$stub"; fail=1; }
-section "[5/7] Client-bundle secret scan (leaked provider/service keys)"
+section "[5/8] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
 # source, never server-only .env. Add literal substrings to .ci-secretignore to suppress false positives.
 csec_dirs=""; for d in dist build .next public; do [ -d "$d" ] && csec_dirs="$csec_dirs $d"; done
@@ -658,7 +672,7 @@ if [ -n "$csec_dirs" ]; then
   if [ -n "$csec_hits" ] && [ -s .ci-secretignore ]; then csec_hits=$(printf '%s\n' "$csec_hits" | grep -vFf <(grep -v '^$' .ci-secretignore) || true); fi
   if [ -n "$csec_hits" ]; then echo "RED [blocker]: secret/credential shipped in client bundle — move it to server-only env:"; printf '%s\n' "$csec_hits" | head -20; fail=1; else echo "(client bundle clean)"; fi
 else echo "(no client bundle dir — skipping)"; fi
-section "[6/7] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
+section "[6/8] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
 if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
   rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
@@ -670,7 +684,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
-section "[7/7] LLM call-site guards (cost / abuse)"
+section "[7/8] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
@@ -679,6 +693,20 @@ if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-
     grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
+section "[8/8] Webhook handler integrity (payment/event webhooks)"
+# Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
+wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
+money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
+if [ -n "$money_wh" ]; then
+  wh_sig='constructEvent|verifyHeader|verifySignature|Stripe-Signature|X-Hub-Signature|createHmac|compare_digest|hmac\.new|ConstructEvent|ValidateSignature|WebhookSignature'
+  if printf '%s\n' "$money_wh" | xargs grep -lIE "$wh_sig" 2>/dev/null | grep -q .; then
+    echo "(webhook signature verification present)"
+    wh_dedupe='event[._]?id|eventId|idempotenc|processed|dedup|on conflict|already|\bseen\b'
+    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || echo "WARN [major]: money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
+  else
+    echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
+  fi
+else echo "(no payment webhook handler — skipping)"; fi
 [ "$fail" = 0 ] && { echo -e "\nCI GREEN ($MODE)"; exit 0; } || { echo -e "\nCI RED ($MODE)"; exit 1; }
 EOF
   chmod +x ci.sh
@@ -1343,7 +1371,7 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 [ "$MODE" = container ] && [ ! -f Containerfile ] && { echo "[ci] no Containerfile — running the host gate."; MODE="fast"; }
 export CGO_ENABLED=0 CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
-section "[1/8] Build + test ($MODE)"
+section "[1/9] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
   podman image prune -f >/dev/null 2>&1 || true   # reclaim this build's dangling layers
@@ -1362,20 +1390,20 @@ else
   # coverage is a SIGNAL, not a gate (no blanket % target — that just invites gaming): print the total.
   [ -f coverage.out ] && go tool cover -func=coverage.out 2>/dev/null | tail -1
 fi
-section "[2/8] Format — gofmt"
+section "[2/9] Format — gofmt"
 unf=$(gofmt -l $(find . -name '*.go' -not -path './brownfield/*' -not -path './.serena/*') 2>/dev/null)
 [ -n "$unf" ] && { echo "RED: gofmt — run 'gofmt -w .':"; echo "$unf"; fail=1; }
-section "[3/8] staticcheck (if installed)"
+section "[3/9] staticcheck (if installed)"
 if command -v staticcheck >/dev/null 2>&1; then staticcheck ./... || fail=1; else echo "(staticcheck not on PATH — 'ace install' adds it; skipping)"; fi
-section "[4/8] Env integrity — os.Getenv vars declared in .env.example"
+section "[4/9] Env integrity — os.Getenv vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
 used=$(grep -rhoP 'os\.Getenv\("\K[A-Z0-9_]+' --include='*.go' . 2>/dev/null | sort -u)
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars (add to .env.example):"; echo "$miss"; fail=1; }
-section "[5/8] No stubs / placeholders (depth gate)"
+section "[5/9] No stubs / placeholders (depth gate)"
 stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|panic\("?TODO' --include='*.go' cmd internal pkg 2>/dev/null | grep -vE '/(brownfield|\.serena)/' | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move notes to .opencode/specs/):"; echo "$stub"; fail=1; }
-section "[6/8] Client-bundle secret scan (leaked provider/service keys)"
+section "[6/9] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
 # source, never server-only .env. Add literal substrings to .ci-secretignore to suppress false positives.
 csec_dirs=""; for d in dist build .next public; do [ -d "$d" ] && csec_dirs="$csec_dirs $d"; done
@@ -1385,7 +1413,7 @@ if [ -n "$csec_dirs" ]; then
   if [ -n "$csec_hits" ] && [ -s .ci-secretignore ]; then csec_hits=$(printf '%s\n' "$csec_hits" | grep -vFf <(grep -v '^$' .ci-secretignore) || true); fi
   if [ -n "$csec_hits" ]; then echo "RED [blocker]: secret/credential shipped in client bundle — move it to server-only env:"; printf '%s\n' "$csec_hits" | head -20; fail=1; else echo "(client bundle clean)"; fi
 else echo "(no client bundle dir — skipping)"; fi
-section "[7/8] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
+section "[7/9] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
 if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
   rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
@@ -1397,7 +1425,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
-section "[8/8] LLM call-site guards (cost / abuse)"
+section "[8/9] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent|CreateChatCompletion|CreateMessage|CreateCompletion' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
@@ -1406,6 +1434,20 @@ if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-
     grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
+section "[9/9] Webhook handler integrity (payment/event webhooks)"
+# Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
+wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
+money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
+if [ -n "$money_wh" ]; then
+  wh_sig='constructEvent|verifyHeader|verifySignature|Stripe-Signature|X-Hub-Signature|createHmac|compare_digest|hmac\.new|ConstructEvent|ValidateSignature|WebhookSignature'
+  if printf '%s\n' "$money_wh" | xargs grep -lIE "$wh_sig" 2>/dev/null | grep -q .; then
+    echo "(webhook signature verification present)"
+    wh_dedupe='event[._]?id|eventId|idempotenc|processed|dedup|on conflict|already|\bseen\b'
+    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || echo "WARN [major]: money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
+  else
+    echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
+  fi
+else echo "(no payment webhook handler — skipping)"; fi
 [ "$fail" = 0 ] && { echo -e "\nCI GREEN ($MODE)"; exit 0; } || { echo -e "\nCI RED ($MODE)"; exit 1; }
 EOF
   chmod +x ci.sh
@@ -1896,6 +1938,73 @@ Goal: deepen and harden existing features (correctness, tests, robustness) where
 
 ## Done
 EOF
+  # Payment reconciliation stub — scaffolded ONLY when a payment provider is already a dependency
+  # (idempotent; a clean no-op on a greenfield skeleton). Reconciliation catches silent drift between the
+  # provider and the local DB; the loop wires + schedules it (see the appended ROADMAP item).
+  if ! ls jobs/reconcile-payments.* >/dev/null 2>&1; then
+    _pay_re='stripe|paypal|braintree|square|paddle|lemonsqueez|razorpay'
+    _pay_ext=""
+    if grep -rIqiE "$_pay_re" package.json 2>/dev/null; then _pay_ext=ts
+    elif grep -rIqiE "$_pay_re" requirements.txt pyproject.toml 2>/dev/null; then _pay_ext=py
+    elif grep -rIqiE "$_pay_re" go.mod 2>/dev/null; then _pay_ext=go
+    fi
+    if [ -n "$_pay_ext" ]; then
+      mkdir -p jobs
+      case "$_pay_ext" in
+        ts) cat > jobs/reconcile-payments.ts <<'RPTS'
+// Payment reconciliation — scheduled job (idempotent). Pull recent provider objects (charges/
+// subscriptions) since the last run, compare against local DB state, and report/alert on mismatches.
+// Never auto-mutate money state here. Wire the provider client, the DB queries, and a scheduler (cron).
+export type ReconcileReport = { checked: number; mismatches: string[] };
+
+export async function reconcilePayments(sinceIso: string): Promise<ReconcileReport> {
+  const mismatches: string[] = [];
+  const checked = 0;
+  // Fill in: list provider objects created since `sinceIso`, load each local record, compare
+  // status/amount/currency, push a description to `mismatches` on drift, then alert. Do not write money.
+  void sinceIso;
+  return { checked, mismatches };
+}
+RPTS
+        ;;
+        py) cat > jobs/reconcile-payments.py <<'RPPY'
+"""Payment reconciliation — scheduled job (idempotent).
+
+Pull recent provider objects (charges/subscriptions) since the last run, compare against local DB
+state, and report/alert on mismatches. Never auto-mutate money state here. Wire the provider client,
+the DB queries, and a scheduler (cron).
+"""
+from __future__ import annotations
+
+
+def reconcile_payments(since_iso: str) -> dict:
+    """Return {"checked": int, "mismatches": list}. Fill in the provider + DB comparison, then alert."""
+    mismatches: list = []
+    checked = 0
+    _ = since_iso
+    return {"checked": checked, "mismatches": mismatches}
+RPPY
+        ;;
+        go) cat > jobs/reconcile-payments.go <<'RPGO'
+//go:build ignore
+
+// Command reconcile-payments is a scheduled reconciliation job (idempotent): compare recent provider
+// objects to the local DB since sinceRFC3339 and report/alert on mismatches. Never auto-mutate money.
+// Wire the provider client + DB comparison + a scheduler, then remove the build:ignore tag above.
+package main
+
+func ReconcilePayments(sinceRFC3339 string) (checked int, mismatches []string) {
+	return 0, nil
+}
+RPGO
+        ;;
+      esac
+      if ! grep -qF 'wire + schedule payment reconciliation' ROADMAP.md 2>/dev/null; then
+        awk -v ext="$_pay_ext" 'BEGIN{d=0}{print}/^## Next/&&!d{print "- [ ] wire + schedule payment reconciliation (jobs/reconcile-payments." ext " — idempotent; alert on provider/DB drift; never auto-mutate money)"; d=1}END{if(!d)print "- [ ] wire + schedule payment reconciliation (jobs/reconcile-payments." ext ")"}' ROADMAP.md > ROADMAP.md.tmp && mv ROADMAP.md.tmp ROADMAP.md
+      fi
+      ok "payment provider detected → scaffolded jobs/reconcile-payments.$_pay_ext + ROADMAP item"
+    fi
+  fi
   # Thin wrapper — the loop logic is PURE ACE (single source: lib/autoloop.sh);
   # only this project's ROADMAP/OBJECTIVES/.opencode/ci.sh are project-specific.
   { echo '#!/usr/bin/env bash'
