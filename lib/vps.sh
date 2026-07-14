@@ -308,6 +308,18 @@ vps_deploy() {
     fi
     step "Milestone $latest (last deployed: ${last:-none}) — deploying."
   fi
+  # ---- launch-readiness gate (C6) -------------------------------------------------------
+  # Before promoting to the live VPS, run the project's mechanical pre-promotion subset
+  # (ci.sh --launch): tested-restore evidence, rollback runbook, SLO/runbook presence.
+  # FAIL-CLOSED — a NO-GO BLOCKS the promote (never ship unverified). The launch_readiness_reviewer
+  # agent does the judgment; this is the mechanical floor the deploy flow enforces. LAUNCH_GATE=0 overrides.
+  if [ "${LAUNCH_GATE:-1}" = 1 ] && [ -f ci.sh ] && grep -q -- '--launch' ci.sh 2>/dev/null; then
+    step "Launch-readiness gate (ci.sh --launch)"
+    bash ci.sh --launch || { err "launch-readiness NO-GO — promote BLOCKED. Fix the [blocker] ops/ evidence (restore-drill.result, rollback.md) or set LAUNCH_GATE=0 to override. See: LAUNCH-READINESS.md"; return 1; }
+    ok "Launch-readiness GO."
+  elif [ "${LAUNCH_GATE:-1}" = 1 ]; then
+    warn "launch-readiness gate SKIPPED — no ci.sh --launch tier here (re-scaffold to add ops/ readiness checks, or set LAUNCH_GATE=0 to silence)."
+  fi
   step "Deploy (pull + rebuild + restart) → $VPS_HOST:$ddir"
   # Use the ace deploy key for git ONLY if it was provisioned; otherwise fall back to the repo's
   # existing git auth on the VPS (e.g. a CI-provisioned deploy key / stored credential / agent).

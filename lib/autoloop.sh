@@ -1003,7 +1003,9 @@ while :; do
           [ "$DEPLOY" = 1 ] && say "⚠ DEPLOY=1 was requested but deploy_kind=$DEPLOY_KIND has no VPS service — DEPLOY is a no-op here (set deploy_kind=service for VPS deploys$([ "$DEPLOY_KIND" = artifact ] && echo "; artifacts ship via 'ace release --tag'"))."
         elif [ "$DEPLOY" = 1 ] && command -v ace >/dev/null 2>&1; then
           say "deploying merged main to the VPS"; hermes_notify "🚀 deploying merged main → VPS"
-          _dt=$(date +%s); ace deploy; _drc=$?; phase_metric deploy "" $(( $(date +%s) - _dt )) "$_drc"
+          # ACE_CONFIRM=1: the loop IS the authorized autonomous driver — clear the headless destructive-op
+          # gate (ace:_gate_destructive), else a systemd/--yes run self-blocks the deploy and HALTS the loop.
+          _dt=$(date +%s); ACE_CONFIRM=1 ace deploy; _drc=$?; phase_metric deploy "" $(( $(date +%s) - _dt )) "$_drc"
           if [ "$_drc" != 0 ]; then
             if [ "$STOP_ON_DEPLOY_FAIL" = 1 ]; then
               say "deploy/health-check FAILED — HALTING the loop so we don't build onto a broken live deploy (set STOP_ON_DEPLOY_FAIL=0 to keep going). See: ace logs"
