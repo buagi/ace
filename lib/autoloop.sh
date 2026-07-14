@@ -103,6 +103,26 @@ metric(){ local f=.opencode/metrics.csv; mkdir -p .opencode 2>/dev/null
   printf '%s,%s,%s,%s\n' "${RUN_ID:-0}" "$(date +%FT%T)" "$(branch 2>/dev/null)" "$*" >> "$f" 2>/dev/null || true; }
 # Time a NON-agent phase -> one CSV row.  $1=event $2=label(commas stripped) $3=wall_s $4=rc.  (agent blank; active/build 0.)
 phase_metric(){ metric "$1,,$(printf '%s' "${2:-}" | tr ',\n' '; '),$3,0,0,${4:-0}"; }
+# D1: capture token / prefix-cache usage from the LAST opencode run into metrics.csv (feeds D3 observability
+# and PROVES the caching win). The prefix-cache MECHANISM is guaranteed by the S5/D1 invariant at drive();
+# this only makes the HIT RATIO visible. Best-effort + FAIL-SOFT: opencode's default output may not surface
+# per-call cache tokens (the JSON event stream / provider usage does), so an absent field records nothing —
+# NEVER a crash and never a blocked step. Verified numbers require a live/credit run (see TESTS-TODO D1).
+capture_usage(){
+  local log=.opencode/last-run.log inp out chr chw ratio=""
+  [ -f "$log" ] || return 0
+  # `input_tokens` is a substring of `cache_read_input_tokens` — require input/prompt NOT preceded by a
+  # letter/underscore so the total isn't confused with the cache fields (proven: scratchpad/d1-usage-test.sh).
+  inp=$(grep -oiE '(^|[^_a-z])(input|prompt)[ _-]?tokens?["=: ]+[0-9,]+' "$log" 2>/dev/null | grep -oE '[0-9,]+' | tail -1 | tr -d ,)
+  out=$(grep -oiE '(^|[^_a-z])(output|completion)[ _-]?tokens?["=: ]+[0-9,]+' "$log" 2>/dev/null | grep -oE '[0-9,]+' | tail -1 | tr -d ,)
+  chr=$(grep -oiE '(cache[ _-]?read|prompt.?cache.?hit)[a-z_ -]*["=: ]+[0-9,]+' "$log" 2>/dev/null | grep -oE '[0-9,]+' | tail -1 | tr -d ,)
+  chw=$(grep -oiE '(cache[ _-]?(write|creation)|prompt.?cache.?miss)[a-z_ -]*["=: ]+[0-9,]+' "$log" 2>/dev/null | grep -oE '[0-9,]+' | tail -1 | tr -d ,)
+  [ -n "$inp$out$chr$chw" ] || return 0   # format didn't expose usage → record nothing
+  { [ -n "$chr" ] && [ -n "$inp" ] && [ "$inp" -gt 0 ] 2>/dev/null; } && ratio=$(( chr * 100 / inp ))
+  metric "usage,${AGENT:-?},cache_read=${chr:-0}/in=${inp:-0}${ratio:+(${ratio}%)}_out=${out:-0},0,0,0"
+  [ -n "$ratio" ] && say "prefix cache-read: ${ratio}% of input (in=${inp:-?} cache_read=${chr:-0} out=${out:-0}) — target ≥60% Opus / ≥70% DeepSeek"
+  return 0
+}
 # Post-mortem: append THIS run's time breakdown (by phase + slowest steps) to .opencode/run-summary.txt
 # (rolling history, newest at bottom) and a closing `run` row to the CSV. Reads only this run's rows (run_id).
 write_run_summary(){
@@ -539,9 +559,17 @@ drive(){
     # DeepSeek's disk prefix cache bills the shared chunk at hit price. Keep every per-worker/per-run salt
     # (worker id, timestamp, branch/slug, the claimed item) in the VARIABLE TAIL — the "$task" user message
     # here — and NEVER prepend it to the system prompt or a shared context block, or the cache forks → misses.
+    # D1 (across-TURNS + overseer): this SAME invocation runs every turn of a single autoloop with only
+    # "$task" varying, so the prefix is byte-identical turn 1..N too. DeepSeek's disk prefix cache (hits bill
+    # ~2%/8% of miss on Flash/Pro) AND Anthropic prompt caching for the Opus OVERSEER (cache-read ~10% of base
+    # input, break-even ~2 hits) both apply AUTOMATICALLY: opencode 1.17.x / the AI SDK add cache_control to
+    # the stable system+tools prefix for Claude — there is NO opencode.json knob to set. The ONLY requirement
+    # is prefix stability (guaranteed above); never set/inject per-turn state BEFORE "$task". Live cache-read
+    # ratio is captured by capture_usage() below (proven only on a real credit run — see TESTS-TODO / LEDGER D1).
     { opencode run --agent "$AGENT" ${ORCH_MODEL_OVERRIDE:+--model "$ORCH_MODEL_OVERRIDE"} "$task" & echo $! > .opencode/.oppid; wait $!; } 2>&1 | tee .opencode/last-run.log
     rc=${PIPESTATUS[0]}; kill "$kp" 2>/dev/null
     [ -f .opencode/.timedout ] && rc=124
+    capture_usage 2>/dev/null || true   # D1: log token/prefix-cache usage (fail-soft) — feeds D3 + proves the cache win
     [ -f .opencode/.rathole ] && rc=124
     if [ "$rc" = 0 ]; then WAITED=0; report_context
       read -r mc mb 2>/dev/null < .opencode/.step-budget || { mc=0; mb=0; }
