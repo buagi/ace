@@ -168,6 +168,24 @@ token_report(){
   } > "$out" 2>/dev/null || true
   grep -qE '^\| [A-Za-z_]+ \| [0-9]' "$out" 2>/dev/null && say "token report → .opencode/token-report.md (per-agent input/cache/output + cost hog)" || true
 }
+# E3: classify WHY a step stopped from its log + exit code so recovery is correct (never trust exit 0 —
+# opencode run can exit 0 on error, #14551). Mechanical (log signatures + rc); the rathole supervisor covers
+# the SILENT-progress judgment, this covers the STOP cause. Returns 0 + logs the mode when a failure signature
+# is found (incl. exit-0-errored), 1 on a clean success. Proven: scratchpad/e3-failmode-test.sh.
+classify_failure_mode(){
+  local rc="${1:-0}" log=.opencode/last-run.log ilog="$HOME/.local/share/opencode/log/opencode.log" mode action blob
+  blob="$( { tail -c 20000 "$log" 2>/dev/null; tail -c 20000 "$ilog" 2>/dev/null; } )"
+  if printf '%s' "$blob" | grep -qiE 'timed out after 120000 ?ms|streamtext.*timeout|tool call timed out'; then mode="tool/bash-timeout (120s AI-SDK step ceiling)"; action="OVERSIZED inner step -> split (E1) / move the build out of the inner loop"
+  elif printf '%s' "$blob" | grep -qiE 'contextoverflow|context (window )?(exceeded|overflow)|compaction failed'; then mode="context-overflow / compaction"; action="OVERSIZED -> split (E1); check D2 compaction / limit.input"
+  elif printf '%s' "$blob" | grep -qiE 'steps? (cap|limit|budget) (hit|reached|exceeded)|max ?steps|remaining tasks|force.?summariz'; then mode="steps-cap hit"; action="OVERSIZED -> split (E1) or raise the steps cap (E4)"
+  elif printf '%s' "$blob" | grep -qiE 'connection (closed|reset)|keep-?alive|econnreset|provider .*(timeout|error)|deepseek .*(closed|timeout)|\b(429|502|503|504|529)\b|overloaded'; then mode="provider timeout/limit"; action="backoff + retry (fresh run, lossless via E2)"
+  elif [ "$rc" = 124 ] || [ "$rc" = 130 ]; then mode="outer wrapper timeout (kill)"; action="raise the wall budget or split (E1); checkpoint+resume (E2)"
+  elif [ "$rc" = 0 ] && printf '%s' "$blob" | grep -qiE '\b(error|exception|fatal|traceback|panic|unhandled)\b'; then mode="EXIT 0 BUT ERRORED (#14551) — not a real success"; action="treat as FAILURE; re-run (lossless via E2), do NOT mark done"
+  else return 1; fi
+  metric "failmode,${AGENT:-?},$(printf '%s' "$mode -> $action" | tr ',' ';'),0,0,$rc"
+  say "FAILURE-MODE CLASSIFICATION: ${mode} → ${action}"
+  return 0
+}
 # Post-mortem: append THIS run's time breakdown (by phase + slowest steps) to .opencode/run-summary.txt
 # (rolling history, newest at bottom) and a closing `run` row to the CSV. Reads only this run's rows (run_id).
 write_run_summary(){
@@ -548,13 +566,16 @@ drive(){
     # deterministic step (container build, dependency install, compile, test run) is in its subtree — those
     # shouldn't burn the task budget or trip a false BIG-TASK timeout. OPENCODE_WALL_MAX still bounds a stuck step.
     rm -f .opencode/.timedout .opencode/.oppid
-    ( charged=0; credited=0; sincep=0; miss=0; lastsz=0; lastisz=0; stall=0; checks=0; hsz=0; hisz=0; ihang=0; start=$(date +%s); last=$start; op=""
+    ( charged=0; credited=0; sincep=0; miss=0; lastsz=0; lastisz=0; stall=0; checks=0; hsz=0; hisz=0; ihang=0; start=$(date +%s); last=$start; lasthead="$(git rev-parse HEAD 2>/dev/null||echo none)"; op=""
       while :; do
         sleep "${WATCH_POLL:-10}"
         [ -n "$op" ] || op=$(cat .opencode/.oppid 2>/dev/null)
         if [ -z "$op" ] || ! kill -0 "$op" 2>/dev/null; then miss=$((miss+1)); [ "$miss" -ge 3 ] && break || continue; fi
         miss=0; now=$(date +%s); d=$(( now - last )); last=$now
         if slow_active "$op" || _credited_phase; then credited=$(( credited + d )); else charged=$(( charged + d )); fi
+        # E3: a NEW commit = real progress (E2's per-increment checkpoints) → reset the active-work budget so a
+        # steadily-committing worker is never killed for "no progress"; the hard OPENCODE_WALL_MAX still caps.
+        nh="$(git rev-parse HEAD 2>/dev/null||echo none)"; [ "$nh" != "$lasthead" ] && { lasthead="$nh"; charged=0; }
         printf '%s %s' "$charged" "$credited" > .opencode/.step-budget 2>/dev/null   # surfaced to the per-step metric
         sincep=$(( sincep + d ))
         if [ "$sincep" -ge "${HEARTBEAT:-60}" ]; then sincep=0; e=$(( now - start )); act=$(current_activity "$op"); \
@@ -623,6 +644,7 @@ drive(){
     # LOSSLESS from git. Opt-in only captures the id for a manual/verified `opencode run -s "$(cat
     # .opencode/.session-id)"` — do NOT auto-rely on it until a live run confirms replay (see TESTS-TODO E2).
     [ "${OPENCODE_SESSION_RESUME:-0}" = 1 ] && { opencode session list 2>/dev/null | grep -oiE 'ses[_-][a-z0-9]{6,}|[0-9a-f-]{20,}' | head -1 > .opencode/.session-id 2>/dev/null; } || true
+    classify_failure_mode "$rc" 2>/dev/null || true   # E3: name the stop cause (incl. exit-0-errored #14551) → recovery guidance + metrics
     [ -f .opencode/.rathole ] && rc=124
     if [ "$rc" = 0 ]; then WAITED=0; report_context
       read -r mc mb 2>/dev/null < .opencode/.step-budget || { mc=0; mb=0; }
