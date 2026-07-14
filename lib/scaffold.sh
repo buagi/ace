@@ -435,7 +435,7 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
-section "[1/9] Build + test ($MODE)"
+section "[1/10] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
   podman image prune -f >/dev/null 2>&1 || true  # reclaim this build's dangling layers (prevents disk bloat)
@@ -458,18 +458,18 @@ else
   # full suite under vitest --coverage (provider: @vitest/coverage-v8). No % threshold — gaps, not numbers.
   [ "${COVERAGE:-}" = 1 ] && { echo "[ci] coverage (vitest --coverage; informational)"; pnpm -r exec vitest run --coverage || true; }
 fi
-section "[2/9] Env integrity — process.env vars declared in .env.example"
+section "[2/10] Env integrity — process.env vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
 used=$(grep -rhoP 'process\.env\.\K[A-Z0-9_]+' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' apps packages 2>/dev/null | sort -u | grep -vE '^(NODE_ENV|NEXT_|__NEXT_|VERCEL|PORT)$')
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars:"; echo "$miss"; fail=1; }
-section "[3/9] Typecheck + lint (no any / no @ts-ignore / no unused)"
+section "[3/10] Typecheck + lint (no any / no @ts-ignore / no unused)"
 pnpm -r --if-present typecheck >/tmp/ci-tc.log 2>&1 || { echo "RED: typecheck"; tail -20 /tmp/ci-tc.log; fail=1; }
 pnpm lint >/tmp/ci-lint.log 2>&1 || { echo "RED: lint (any / @ts-ignore / unused)"; tail -30 /tmp/ci-lint.log; fail=1; }
-section "[4/9] No stubs / placeholders (depth gate)"
+section "[4/10] No stubs / placeholders (depth gate)"
 stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE '/(node_modules|dist|\.next|brownfield|\.serena)/' | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move real notes to .opencode/specs/):"; echo "$stub"; fail=1; }
-section "[5/9] Client-bundle secret scan (leaked provider/service keys)"
+section "[5/10] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
 # source, never server-only .env. Add literal substrings to .ci-secretignore to suppress false positives.
 csec_dirs=""; for d in dist build .next public; do [ -d "$d" ] && csec_dirs="$csec_dirs $d"; done
@@ -479,7 +479,7 @@ if [ -n "$csec_dirs" ]; then
   if [ -n "$csec_hits" ] && [ -s .ci-secretignore ]; then csec_hits=$(printf '%s\n' "$csec_hits" | grep -vFf <(grep -v '^$' .ci-secretignore) || true); fi
   if [ -n "$csec_hits" ]; then echo "RED [blocker]: secret/credential shipped in client bundle — move it to server-only env:"; printf '%s\n' "$csec_hits" | head -20; fail=1; else echo "(client bundle clean)"; fi
 else echo "(no client bundle dir — skipping)"; fi
-section "[6/9] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
+section "[6/10] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
 if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
   rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
@@ -491,7 +491,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
-section "[7/9] LLM call-site guards (cost / abuse)"
+section "[7/10] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
@@ -500,7 +500,7 @@ if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-
     grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
-section "[8/9] Webhook handler integrity (payment/event webhooks)"
+section "[8/10] Webhook handler integrity (payment/event webhooks)"
 # Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
 wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
 money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
@@ -514,7 +514,20 @@ if [ -n "$money_wh" ]; then
     echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
   fi
 else echo "(no payment webhook handler — skipping)"; fi
-section "[9/9] New source needs tests (parity/CI tier only — never blocks the fast pre-commit)"
+section "[9/10] Auth & session edge cases (reset tokens / enumeration)"
+# Stack-conditional: runs only when auth routes are present; heuristic [major] warnings, never a hard fail.
+auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
+if [ -n "$auth_files" ]; then
+  if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
+    echo "WARN [major]: an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
+  fi
+  reset_files=$(printf '%s\n' "$auth_files" | xargs grep -lIiE 'reset[_-]?token|password[_-]?reset|forgot' 2>/dev/null || true)
+  if [ -n "$reset_files" ]; then
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || echo "WARN [major]: reset token may be stored in plaintext — store only its HASH and compare hashes"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || echo "WARN [major]: reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
+  fi
+else echo "(no auth routes — skipping)"; fi
+section "[10/10] New source needs tests (parity/CI tier only — never blocks the fast pre-commit)"
 if [ "$MODE" = container ]; then
   base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || true)"
   if [ -n "$base" ]; then
@@ -642,7 +655,7 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
-section "[1/8] Build + test ($MODE)"
+section "[1/9] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
   podman image prune -f >/dev/null 2>&1 || true  # reclaim this build's dangling layers (prevents disk bloat)
@@ -652,17 +665,17 @@ else
   if python -c 'import pytest_cov' >/dev/null 2>&1; then python -m pytest -q --ignore=brownfield --cov=src --cov-report=term-missing:skip-covered || fail=1
   else python -m pytest -q --ignore=brownfield || fail=1; fi
 fi
-section "[2/8] Env integrity — os.getenv vars declared in .env.example"
+section "[2/9] Env integrity — os.getenv vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
 used=$(grep -rhoP 'os\.(getenv|environ\.get)\("\K[A-Z0-9_]+' --include='*.py' . 2>/dev/null | sort -u)
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars:"; echo "$miss"; fail=1; }
-section "[3/8] Compile"
+section "[3/9] Compile"
 python -m py_compile $(find . -name '*.py' -not -path './.serena/*' -not -path './brownfield/*') 2>/tmp/ci-pc.log || { echo "RED: compile"; cat /tmp/ci-pc.log; fail=1; }
-section "[4/8] No stubs / placeholders (depth gate)"
+section "[4/9] No stubs / placeholders (depth gate)"
 stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE '/(node_modules|dist|\.next|brownfield|\.serena)/' | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move real notes to .opencode/specs/):"; echo "$stub"; fail=1; }
-section "[5/8] Client-bundle secret scan (leaked provider/service keys)"
+section "[5/9] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
 # source, never server-only .env. Add literal substrings to .ci-secretignore to suppress false positives.
 csec_dirs=""; for d in dist build .next public; do [ -d "$d" ] && csec_dirs="$csec_dirs $d"; done
@@ -672,7 +685,7 @@ if [ -n "$csec_dirs" ]; then
   if [ -n "$csec_hits" ] && [ -s .ci-secretignore ]; then csec_hits=$(printf '%s\n' "$csec_hits" | grep -vFf <(grep -v '^$' .ci-secretignore) || true); fi
   if [ -n "$csec_hits" ]; then echo "RED [blocker]: secret/credential shipped in client bundle — move it to server-only env:"; printf '%s\n' "$csec_hits" | head -20; fail=1; else echo "(client bundle clean)"; fi
 else echo "(no client bundle dir — skipping)"; fi
-section "[6/8] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
+section "[6/9] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
 if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
   rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
@@ -684,7 +697,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
-section "[7/8] LLM call-site guards (cost / abuse)"
+section "[7/9] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
@@ -693,7 +706,7 @@ if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-
     grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
-section "[8/8] Webhook handler integrity (payment/event webhooks)"
+section "[8/9] Webhook handler integrity (payment/event webhooks)"
 # Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
 wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
 money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
@@ -707,6 +720,19 @@ if [ -n "$money_wh" ]; then
     echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
   fi
 else echo "(no payment webhook handler — skipping)"; fi
+section "[9/9] Auth & session edge cases (reset tokens / enumeration)"
+# Stack-conditional: runs only when auth routes are present; heuristic [major] warnings, never a hard fail.
+auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
+if [ -n "$auth_files" ]; then
+  if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
+    echo "WARN [major]: an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
+  fi
+  reset_files=$(printf '%s\n' "$auth_files" | xargs grep -lIiE 'reset[_-]?token|password[_-]?reset|forgot' 2>/dev/null || true)
+  if [ -n "$reset_files" ]; then
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || echo "WARN [major]: reset token may be stored in plaintext — store only its HASH and compare hashes"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || echo "WARN [major]: reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
+  fi
+else echo "(no auth routes — skipping)"; fi
 [ "$fail" = 0 ] && { echo -e "\nCI GREEN ($MODE)"; exit 0; } || { echo -e "\nCI RED ($MODE)"; exit 1; }
 EOF
   chmod +x ci.sh
@@ -1371,7 +1397,7 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 [ "$MODE" = container ] && [ ! -f Containerfile ] && { echo "[ci] no Containerfile — running the host gate."; MODE="fast"; }
 export CGO_ENABLED=0 CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
-section "[1/9] Build + test ($MODE)"
+section "[1/10] Build + test ($MODE)"
 if [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
   podman image prune -f >/dev/null 2>&1 || true   # reclaim this build's dangling layers
@@ -1390,20 +1416,20 @@ else
   # coverage is a SIGNAL, not a gate (no blanket % target — that just invites gaming): print the total.
   [ -f coverage.out ] && go tool cover -func=coverage.out 2>/dev/null | tail -1
 fi
-section "[2/9] Format — gofmt"
+section "[2/10] Format — gofmt"
 unf=$(gofmt -l $(find . -name '*.go' -not -path './brownfield/*' -not -path './.serena/*') 2>/dev/null)
 [ -n "$unf" ] && { echo "RED: gofmt — run 'gofmt -w .':"; echo "$unf"; fail=1; }
-section "[3/9] staticcheck (if installed)"
+section "[3/10] staticcheck (if installed)"
 if command -v staticcheck >/dev/null 2>&1; then staticcheck ./... || fail=1; else echo "(staticcheck not on PATH — 'ace install' adds it; skipping)"; fi
-section "[4/9] Env integrity — os.Getenv vars declared in .env.example"
+section "[4/10] Env integrity — os.Getenv vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
 used=$(grep -rhoP 'os\.Getenv\("\K[A-Z0-9_]+' --include='*.go' . 2>/dev/null | sort -u)
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars (add to .env.example):"; echo "$miss"; fail=1; }
-section "[5/9] No stubs / placeholders (depth gate)"
+section "[5/10] No stubs / placeholders (depth gate)"
 stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|panic\("?TODO' --include='*.go' cmd internal pkg 2>/dev/null | grep -vE '/(brownfield|\.serena)/' | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move notes to .opencode/specs/):"; echo "$stub"; fail=1; }
-section "[6/9] Client-bundle secret scan (leaked provider/service keys)"
+section "[6/10] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
 # source, never server-only .env. Add literal substrings to .ci-secretignore to suppress false positives.
 csec_dirs=""; for d in dist build .next public; do [ -d "$d" ] && csec_dirs="$csec_dirs $d"; done
@@ -1413,7 +1439,7 @@ if [ -n "$csec_dirs" ]; then
   if [ -n "$csec_hits" ] && [ -s .ci-secretignore ]; then csec_hits=$(printf '%s\n' "$csec_hits" | grep -vFf <(grep -v '^$' .ci-secretignore) || true); fi
   if [ -n "$csec_hits" ]; then echo "RED [blocker]: secret/credential shipped in client bundle — move it to server-only env:"; printf '%s\n' "$csec_hits" | head -20; fail=1; else echo "(client bundle clean)"; fi
 else echo "(no client bundle dir — skipping)"; fi
-section "[7/9] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
+section "[7/10] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
 if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
   rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
@@ -1425,7 +1451,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
-section "[8/9] LLM call-site guards (cost / abuse)"
+section "[8/10] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent|CreateChatCompletion|CreateMessage|CreateCompletion' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
@@ -1434,7 +1460,7 @@ if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-
     grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
-section "[9/9] Webhook handler integrity (payment/event webhooks)"
+section "[9/10] Webhook handler integrity (payment/event webhooks)"
 # Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
 wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
 money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
@@ -1448,6 +1474,19 @@ if [ -n "$money_wh" ]; then
     echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
   fi
 else echo "(no payment webhook handler — skipping)"; fi
+section "[10/10] Auth & session edge cases (reset tokens / enumeration)"
+# Stack-conditional: runs only when auth routes are present; heuristic [major] warnings, never a hard fail.
+auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
+if [ -n "$auth_files" ]; then
+  if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
+    echo "WARN [major]: an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
+  fi
+  reset_files=$(printf '%s\n' "$auth_files" | xargs grep -lIiE 'reset[_-]?token|password[_-]?reset|forgot' 2>/dev/null || true)
+  if [ -n "$reset_files" ]; then
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || echo "WARN [major]: reset token may be stored in plaintext — store only its HASH and compare hashes"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || echo "WARN [major]: reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
+  fi
+else echo "(no auth routes — skipping)"; fi
 [ "$fail" = 0 ] && { echo -e "\nCI GREEN ($MODE)"; exit 0; } || { echo -e "\nCI RED ($MODE)"; exit 1; }
 EOF
   chmod +x ci.sh
