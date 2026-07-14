@@ -293,8 +293,8 @@ swarm_next() {
       printf '%s\t%s\n' "$(printf '%s' "$item" | cksum | cut -d' ' -f1)" "$item"
       return 0
     fi
-  done < <(grep -nE '^[[:space:]]*- \[ \] ' "$roadmap")
-  return 0   # nothing claimable
+  done < <(grep -E '^[[:space:]]*- \[ \] ' "$roadmap")   # NO -n: a line-number prefix ('N:') leaks past the
+  return 0   # nothing claimable                          # ^-anchored sed above into $item, breaking run_worker's merged-checkbox detection
 }
 
 # swarm_disjoint_batch [ROADMAP] [CAP] — how many OPEN, deps-met roadmap items could run in PARALLEL
@@ -323,7 +323,7 @@ swarm_disjoint_batch() {
     [ "$clash" = 1 ] && continue                        # overlaps an already-counted item → would serialize
     sets+=("$paths"); n=$((n+1))
     [ "$n" -ge "$cap" ] && break
-  done < <(grep -nE '^[[:space:]]*- \[ \] ' "$roadmap")
+  done < <(grep -E '^[[:space:]]*- \[ \] ' "$roadmap")   # NO -n: an 'N:' prefix would leak past the ^-anchored sed into $item
   echo "$n"
 }
 
@@ -365,7 +365,7 @@ swarm_disjoint_plan() {
       tag=parallel; sets+=("$paths"); n=$((n+1))       # disjoint + room → this generation's parallel batch
     fi
     printf '%s\t%s\t%s\n' "$tag" "$paths" "$item"
-  done < <(grep -nE '^[[:space:]]*- \[ \] ' "$roadmap")
+  done < <(grep -E '^[[:space:]]*- \[ \] ' "$roadmap")   # NO -n: an 'N:' prefix would leak past the ^-anchored sed into $item
 }
 
 # swarm_scope_stats — print the shared impact-graph cache hit/miss tally (the SWARM_IMPACT=1 path).
@@ -607,8 +607,19 @@ swarm_selftest() {
   swarm_release wA "$(printf '%s' "item-A" | cksum | cut -d' ' -f1)" done >/dev/null
   local D; D="$(swarm_try_claim wD "item-D" "apps/portal/settings")"
   echo "[selftest] reclaim after release: D=$D  (expect ok)"
+  # 5) swarm_next emits a CLEAN item — no 'N:' line-number prefix, no '- [ ]' checkbox.
+  #    Regression guard: grep -n used to leak 'N:' into $item, so run_worker's merged-checkbox
+  #    detection (swarm-run.sh) never matched → every merged item mislabelled 'conflict' → parked.
+  local rmn nitem nfield clean=1
+  rmn="$(dirname "$STATE")/roadmap-next.md"
+  printf '%s\n' '# Roadmap' '- [ ] owner-gate `services/reporting/export.ts` route' '- [x] already done' > "$rmn"
+  nitem="$(swarm_next wNext "$rmn")"; nfield="${nitem#*$'\t'}"
+  printf '%s' "$nfield" | grep -qE '^[0-9]+:' && clean=0
+  printf '%s' "$nfield" | grep -qF -- '- [ ]' && clean=0
+  [ -n "$nfield" ] || clean=0
+  echo "[selftest] swarm_next clean item: '$nfield'  clean=$clean  (expect 1 — no 'N:'/'- [ ]')"
   # verdict
-  [ "$A" = ok ] && [ "$B" = ok ] && [ "$C" = busy ] && [ "$wins" = 1 ] && [ "$D" = ok ] \
+  [ "$A" = ok ] && [ "$B" = ok ] && [ "$C" = busy ] && [ "$wins" = 1 ] && [ "$D" = ok ] && [ "$clean" = 1 ] \
     && echo "[selftest] PASS ✓" || { echo "[selftest] FAIL ✗"; return 1; }
 }
 
