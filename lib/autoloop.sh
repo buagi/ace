@@ -124,8 +124,10 @@ capture_usage(){
   chr=$(grep -oiE '(cache[ _-]?read|prompt.?cache.?hit)[a-z_ -]*["=: ]+[0-9,]+' "$log" 2>/dev/null | grep -oE '[0-9,]+' | tail -1 | tr -d ,)
   chw=$(grep -oiE '(cache[ _-]?(write|creation)|prompt.?cache.?miss)[a-z_ -]*["=: ]+[0-9,]+' "$log" 2>/dev/null | grep -oE '[0-9,]+' | tail -1 | tr -d ,)
   [ -n "$inp$out$chr$chw" ] || return 0   # format didn't expose usage → record nothing
-  { [ -n "$chr" ] && [ -n "$inp" ] && [ "$inp" -gt 0 ] 2>/dev/null; } && ratio=$(( chr * 100 / inp ))
-  metric "usage,${AGENT:-?},cache_read=${chr:-0}/in=${inp:-0}${ratio:+(${ratio}%)}_out=${out:-0},0,0,0"
+  # cache-hit% = cache_read / (FRESH input + cache_read); opencode's `input` is the UNCACHED portion only,
+  # so dividing by input alone over-reports (>100%). Guard the denominator.
+  { [ -n "${chr:-}" ] && [ "$(( ${inp:-0} + ${chr:-0} ))" -gt 0 ] 2>/dev/null; } && ratio=$(( ${chr:-0} * 100 / ( ${inp:-0} + ${chr:-0} ) ))
+  metric "usage,${AGENT:-?},cache_read=${chr:-0}/cache_write=${chw:-0}/in=${inp:-0}${ratio:+(${ratio}%)}_out=${out:-0},0,0,0,0"
   [ -n "$ratio" ] && say "prefix cache-read: ${ratio}% of input (in=${inp:-?} cache_read=${chr:-0} out=${out:-0}) — target ≥60% Opus / ≥70% DeepSeek"
   return 0
 }
@@ -182,15 +184,22 @@ token_report(){
 classify_failure_mode(){
   [ "${ACE_TELEMETRY:-1}" = 1 ] || return 1
   local rc="${1:-0}" log=.opencode/last-run.log ilog="$HOME/.local/share/opencode/log/opencode.log" mode action blob
-  blob="$( { tail -c 20000 "$log" 2>/dev/null; tail -c 20000 "$ilog" 2>/dev/null; } )"
-  if printf '%s' "$blob" | grep -qiE 'timed out after 120000 ?ms|streamtext.*timeout|tool call timed out'; then mode="tool/bash-timeout (120s AI-SDK step ceiling)"; action="OVERSIZED inner step -> split (E1) / move the build out of the inner loop"
-  elif printf '%s' "$blob" | grep -qiE 'contextoverflow|context (window )?(exceeded|overflow)|compaction failed'; then mode="context-overflow / compaction"; action="OVERSIZED -> split (E1); check D2 compaction / limit.input"
-  elif printf '%s' "$blob" | grep -qiE 'steps? (cap|limit|budget) (hit|reached|exceeded)|max ?steps|remaining tasks|force.?summariz'; then mode="steps-cap hit"; action="OVERSIZED -> split (E1) or raise the steps cap (E4)"
-  elif printf '%s' "$blob" | grep -qiE 'connection (closed|reset)|keep-?alive|econnreset|provider .*(timeout|error)|deepseek .*(closed|timeout)|\b(429|502|503|504|529)\b|overloaded'; then mode="provider timeout/limit"; action="backoff + retry (fresh run, lossless via E2)"
-  elif [ "$rc" = 124 ] || [ "$rc" = 130 ]; then mode="outer wrapper timeout (kill)"; action="raise the wall budget or split (E1); checkpoint+resume (E2)"
-  elif [ "$rc" = 0 ] && printf '%s' "$blob" | grep -qiE '\b(error|exception|fatal|traceback|panic|unhandled)\b'; then mode="EXIT 0 BUT ERRORED (#14551) — not a real success"; action="treat as FAILURE; re-run (lossless via E2), do NOT mark done"
+  # P1-4: on a CLEAN success (rc 0) do NOT scan the noisy inner debug log — on GOOD runs it routinely
+  # carries keep-alive / ERROR-level lines / 3-digit numbers the broad regexes misread (advisory-only, but
+  # it made nearly every clean step print a bogus FAILURE-MODE + write a junk row). Only when rc != 0 do we
+  # scan both logs for the MODE; at rc 0 we run ONE narrow exit-0 check on the run log with a STRONG signal.
+  if [ "$rc" != 0 ]; then
+    blob="$( { tail -c 20000 "$log" 2>/dev/null; tail -c 20000 "$ilog" 2>/dev/null; } )"
+    if printf '%s' "$blob" | grep -qiE 'timed out after 120000 ?ms|streamtext.*timeout|tool call timed out'; then mode="tool/bash-timeout (120s AI-SDK step ceiling)"; action="OVERSIZED inner step -> split (E1) / move the build out of the inner loop"
+    elif printf '%s' "$blob" | grep -qiE 'contextoverflow|context (window )?(exceeded|overflow)|compaction failed'; then mode="context-overflow / compaction"; action="OVERSIZED -> split (E1); check D2 compaction / limit.input"
+    elif printf '%s' "$blob" | grep -qiE 'steps? (cap|limit|budget) (hit|reached|exceeded)|max.?steps (cap|limit|hit|reached|exceeded)|force.?summariz'; then mode="steps-cap hit"; action="OVERSIZED -> split (E1) or raise the steps cap (E4)"
+    elif printf '%s' "$blob" | grep -qiE 'connection (closed|reset)|econnreset|provider .*(timeout|error)|deepseek .*(closed|timeout)|(status|code|http)[^0-9]{0,8}(429|50[234]|529)\b|too many requests|overloaded'; then mode="provider timeout/limit"; action="backoff + retry (fresh run, lossless via E2)"
+    elif [ "$rc" = 124 ] || [ "$rc" = 130 ]; then mode="outer wrapper timeout (kill)"; action="raise the wall budget or split (E1); checkpoint+resume (E2)"
+    else return 1; fi
+  elif printf '%s' "$(tail -c 20000 "$log" 2>/dev/null)" | grep -qiE '\b(fatal|panic|unhandled (exception|rejection)|segmentation fault)\b|traceback \(most recent call|^Error:|uncaughtexception'; then
+    mode="EXIT 0 BUT ERRORED (#14551) — not a real success"; action="treat as FAILURE; re-run (lossless via E2), do NOT mark done"
   else return 1; fi
-  metric "failmode,${AGENT:-?},$(printf '%s' "$mode -> $action" | tr ',' ';'),0,0,$rc"
+  metric "failmode,${AGENT:-?},$(printf '%s' "$mode -> $action" | tr ',' ';'),0,0,0,$rc"
   say "FAILURE-MODE CLASSIFICATION: ${mode} → ${action}"
   return 0
 }
@@ -381,7 +390,7 @@ preflight(){
   # finished, gate-passing work uncommitted. Rescue it before doing anything else so nothing is lost.
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     say "uncommitted changes from a prior run — verifying ./ci.sh before resuming…"
-    for f in .opencode/last-run.log .opencode/ci-failure.log .opencode/vps-verify-report.md .opencode/loop-state.env .opencode/metrics.csv .opencode/run-summary.txt .opencode/.step-budget .opencode/.container-green .opencode/ci-build.log .opencode/.harvested-warnings .opencode/cache/versions.json; do
+    for f in .opencode/last-run.log .opencode/ci-failure.log .opencode/vps-verify-report.md .opencode/loop-state.env .opencode/metrics.csv .opencode/run-summary.txt .opencode/token-report.md .opencode/.session-id .opencode/.kanban-map .opencode/approvals/ .opencode/.step-budget .opencode/.container-green .opencode/ci-build.log .opencode/.harvested-warnings .opencode/cache/versions.json; do
       grep -qxF "$f" .gitignore 2>/dev/null || echo "$f" >> .gitignore; done
     if [ ! -e ./ci.sh ]; then
       say "STOPPING: no ./ci.sh gate in $(pwd) — can't verify the uncommitted work. Is this your project directory (not e.g. ACE's own repo)?"; exit 1
