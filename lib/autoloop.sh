@@ -615,6 +615,14 @@ drive(){
     rc=${PIPESTATUS[0]}; kill "$kp" 2>/dev/null
     [ -f .opencode/.timedout ] && rc=124
     capture_usage 2>/dev/null || true   # D1: log token/prefix-cache usage (fail-soft) — feeds D3 + proves the cache win
+    # E2 (same-session resume — a BONUS; the RELIABLE checkpoint/resume is git + the progress ledger, via the
+    # orchestrator's commit-per-increment + RESUME DISCIPLINE). opencode 1.17.x HAS `opencode run -s <id>` /
+    # `--continue` + `session list`, but headless REPLAY reliability is unverified (#11680/#3434) and the
+    # `session list` columns need a live check — so keep it OFF by default (OPENCODE_SESSION_RESUME). On a
+    # recoverable kill the loop re-runs the task FRESH; RESUME DISCIPLINE + per-increment commits make that
+    # LOSSLESS from git. Opt-in only captures the id for a manual/verified `opencode run -s "$(cat
+    # .opencode/.session-id)"` — do NOT auto-rely on it until a live run confirms replay (see TESTS-TODO E2).
+    [ "${OPENCODE_SESSION_RESUME:-0}" = 1 ] && { opencode session list 2>/dev/null | grep -oiE 'ses[_-][a-z0-9]{6,}|[0-9a-f-]{20,}' | head -1 > .opencode/.session-id 2>/dev/null; } || true
     [ -f .opencode/.rathole ] && rc=124
     if [ "$rc" = 0 ]; then WAITED=0; report_context
       read -r mc mb 2>/dev/null < .opencode/.step-budget || { mc=0; mb=0; }
