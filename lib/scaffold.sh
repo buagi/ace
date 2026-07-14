@@ -541,7 +541,7 @@ mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' 
 if [ -n "$mig_files" ]; then
   while IFS= read -r mf; do [ -n "$mf" ] || continue
     if grep -IiqE 'DROP (TABLE|COLUMN)|RENAME (TO|COLUMN)|ALTER COLUMN[^;]*DROP' "$mf" 2>/dev/null; then
-      grep -IiqE '(^|--).*down|irreversible[^a-z]{0,4}approved|expand.?contract' "$mf" 2>/dev/null || { echo "RED [blocker]: $mf — destructive schema op (DROP/RENAME) with no reverse. Use expand-contract (add new → backfill → switch reads → drop LATER, as SEPARATE changes); if intentional, add a '-- down' reverse or an '-- irreversible: approved' marker."; fail=1; }
+      grep -IiqE -e '--[[:space:]]*down\b|irreversible[^a-z]{0,4}approved|expand.?contract' "$mf" 2>/dev/null || { echo "RED [blocker]: $mf — destructive schema op (DROP/RENAME) with no reverse. Use expand-contract (add new → backfill → switch reads → drop LATER, as SEPARATE changes); if intentional, add a '-- down' reverse (a SQL comment) or an '-- irreversible: approved' marker."; fail=1; }
     fi
     if grep -IiE 'ADD COLUMN[^;]*NOT NULL' "$mf" 2>/dev/null | grep -qviE 'DEFAULT|GENERATED'; then
       echo "RED [blocker]: $mf — ADD COLUMN ... NOT NULL without a DEFAULT will fail on existing rows; add a DEFAULT or backfill in phases."; fail=1
@@ -785,7 +785,7 @@ mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' 
 if [ -n "$mig_files" ]; then
   while IFS= read -r mf; do [ -n "$mf" ] || continue
     if grep -IiqE 'DROP (TABLE|COLUMN)|RENAME (TO|COLUMN)|ALTER COLUMN[^;]*DROP' "$mf" 2>/dev/null; then
-      grep -IiqE '(^|--).*down|irreversible[^a-z]{0,4}approved|expand.?contract' "$mf" 2>/dev/null || { echo "RED [blocker]: $mf — destructive schema op (DROP/RENAME) with no reverse. Use expand-contract (add new → backfill → switch reads → drop LATER, as SEPARATE changes); if intentional, add a '-- down' reverse or an '-- irreversible: approved' marker."; fail=1; }
+      grep -IiqE -e '--[[:space:]]*down\b|irreversible[^a-z]{0,4}approved|expand.?contract' "$mf" 2>/dev/null || { echo "RED [blocker]: $mf — destructive schema op (DROP/RENAME) with no reverse. Use expand-contract (add new → backfill → switch reads → drop LATER, as SEPARATE changes); if intentional, add a '-- down' reverse (a SQL comment) or an '-- irreversible: approved' marker."; fail=1; }
     fi
     if grep -IiE 'ADD COLUMN[^;]*NOT NULL' "$mf" 2>/dev/null | grep -qviE 'DEFAULT|GENERATED'; then
       echo "RED [blocker]: $mf — ADD COLUMN ... NOT NULL without a DEFAULT will fail on existing rows; add a DEFAULT or backfill in phases."; fail=1
@@ -1577,7 +1577,7 @@ mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' 
 if [ -n "$mig_files" ]; then
   while IFS= read -r mf; do [ -n "$mf" ] || continue
     if grep -IiqE 'DROP (TABLE|COLUMN)|RENAME (TO|COLUMN)|ALTER COLUMN[^;]*DROP' "$mf" 2>/dev/null; then
-      grep -IiqE '(^|--).*down|irreversible[^a-z]{0,4}approved|expand.?contract' "$mf" 2>/dev/null || { echo "RED [blocker]: $mf — destructive schema op (DROP/RENAME) with no reverse. Use expand-contract (add new → backfill → switch reads → drop LATER, as SEPARATE changes); if intentional, add a '-- down' reverse or an '-- irreversible: approved' marker."; fail=1; }
+      grep -IiqE -e '--[[:space:]]*down\b|irreversible[^a-z]{0,4}approved|expand.?contract' "$mf" 2>/dev/null || { echo "RED [blocker]: $mf — destructive schema op (DROP/RENAME) with no reverse. Use expand-contract (add new → backfill → switch reads → drop LATER, as SEPARATE changes); if intentional, add a '-- down' reverse (a SQL comment) or an '-- irreversible: approved' marker."; fail=1; }
     fi
     if grep -IiE 'ADD COLUMN[^;]*NOT NULL' "$mf" 2>/dev/null | grep -qviE 'DEFAULT|GENERATED'; then
       echo "RED [blocker]: $mf — ADD COLUMN ... NOT NULL without a DEFAULT will fail on existing rows; add a DEFAULT or backfill in phases."; fail=1
