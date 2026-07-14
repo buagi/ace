@@ -10,6 +10,9 @@ set -uo pipefail
 # function defs, safe to source; guarded so a missing module never breaks the single-flow loop.
 # shellcheck source=/dev/null
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-policy.sh" 2>/dev/null || true
+# per-subagent token/cost telemetry from opencode's session DB (subagent_report / ace stats). Fail-soft.
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/telemetry.sh" 2>/dev/null || true
 cd "$(git rev-parse --show-toplevel)" || exit 1
 # delivery policy: defaults come from .opencode/profile.yaml; env still overrides per run.
 prof_get(){ grep -E "^[[:space:]]*$1:[[:space:]]*" .opencode/profile.yaml 2>/dev/null | head -1 | sed -E "s/^[^:]*:[[:space:]]*\"([^\"]*)\".*$/\1/; t; s/^[^:]*:[[:space:]]*'([^']*)'.*$/\1/; t; s/^[^:]*:[[:space:]]*//; s/^#.*$//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//"; }
@@ -17,6 +20,7 @@ case "$(prof_get auto_merge)" in true|yes|1) _pam=1 ;; *) _pam=0 ;; esac
 _pmg="$(prof_get merge_gate)"; case "$_pmg" in local|remote|both) : ;; *) _pmg=remote ;; esac
 _pcc="$(prof_get ci_cd)"   # ci_cd: github-actions | none — only watch Actions when the project actually uses it
 AGENT="${AGENT:-orchestrator}"
+ACE_TELEMETRY="${ACE_TELEMETRY:-1}"; export ACE_TELEMETRY   # 1 = full per-subagent × worker × run token/cost logging (default) · 0 = OFF (max throughput, nothing logged)
 MAX_FIX="${MAX_FIX:-5}"; MAX_FEATURES="${MAX_FEATURES:-3}"; MAX_PLANS="${MAX_PLANS:-5}"   # caps: CI-fix attempts/red · features/run (0=∞) · re-plan attempts before "stuck"
 AUTOMERGE="${AUTOMERGE:-$_pam}"; PLAN="${PLAN:-1}"; DEPLOY="${DEPLOY:-0}"
 MERGE_GATE="${MERGE_GATE:-$_pmg}"   # remote = wait for Actions green · local = merge on ./ci.sh --container green · both = require local AND remote green
@@ -99,7 +103,7 @@ say(){ local tag=""; [ -n "${SWARM_WORKER:-}" ] && tag="$(_wtag)"
 agent_state(){ local x s=""; for x in orchestrator implementer test_engineer verifier reviewer ux_reviewer standards alignment conflict; do [ "$x" = "$1" ] && s="$s $x:${2:-active}" || s="$s $x:idle"; done; printf '%s\n' "${s# }" > .opencode/.agents 2>/dev/null || true; }
 # telemetry: one CSV row per completed step -> .opencode/metrics.csv. You can't tune what you can't
 # see; this makes where-the-time-goes (active thinking vs slow builds, per agent) visible after a run.
-metric(){ local f=.opencode/metrics.csv; mkdir -p .opencode 2>/dev/null
+metric(){ [ "${ACE_TELEMETRY:-1}" = 1 ] || return 0; local f=.opencode/metrics.csv; mkdir -p .opencode 2>/dev/null
   [ -f "$f" ] || printf 'run_id,ts,branch,event,agent,label,wall_s,active_s,build_s,rc\n' > "$f" 2>/dev/null
   printf '%s,%s,%s,%s\n' "${RUN_ID:-0}" "$(date +%FT%T)" "$(branch 2>/dev/null)" "$*" >> "$f" 2>/dev/null || true; }
 # Time a NON-agent phase -> one CSV row.  $1=event $2=label(commas stripped) $3=wall_s $4=rc.  (agent blank; active/build 0.)
@@ -110,6 +114,7 @@ phase_metric(){ metric "$1,,$(printf '%s' "${2:-}" | tr ',\n' '; '),$3,0,0,${4:-
 # per-call cache tokens (the JSON event stream / provider usage does), so an absent field records nothing —
 # NEVER a crash and never a blocked step. Verified numbers require a live/credit run (see TESTS-TODO D1).
 capture_usage(){
+  [ "${ACE_TELEMETRY:-1}" = 1 ] || return 0
   local log=.opencode/last-run.log inp out chr chw ratio=""
   [ -f "$log" ] || return 0
   # `input_tokens` is a substring of `cache_read_input_tokens` — require input/prompt NOT preceded by a
@@ -148,6 +153,7 @@ ci_signature(){
 # no shared-file clash). Empty offline (needs D1's live usage rows); the aggregation is proven in
 # scratchpad/d3-tokenreport-test.sh. Fail-soft — never breaks the run report.
 token_report(){
+  [ "${ACE_TELEMETRY:-1}" = 1 ] || return 0
   local f=.opencode/metrics.csv out=.opencode/token-report.md
   [ -f "$f" ] || return 0
   { printf '# Token report — run %s (%s)\n\n' "${RUN_ID:-?}" "$(date +%FT%T 2>/dev/null || echo '?')"
@@ -174,6 +180,7 @@ token_report(){
 # the SILENT-progress judgment, this covers the STOP cause. Returns 0 + logs the mode when a failure signature
 # is found (incl. exit-0-errored), 1 on a clean success. Proven: scratchpad/e3-failmode-test.sh.
 classify_failure_mode(){
+  [ "${ACE_TELEMETRY:-1}" = 1 ] || return 1
   local rc="${1:-0}" log=.opencode/last-run.log ilog="$HOME/.local/share/opencode/log/opencode.log" mode action blob
   blob="$( { tail -c 20000 "$log" 2>/dev/null; tail -c 20000 "$ilog" 2>/dev/null; } )"
   if printf '%s' "$blob" | grep -qiE 'timed out after 120000 ?ms|streamtext.*timeout|tool call timed out'; then mode="tool/bash-timeout (120s AI-SDK step ceiling)"; action="OVERSIZED inner step -> split (E1) / move the build out of the inner loop"
@@ -190,6 +197,7 @@ classify_failure_mode(){
 # Post-mortem: append THIS run's time breakdown (by phase + slowest steps) to .opencode/run-summary.txt
 # (rolling history, newest at bottom) and a closing `run` row to the CSV. Reads only this run's rows (run_id).
 write_run_summary(){
+  [ "${ACE_TELEMETRY:-1}" = 1 ] || return 0
   [ -n "${_SUMMARY_DONE:-}" ] && return 0; _SUMMARY_DONE=1
   local f=.opencode/metrics.csv out=.opencode/run-summary.txt now dur; now=$(date +%s); dur=$(( now - ${RUN_T0:-now} ))
   { printf '═══ run %s · %s · ended %s ═══\n' "${RUN_ID:-?}" "$(branch 2>/dev/null)" "$(date +%FT%T)"
@@ -1078,7 +1086,7 @@ while :; do
   fi
 done
 write_run_summary   # post-mortem → .opencode/run-summary.txt (this run's time-by-phase + slowest steps)
-token_report        # D3: per-agent token/cost + cost-hog → .opencode/token-report.md (from D1's usage rows)
+subagent_report     # per-subagent × worker tokens/cost from the opencode session DB → .opencode/token-report.md (falls back to token_report if the DB is unavailable)
 say "──────── run report ────────"
 say "laps=$lap · features=$features · CI-fixes=$fixes · plans=$plans · conflicts=$conflicts · branch=$(branch)"
 say "policy: merge_gate=${MERGE_GATE:-remote} · auto_merge=$AUTOMERGE · deploy_kind=${DEPLOY_KIND:-service}"
