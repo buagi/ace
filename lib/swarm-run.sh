@@ -86,7 +86,11 @@ _do_work() {
   ( cd "$wt" && SWARM_WORKER="$wid" SWARM_HASH="$hash" SWARM_DIR="$SWARM_DIR" \
        SWARM_FEATURE="$feat" SWARM_RUNID="${RUNID:-}" \
        SWARM_ITEM="$item" MAX_FEATURES=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
+       OPENCODE_DB="$SWARM_DIR/$wid.opencode.db" \
        bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/$wid.log" 2>&1 || true
+  # E4: each worker gets its OWN OpenCode session DB (OPENCODE_DB, verified present on 1.17.x) so concurrent
+  # workers never write the SAME sqlite file (SQLITE_CORRUPT #14970/#14194 would poison E2's resume state).
+  # Only the session DB is isolated — auth.json + config/plugins stay in the shared default dir, so no re-auth.
 }
 
 # DRY merge: local no-ff into main (clean by disjointness). For the sandbox.

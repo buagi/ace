@@ -495,6 +495,15 @@ write_opencode_config() {
   # reward, and not split-able per-agent here. DECISION: NO blind global cut (unverifiable offline + risks
   # coordination quality). The earlier-compaction experiment + exact revert path is in the ace-rework
   # TESTS-TODO D2 notes — tune on a measured live run, not blind. (E4 owns limit.input; leave compaction here.)
+  # E4 (budget config — verified vs opencode 1.17.11). SHIPPED elsewhere: OPENCODE_EXPERIMENTAL_BASH_DEFAULT_
+  # TIMEOUT_MS=300000 (autoloop env — verified present) + the FAST-inner/FULL-outer ci boundary (ACE's design,
+  # now a hard rule); per-worker OPENCODE_DB isolation (swarm-run.sh — verified env; kills the SQLITE_CORRUPT
+  # #14970/#14194 shared-DB risk). DEFERRED here (unverifiable offline / no-op-or-harm — see TESTS-TODO E4):
+  # (1) per-agent STEPS cap — 1.17.11's binary exposes `maxSteps` (the deprecated AI-SDK name), not `steps`; the
+  # RIGHT value needs E3's measured step counts (too-low fragments legit work, wrong-key is a silent no-op) —
+  # tune on a live run. (2) per-model `limit.input` — the current split (context 1048576, output 196608) already
+  # leaves usable ~831k > 0, so an input cap would only SHRINK usable (net-negative); add one ONLY if a live run
+  # shows a usable===0 overflow on the DeepSeek path. D2 owns compaction/output — E4 touches neither.
   # Plugins from the union of providers ANY agent uses: yaml-hooks always; anthropic-auth registers the
   # Pro/Max OAuth subscription provider (without it anthropic/* are NotFound). openai is native to opencode.
   local PLUGINS='"opencode-yaml-hooks"' _provs; _provs="$(_used_providers)"
