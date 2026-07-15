@@ -52,20 +52,38 @@ gh_protect_main() {
   local slug; slug="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
   [ -z "$slug" ] && { warn "no GitHub origin — skipping protection"; return 0; }
   # Only require a status CHECK when a CI actually produces one. With ci_cd:none / a local gate there is NO
-  # check, so 'required_status_checks' would block EVERY merge forever (the check never reports). Detect from
-  # the project profile + the presence of a workflow; otherwise protect main WITHOUT a required check.
+  # 'build-test' check, so 'required_status_checks' would block EVERY merge forever (the check never reports).
+  # The PROFILE is authoritative here — do NOT re-derive "there is CI" from the mere presence of a workflow file:
+  # a brownfield repo (or a user-added CodeQL/Dependabot/release yml) has workflows that never emit 'build-test',
+  # which would silently re-impose an unsatisfiable check on a ci_cd:none project. Gate purely on ci_cd.
   local cicd checks_rule="" checkmsg=""
   cicd="$(sed -n 's/^[[:space:]]*ci_cd:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
-  if [ "$cicd" = github-actions ] || ls .github/workflows/*.yml >/dev/null 2>&1; then
+  # No profile (brownfield, pre-scaffold) + a real ACE ci.yml present → treat as github-actions so the check is kept.
+  [ -z "$cicd" ] && [ -f .github/workflows/ci.yml ] && grep -q 'build-test' .github/workflows/ci.yml 2>/dev/null && cicd=github-actions
+  if [ "$cicd" = github-actions ]; then
     checks_rule=',
     { "type":"required_status_checks", "parameters":{ "strict_required_status_checks_policy":true, "required_status_checks":[ { "context":"build-test" } ] } }'
     checkmsg=" + 'build-test' must pass"
   fi
   step "Branch protection on main ($slug)${checkmsg:+ (CI-gated)}${checkmsg:- (local gate — no required CI check)}"
   if [ "$ACE_DRY_RUN" = 1 ]; then info "[dry-run] would create a ruleset: PR required${checkmsg}"; return 0; fi
+  # bypass_actors: a RULESET (unlike classic branch protection) is NOT bypassed by `gh pr merge --admin` alone —
+  # the merging actor must be listed here or the merge is BLOCKED even for an admin. Add THIS gh identity (the
+  # account the loop merges as) so the automation can land PRs the ruleset would otherwise block (e.g. a required
+  # check still pending under merge_gate=local, or the coordinator's chore/plan PR). Without this, merges wedge
+  # forever — the exact failure #41's `--admin` did NOT fix. (bypass_mode:always; tighten to "pull_request" only —
+  # PR-merges but not direct pushes — if you never need the loop to force-sync main.)
+  local uid bypass=""
+  uid="$(gh api user -q .id 2>/dev/null)"
+  if [ -n "$uid" ] && printf '%s' "$uid" | grep -qE '^[0-9]+$'; then
+    bypass="\"bypass_actors\":[ { \"actor_id\":$uid, \"actor_type\":\"User\", \"bypass_mode\":\"always\" } ],"
+  elif [ -n "$checkmsg" ]; then
+    warn "could not resolve gh user id — ruleset will have NO bypass; a required check may block --admin merges."
+  fi
   local tmp out rc; tmp="$(mktmp)/ruleset.json"
   cat > "$tmp" <<JSON
 { "name":"ace: protect main", "target":"branch", "enforcement":"active",
+  ${bypass}
   "conditions":{ "ref_name":{ "include":["refs/heads/main"], "exclude":[] } },
   "rules":[
     { "type":"deletion" },
@@ -77,7 +95,14 @@ JSON
   if [ "$rc" -eq 0 ]; then
     ok "Ruleset active: PR required${checkmsg} to merge to main."
   elif printf '%s' "$out" | grep -qiE 'already exists|name.*exists'; then
-    ok "main is already protected (ruleset exists)."
+    # RECONCILE: a ruleset from an older ACE may LACK bypass_actors (→ --admin can't merge) or carry a now-wrong
+    # required check. PUT our current definition over it so an upgraded repo SELF-HEALS instead of staying wedged.
+    local rid; rid="$(gh api "repos/$slug/rulesets" -q '.[] | select(.name=="ace: protect main") | .id' 2>/dev/null | head -1)"
+    if [ -n "$rid" ] && gh api -X PUT "repos/$slug/rulesets/$rid" --input "$tmp" >/dev/null 2>&1; then
+      ok "main protection reconciled (ruleset #$rid: bypass${checkmsg:- + no required check}${checkmsg})."
+    else
+      ok "main is already protected (ruleset exists)."
+    fi
   elif printf '%s' "$out" | grep -qiE 'Pro|upgrade|payment|403'; then
     warn "GitHub blocked it: rulesets/branch-protection need GitHub Pro on PRIVATE repos."
     say  "  ${C_GREY}Options: upgrade to Pro · make the repo public · rely on local hooks (main-guard).${C_RESET}"

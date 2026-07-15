@@ -100,23 +100,6 @@ _merge_dry() {
   git -C "$REPO" merge --abort 2>/dev/null; return 1
 }
 
-# LIVE merge: rebase the flow's PR branch onto latest main (clean by
-# disjointness), let the merge-gate (CI) run, then merge the PR. Serialized by
-# with_merge_lock, so a semantic break surfaces RED here — never on main.
-_merge_real() {
-  local branch="$1" item="$2" wt="$3" pr
-  git -C "$wt" fetch -q origin "$MAIN" || return 1
-  git -C "$wt" rebase -q "origin/$MAIN" || { git -C "$wt" rebase --abort 2>/dev/null; return 1; }
-  git -C "$wt" push -q -f origin "HEAD:$branch" || return 1
-  pr="$(gh pr list --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" \
-        --head "$branch" --json number -q '.[0].number' 2>/dev/null)"
-  [ -z "$pr" ] && { ( cd "$wt" && gh pr create --base "$MAIN" --fill ) >/dev/null 2>&1; \
-                    pr="$(gh pr list --head "$branch" --json number -q '.[0].number' 2>/dev/null)"; }
-  [ -z "$pr" ] && return 1
-  gh pr merge "$pr" --squash --auto --delete-branch >/dev/null 2>&1 || gh pr merge "$pr" --squash --delete-branch >/dev/null 2>&1 || return 1
-  _tick_roadmap "$item"
-}
-
 # coordinator-owned ROADMAP tick — flows never edit ROADMAP, so no race. Ticks
 # the matching open item on the real main after its PR merged.
 _tick_roadmap() {
