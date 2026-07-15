@@ -442,9 +442,22 @@ export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 np
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
 if [ "$MODE" = launch ]; then
   section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
-  if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
-  [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
-  for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  # Composition-aware (like the stack-conditional gates above): only require the DB restore-drill when the
+  # project HAS a database, and rollback/SLO/runbook only for a deployed service (deploy_kind=service). A
+  # no-DB CLI / library is not NO-GO'd for a backup it cannot have.
+  _hasdb=0
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _hasdb=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
+  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _hasdb=1
+  _svc=0; [ "$(sed -n 's/^[[:space:]]*deploy_kind:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)" = service ] && _svc=1
+  if [ "$_hasdb" = 1 ]; then
+    if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
+  else echo "no database detected — restore-drill not required"; fi
+  if [ "$_svc" = 1 ]; then
+    [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
+    for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  else echo "deploy_kind != service (artifact/library/none) — rollback/SLO/runbook not required"; fi
   [ "$fail" = 0 ] && { echo -e "\nLAUNCH GREEN (mechanical checks pass — now run the launch_readiness_reviewer agent for the full GO/NO-GO)"; exit 0; } || { echo -e "\nLAUNCH RED — NO-GO (fix the [blocker] artifacts above)"; exit 1; }
 fi
 section "[1/13] Build + test ($MODE)"
@@ -704,9 +717,22 @@ export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 np
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
 if [ "$MODE" = launch ]; then
   section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
-  if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
-  [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
-  for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  # Composition-aware (like the stack-conditional gates above): only require the DB restore-drill when the
+  # project HAS a database, and rollback/SLO/runbook only for a deployed service (deploy_kind=service). A
+  # no-DB CLI / library is not NO-GO'd for a backup it cannot have.
+  _hasdb=0
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _hasdb=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
+  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _hasdb=1
+  _svc=0; [ "$(sed -n 's/^[[:space:]]*deploy_kind:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)" = service ] && _svc=1
+  if [ "$_hasdb" = 1 ]; then
+    if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
+  else echo "no database detected — restore-drill not required"; fi
+  if [ "$_svc" = 1 ]; then
+    [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
+    for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  else echo "deploy_kind != service (artifact/library/none) — rollback/SLO/runbook not required"; fi
   [ "$fail" = 0 ] && { echo -e "\nLAUNCH GREEN (mechanical checks pass — now run the launch_readiness_reviewer agent for the full GO/NO-GO)"; exit 0; } || { echo -e "\nLAUNCH RED — NO-GO (fix the [blocker] artifacts above)"; exit 1; }
 fi
 section "[1/12] Build + test ($MODE)"
@@ -1488,9 +1514,22 @@ export CGO_ENABLED=0 CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
 if [ "$MODE" = launch ]; then
   section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
-  if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
-  [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
-  for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  # Composition-aware (like the stack-conditional gates above): only require the DB restore-drill when the
+  # project HAS a database, and rollback/SLO/runbook only for a deployed service (deploy_kind=service). A
+  # no-DB CLI / library is not NO-GO'd for a backup it cannot have.
+  _hasdb=0
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _hasdb=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
+  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _hasdb=1
+  _svc=0; [ "$(sed -n 's/^[[:space:]]*deploy_kind:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)" = service ] && _svc=1
+  if [ "$_hasdb" = 1 ]; then
+    if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
+  else echo "no database detected — restore-drill not required"; fi
+  if [ "$_svc" = 1 ]; then
+    [ -f ops/rollback.md ] && echo "present: ops/rollback.md" || { echo "NO-GO [blocker]: ops/rollback.md missing — document the tested revert for the last deploy"; fail=1; }
+    for a in ops/runbook.md ops/slo.md LAUNCH-READINESS.md; do [ -f "$a" ] && echo "present: $a" || echo "WARN [major]: missing $a (scaffold it; track to verified in LAUNCH-READINESS.md)"; done
+  else echo "deploy_kind != service (artifact/library/none) — rollback/SLO/runbook not required"; fi
   [ "$fail" = 0 ] && { echo -e "\nLAUNCH GREEN (mechanical checks pass — now run the launch_readiness_reviewer agent for the full GO/NO-GO)"; exit 0; } || { echo -e "\nLAUNCH RED — NO-GO (fix the [blocker] artifacts above)"; exit 1; }
 fi
 section "[1/13] Build + test ($MODE)"
@@ -2172,6 +2211,15 @@ RPGO
   fi
   # Launch-readiness scaffolds (C6) — idempotent, create-if-absent. The launch_readiness_reviewer agent +
   # './ci.sh --launch' verify these before promotion to the live VPS; a backup isn't done until a restore runs.
+  # COMPOSITION-AWARE: only scaffold + task the DB restore-drill when the project HAS a database, and the
+  # rollback/SLO/runbook service-ops when it's a deployed service. A no-DB CLI gets neither the artefact nor
+  # a task it can't do (mirrors the stack-conditional ci.sh gates + the payment-reconcile scaffold above).
+  local _dbp=0 _svcp=0
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _dbp=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _dbp=1
+  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _dbp=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _dbp=1
+  [ "$(_prof_get deploy_kind 2>/dev/null)" = service ] && _svcp=1
   mkdir -p ops
   [ -f LAUNCH-READINESS.md ] || cat > LAUNCH-READINESS.md <<'LRMD'
 # Launch readiness — verified ONCE before promotion to the live VPS (launch_readiness_reviewer gate).
@@ -2191,7 +2239,7 @@ RPGO
 - [ ] GDPR: retention + a verifiable PII erasure path (not soft-delete only)
 - [ ] Health/readiness endpoints wired to the platform
 LRMD
-  [ -f ops/restore-drill.sh ] || { cat > ops/restore-drill.sh <<'RDSH'
+  [ "$_dbp" = 1 ] && [ ! -f ops/restore-drill.sh ] && { cat > ops/restore-drill.sh <<'RDSH'
 #!/usr/bin/env bash
 # Restore drill — a backup is NOT done until a restore has been executed and the data queried (AWS REL09-BP04).
 # WIRE ME: restore the LATEST backup into a scratch DB, run a data-presence query, then record the result.
@@ -2204,12 +2252,15 @@ echo "restore-drill: WIRE ME — restore a real backup, query it, set rows_verif
 echo "wrote ops/restore-drill.result (status=UNVERIFIED until you wire a real restore)"
 RDSH
   chmod +x ops/restore-drill.sh; }
-  [ -f ops/rollback.md ] || printf '# Rollback — the tested revert path for the last deploy\n\n1. Identify the last-good release/sha.\n2. Redeploy the last-good image/binary (or git revert + redeploy).\n3. If a migration ran: apply its reverse (expand-contract makes this safe) — never drop data blind.\n4. Verify /health + a smoke check; confirm the SLO recovered.\n\nRecord the date + result of your last rollback rehearsal here.\n' > ops/rollback.md
-  [ -f ops/runbook.md ] || printf '# Incident runbook — symptoms -> diagnostics -> remediation\n\n> Committed in-repo (versioned with the code), not a wiki.\n\n## <symptom, e.g. 5xx spike>\n- Diagnose: <exact commands> (logs, /health, recent deploys)\n- Remediate: <steps>\n- Roll back: see ops/rollback.md\n' > ops/runbook.md
-  [ -f ops/slo.md ] || printf '# SLOs + alerting (golden signals)\n\n| Signal | SLO | Alert |\n|---|---|---|\n| Availability | 99.9%% | error-rate > 1%% for 5m; burn-rate fast+slow |\n| Latency | p95 < 300ms, p99 < 1s | p95 breach for 10m |\n| Errors | < 1%% 5xx | as above |\n| Saturation | CPU/mem < 80%% | sustained > 85%% |\n\nWire these to your alerting; EDIT thresholds for this service.\n' > ops/slo.md
-  for _ri in "run + verify the restore drill (ops/restore-drill.sh -> non-zero rows_verified) before promotion" "document + rehearse the rollback (ops/rollback.md); wire SLO alerts (ops/slo.md)"; do
-    grep -qF "$_ri" ROADMAP.md 2>/dev/null || { awk -v it="$_ri" 'BEGIN{d=0}{print}/^## Next/&&!d{print "- [ ] " it; d=1}END{if(!d)print "- [ ] " it}' ROADMAP.md > ROADMAP.md.tmp && mv ROADMAP.md.tmp ROADMAP.md; }
-  done
+  if [ "$_svcp" = 1 ]; then
+    [ -f ops/rollback.md ] || printf '# Rollback — the tested revert path for the last deploy\n\n1. Identify the last-good release/sha.\n2. Redeploy the last-good image/binary (or git revert + redeploy).\n3. If a migration ran: apply its reverse (expand-contract makes this safe) — never drop data blind.\n4. Verify /health + a smoke check; confirm the SLO recovered.\n\nRecord the date + result of your last rollback rehearsal here.\n' > ops/rollback.md
+    [ -f ops/runbook.md ] || printf '# Incident runbook — symptoms -> diagnostics -> remediation\n\n> Committed in-repo (versioned with the code), not a wiki.\n\n## <symptom, e.g. 5xx spike>\n- Diagnose: <exact commands> (logs, /health, recent deploys)\n- Remediate: <steps>\n- Roll back: see ops/rollback.md\n' > ops/runbook.md
+    [ -f ops/slo.md ] || printf '# SLOs + alerting (golden signals)\n\n| Signal | SLO | Alert |\n|---|---|---|\n| Availability | 99.9%% | error-rate > 1%% for 5m; burn-rate fast+slow |\n| Latency | p95 < 300ms, p99 < 1s | p95 breach for 10m |\n| Errors | < 1%% 5xx | as above |\n| Saturation | CPU/mem < 80%% | sustained > 85%% |\n\nWire these to your alerting; EDIT thresholds for this service.\n' > ops/slo.md
+  fi
+  # Seed ops ROADMAP tasks ONLY when they apply (composition-aware): restore-drill needs a DB; rollback/SLO a service.
+  _seed_ri(){ grep -qF "$1" ROADMAP.md 2>/dev/null || { awk -v it="$1" 'BEGIN{d=0}{print}/^## Next/&&!d{print "- [ ] " it; d=1}END{if(!d)print "- [ ] " it}' ROADMAP.md > ROADMAP.md.tmp && mv ROADMAP.md.tmp ROADMAP.md; }; }
+  [ "$_dbp" = 1 ]  && _seed_ri "run + verify the restore drill (ops/restore-drill.sh -> non-zero rows_verified) before promotion"
+  [ "$_svcp" = 1 ] && _seed_ri "document + rehearse the rollback (ops/rollback.md); wire SLO alerts (ops/slo.md)"
   ok "launch-readiness scaffolds ready: LAUNCH-READINESS.md + ops/{restore-drill.sh,rollback.md,runbook.md,slo.md}"
   # Thin wrapper — the loop logic is PURE ACE (single source: lib/autoloop.sh);
   # only this project's ROADMAP/OBJECTIVES/.opencode/ci.sh are project-specific.
