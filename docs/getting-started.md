@@ -1,52 +1,98 @@
 # Getting started
 
-## 1. Put it on the grid
+Install the CLI, provision the host, create or adopt a project, then hand it to the autonomous loop. Four steps, all user-local — no root.
+
+## 1. Install the CLI
+
 ```bash
 git clone <this-repo> ace && cd ace
-ln -s "$PWD/ace" ~/.local/bin/ace      # now `ace` works anywhere (clone wherever you like)
+ln -s "$PWD/ace" ~/.local/bin/ace      # `ace` now works anywhere; clone wherever you like
 ```
-`~/.local/bin` must be on your `PATH`. Open a **new terminal** after install (for the `~/.bashrc` block).
 
-## 2. Wire the rig
+`~/.local/bin` must be on your `PATH`.
+
+> [!IMPORTANT]
+> Open a **new terminal** after install so the managed `~/.bashrc` block is sourced.
+
+## 2. Provision the host
+
 ```bash
-ace install        # host tools (fnm/node · uv · bun · jq · opencode · gh · Go toolchain) + key
-                   # + 10-agent OpenCode config + GitHub login — all user-local, no root
+ace install
 ```
-`ace status` confirms the rig is green (tools · keys · gh · VPS · profile).
 
-## 3. Build
-```bash
-# NEW project →                         # EXISTING repo →
-ace scaffold                            cd my-repo && ace upgrade
-#   Node / TypeScript · Python · Go · Config
-```
-The **Go** stack opens an architecture-decision wizard ([profile.md](profile.md)).
+This installs everything the rig needs, all user-local:
 
-## 4. Go hands-off
+| Installs | What |
+|----------|------|
+| Host tools | `fnm`/node · `uv` · `bun` · `jq` · `opencode` · `gh` · Go toolchain |
+| Keys | DeepSeek API key (validated) |
+| OpenCode config | the 10-agent crew |
+| GitHub | `gh` login |
+
+`ace status` confirms the rig is green: tools · keys · `gh` · VPS · profile.
+
+## 3. Create or adopt a project
+
+| You have | Command | Result |
+|----------|---------|--------|
+| A new project | `ace scaffold` | full machinery for a Node/TypeScript · Python · Go · Config stack |
+| An existing repo | `cd my-repo && ace upgrade` | adds missing machinery, idempotent and non-destructive |
+
+The code stacks (Node, Python, Go) open an architecture-decision wizard; the Config stack skips it — see [profile.md](profile.md).
+
+## 4. Run hands-off
+
 ```bash
 cd <project>
 $EDITOR OBJECTIVES.md      # set the north-star goals
-ace autorun                # the machine takes the wheel — see autorun.md
+ace autorun                # start the autonomous loop
 ```
 
+See [autorun.md](autorun.md) for what the loop does each lap.
+
 ## Choosing the overseer brain
-`ace keys` → *orchestrator brain*: `opus` (**default** — deepest planning; on your Claude plan) · `sonnet`
-(best for long unattended runs, lighter on Claude quota) · `gpt` (OpenAI GPT-5) · `deepseek` (no
-subscription). The 8 worker agents always run on DeepSeek V4. The default (Opus) and the other Claude/OpenAI
-options need `opencode auth login` (Anthropic or OpenAI — **oauth** to bill your subscription, or an API
-key), then `ace opencode`; pick `deepseek` if you'd rather run without any subscription. On a usage-limit the
-loop **waits for reset on your chosen model** rather than downgrading (opt into a fallback with
-`ON_CLAUDE_LIMIT=deepseek`). Details in [configuration.md](configuration.md).
+
+`ace keys` sets the **orchestrator brain** — the model that plans the work:
+
+| Brain | Model | Use for | Subscription |
+|-------|-------|---------|--------------|
+| `opus` (default) | Claude Opus | deepest planning | Claude Pro/Max |
+| `sonnet` | Claude Sonnet | long unattended runs; lighter on Claude quota | Claude Pro/Max |
+| `gpt` | OpenAI GPT-5 | — | OpenAI |
+| `deepseek` | DeepSeek V4 | running without any subscription | none |
+
+The 8 worker agents always run on DeepSeek V4; only the overseer is configurable.
+
+- The default (`opus`) and the other Claude/OpenAI brains need `opencode auth login` (Anthropic or OpenAI). Use **oauth** to bill your subscription, or supply an API key — then run `ace opencode`.
+- Pick `deepseek` to run without any subscription.
+
+> [!NOTE]
+> On a usage-limit the loop **waits for the reset on your chosen brain** rather than downgrading. Opt into a fallback with `ON_CLAUDE_LIMIT=deepseek` (values: `wait` default · `cancel` · `deepseek`). Details in [configuration.md](configuration.md).
 
 ## Requirements
-`bash` · `git` · `curl` — everything else is installed **user-local** by `ace install`. A **container
-engine** (podman/docker) for the parity gate. A **DeepSeek** API key (Context7 optional); the **default
-overseer is Claude Opus**, so a **Claude Pro/Max** subscription (`opencode auth login`) is needed unless you
-select the `deepseek` brain. Tested on **Fedora Silverblue/Kinoite** and **Arch**.
+
+| Requirement | Notes |
+|-------------|-------|
+| `bash` · `git` · `curl` | everything else is installed user-local by `ace install` |
+| Container engine | podman or docker, for the `./ci.sh --container` parity gate |
+| DeepSeek API key | required (Context7 key optional) |
+| Claude Pro/Max | required unless you select the `deepseek` brain (default overseer is Claude Opus) |
+
+Tested on Fedora Silverblue/Kinoite and Arch.
 
 ## Quirks worth knowing
-- 🧠 **Restart opencode** after any config / `AGENTS.md` change — it loads at launch, not live.
-- 🤖 **`gh` must be authed** (`ace git`) — push, PRs, CI-watch, and autorun all run through it.
-- 🔗 **autorun needs a GitHub `origin` remote** — it works by opening PRs. New project: `ace scaffold --publish`. Existing local-only repo: `ace publish` first.
-- 🐳 **Container engine** is required for the `--container` parity gate.
-- 🔐 **Secrets never go in git** — real values live in the VPS `.env` (gitignored); CI builds with dummies.
+
+| Quirk | Why it matters |
+|-------|----------------|
+| Restart `opencode` after any config or `AGENTS.md` change | it loads config at launch, not live |
+| `gh` must be authed (`ace git`) | push, PRs, CI-watch, and autorun all run through it |
+| `autorun` needs a GitHub `origin` remote | it works by opening PRs — new project: `ace scaffold --publish`; existing local-only repo: `ace publish` first |
+| Container engine is required | for the `--container` parity gate |
+| Secrets never go in git | real values live in the VPS `.env` (gitignored); CI builds with dummies |
+
+## See also
+
+- [commands.md](commands.md) — every `ace` subcommand
+- [autorun.md](autorun.md) — the autonomous loop
+- [profile.md](profile.md) — the architecture-decision wizard
+- [configuration.md](configuration.md) — env vars and knobs

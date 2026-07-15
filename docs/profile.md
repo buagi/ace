@@ -1,29 +1,49 @@
-# The project profile
+# Project profile
 
-When you scaffold a Go project (or run `ace profile`), an **architecture-decision wizard** captures
-what the project *is* and how it should ship, and writes an **editable** source of truth the autorun
-loop reads to ground its work:
+The editable source of truth that captures what a project is and how it ships. The autorun loop and agents read it to ground their work.
 
-- **`.opencode/profile.yaml`** — structured (machine-read by the loop + agents).
-- **`ARCHITECTURE.md`** — the human-readable prose face (regenerated from the profile).
+Scaffolding a code project (Node, Python, or Go) — or running `ace profile` in any repo — opens an architecture-decision wizard that writes two files:
 
-Edit either by hand, or re-run `ace profile` to update them (it reads the existing values as
-defaults and bumps `updated:`).
+| File | Role |
+|------|------|
+| `.opencode/profile.yaml` | structured, machine-read by the loop and agents |
+| `ARCHITECTURE.md` | the human-readable prose face, regenerated from the profile |
+
+Edit either by hand, or re-run `ace profile` to update them. A re-run reads the existing values as defaults (pre-filled) and bumps `updated:`.
+
+> [!NOTE]
+> The Config stack skips the wizard — config-only projects are not loop targets. They keep flag- and default-driven values.
 
 ## The wizard, in order
 
-`shape → domain/goal → audience → throughput → mission/values/philosophy → git? → ci_cd? → gitflow?
-→ merge_gate → auto_merge → hardening → targets`
+Every prompt defaults to the existing value on a re-run, or to the seeded flag (e.g. `--shape`) on a fresh scaffold.
 
-Hardening is **suggested** from the audience (public/customer-facing → `strong`); build targets come
-**last** and are suggested from the shape. Every suggestion is a pre-filled default you can override.
+| # | Decision | Options / notes |
+|---|----------|-----------------|
+| 1 | `shape` | `api` · `cli` · `cli-web` · `worker` · `library` |
+| 2 | `domain` | one-line description of what it does |
+| 3 | `audience` | `internal` · `oss-public` · `end-customer` · `enterprise` |
+| 4 | `throughput` | `low` · `medium` · `high` |
+| 5 | `mission` | why this exists (one line) |
+| 6 | `values` | comma-separated, e.g. `reliability, privacy` |
+| 7 | `philosophy` | e.g. `fail-closed, boring tech, no dark patterns` |
+| 8 | `git?` | use git at all |
+| 9 | `ci_cd?` | GitHub Actions workflow (asked only if git) |
+| 10 | `gitflow?` | main + conventional commits + guards (asked only if git) |
+| 11 | `container?` | Containerfile + `./ci.sh --container` parity gate, or host-only |
+| 12 | `merge_gate` | asked only if CI/CD is on; otherwise forced to `local` |
+| 13 | `auto_merge` | loop self-merges on a green gate, or opens a PR and stops |
+| 14 | `hardening` | **suggested** from audience (`oss-public`/`end-customer` → `strong`) |
+| 15 | `targets` | build targets, **suggested** from shape |
+
+Hardening and build targets come last because they are suggested from earlier answers. Every suggestion is a pre-filled default you can override.
 
 ## `.opencode/profile.yaml`
 
 ```yaml
 schema: 1
 name: <slug>
-language: go
+language: go            # go | node | python  (detected on a standalone `ace profile`)
 # --- architecture ---
 shape: api              # api | cli | cli-web | worker | library
 domain: "<one-line description>"
@@ -38,14 +58,17 @@ philosophy: "<e.g. fail-closed, boring tech, no dark patterns>"
 # --- delivery / git policy ---
 git: true               # use git at all
 ci_cd: github-actions   # github-actions | none
+container: true         # true = Containerfile + container parity gate | false = host-only
 gitflow: true           # main + conventional commits + guards
-merge_gate: remote      # remote (wait for Actions green) | local (merge on ./ci.sh --container green) | both (require both)
-auto_merge: false       # auto-accept: loop self-merges when the gate is green
+merge_gate: remote      # remote (wait for Actions green) | local (merge on ./ci.sh --container green) | both
+auto_merge: false       # auto-accept: loop self-merges when the gate is green (env AUTOMERGE overrides)
+deploy_kind: service    # service | artifact | none — derived from shape
 created: …
 updated: …
 ```
 
-Free-text fields are sanitized (quotes/backslashes stripped) so a stray `"` can't break the YAML.
+> [!NOTE]
+> Free-text fields (`domain`, `mission`, `values`, `philosophy`) are sanitized: quotes and backslashes are stripped, so a stray `"` can't break the YAML.
 
 ## Delivery policy → loop behavior
 
@@ -54,21 +77,44 @@ The loop reads these as **defaults**; the matching env var still overrides per r
 | Profile field | Drives | Override |
 |---------------|--------|----------|
 | `merge_gate: remote` | wait for GitHub Actions all-green before merging | `MERGE_GATE=remote` |
-| `merge_gate: local` | merge as soon as `./ci.sh --container` is GREEN (don't wait on Actions) | `MERGE_GATE=local` |
-| `merge_gate: both` | require **both** a GREEN `./ci.sh --container` AND GitHub Actions all-green (strictest; never vouches local-only on a blocked-Actions lap) | `MERGE_GATE=both` |
+| `merge_gate: local` | merge as soon as `./ci.sh --container` is green (don't wait on Actions) | `MERGE_GATE=local` |
+| `merge_gate: both` | require **both** a green `./ci.sh --container` and GitHub Actions all-green (strictest) | `MERGE_GATE=both` |
 | `auto_merge: true` | loop self-merges when the gate is green | `AUTOMERGE=1` |
-| `auto_merge: false` | loop opens ONE PR and **stops** for review (does not keep building) | `AUTOMERGE=0` |
+| `auto_merge: false` | loop opens ONE PR and stops for review (does not keep building) | `AUTOMERGE=0` |
 | `ci_cd: none` | skip the GitHub Actions workflow; forces `merge_gate` off remote → `local` | — |
 | `git: false` | skip git setup entirely | — |
-| `gitflow: false` | drops the gitflow guards (main-guard / conventional-commit), but **still activates the local `./ci.sh` gate** via `core.hooksPath` | — |
+| `gitflow: false` | drop the gitflow guards, but **still activate the local `./ci.sh` gate** via `core.hooksPath` | — |
 
-`merge_gate: local` generalizes the loop's existing "local gate vouches when remote CI is blocked"
-path: the local VPS-parity container build becomes the merge authority by policy. Default stays
-`remote` so existing repos don't change behavior.
+> [!NOTE]
+> `merge_gate: local` generalizes the loop's existing "local gate vouches when remote CI is blocked" path: the local VPS-parity container build becomes the merge authority by policy. The default stays `remote` so existing repos don't change behavior.
+
+## Derived fields
+
+`deploy_kind` is derived from `shape` — it decides what the loop does after a merge:
+
+| `shape` | `deploy_kind` | After merge |
+|---------|---------------|-------------|
+| `api` · `worker` | `service` | deploy to the VPS |
+| `cli` · `cli-web` | `artifact` | binaries ship on `v*` tags (`ace release`) |
+| `library` | `none` | nothing to deploy |
+
+Two overrides collapse a `service` to `none`:
+
+- `container: false` — no image to deploy (use `ace release` for binaries).
+- `--no-vps` at scaffold (`ACE_DEPLOY=none`) — persisted to the profile so the loop honors it.
 
 ## Alignment
 
-`mission` / `values` / `audience` / `philosophy` are the source of truth for the **`alignment_reviewer`**
-agent (see [agents.md](agents.md)): the orchestrator reads the profile and routes work to serve the
-mission, and on high-impact/user-facing changes a dedicated critic checks the change against these
-fields — the same pairing as `standards_keeper` ↔ `STANDARDS.md`.
+`mission` · `values` · `audience` · `philosophy` are the source of truth for the **`alignment_reviewer`** agent (see [agents.md](agents.md)):
+
+- The orchestrator reads the profile and routes work to serve the mission.
+- On high-impact or user-facing changes, a dedicated critic checks the change against these fields.
+
+This is the same pairing as `standards_keeper` ↔ `STANDARDS.md`.
+
+## See also
+
+- [autorun.md](autorun.md) — the loop that reads this profile
+- [the-gate.md](the-gate.md) — `./ci.sh`, the gate `merge_gate` and `container` refer to
+- [agents.md](agents.md) — `alignment_reviewer` and the other agents
+- [configuration.md](configuration.md) — the env overrides in full

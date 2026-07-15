@@ -1,66 +1,84 @@
-# The crew — 10 agents
+# Agents
 
-The OpenCode config (`~/.config/opencode/opencode.json`, written by `ace install` / `ace opencode`)
-defines a 10-agent crew. The **orchestrator** runs on your chosen overseer brain (**Claude Opus by
-default** · Sonnet · OpenAI GPT-5 · or DeepSeek for no subscription); the rest run on DeepSeek V4.
-Nine drive each feature's build loop; **launch_readiness_reviewer** runs once before a live promotion.
+ACE builds every feature with a fixed set of 10 agents: one **orchestrator** that plans and delegates, plus nine subagents it calls to implement, test, and review the work. The config is written to `~/.config/opencode/opencode.json` by `ace install` / `ace opencode`.
 
-| Agent | Role |
-|-------|------|
-| **orchestrator** | Plans into small tasks, delegates, drives the loop. Writes no code. Reads the [profile](profile.md) and routes work to serve the mission. |
-| **implementer** | Senior implementation specialist — executes one scoped task to production quality (tests included); self-reviews before returning. |
-| **test_engineer** | Adversarial test author (**risk-gated**). On high-risk / logic-dense tasks, designs the test strategy and writes **independent** tests that try to *break* the code; writes test files + shared helpers only, never production code. |
-| **verifier** | Read-only. Runs `./ci.sh`, re-reads the diff, confirms cited symbols exist, runs a security scan → PASS/FAIL. |
-| **reviewer** | Principal-engineer code critic: correctness, integration, placement, security hard-gate. |
-| **ux_reviewer** | Product/UX & scope critic — judges as a demanding end user; DX/API ergonomics. |
-| **standards_keeper** | Best-practices critic. Curates `.opencode/STANDARDS.md` for the stack; flags version drift / past-EOL deps. |
-| **alignment_reviewer** | **Mission/values/audience critic** — judges whether a change serves the [profile](profile.md). |
-| **conflict_resolver** | Resolves a PR's merge conflicts by preserving **both** sides' intent; escalates UNRESOLVABLE. |
-| **launch_readiness_reviewer** | Operational-readiness gate. Runs **once before a live promotion** (not per feature) — verifies a tested restore, rollback, secrets separation, and spend caps → GO / NO-GO. |
+The orchestrator runs on your chosen overseer brain and writes no code — it plans, delegates, and drives the loop. All nine subagents run on DeepSeek V4.
+
+## The roster
+
+| Agent | Runs | Role |
+|-------|------|------|
+| `orchestrator` | every run | Plans into small tasks, delegates, drives the loop. Writes no code. Reads the [profile](profile.md) and routes work to serve the mission. |
+| `implementer` | every task | Senior implementation specialist. Executes one scoped task to production quality (tests included); self-reviews before returning. |
+| `test_engineer` | high-risk / logic-dense tasks | Adversarial test author. Designs the test strategy and writes independent tests that try to break the code. Test files + shared helpers only — never production code. |
+| `verifier` | every task | Read-only. Runs `./ci.sh`, re-reads the diff, confirms cited symbols exist, runs a security scan → PASS/FAIL. |
+| `reviewer` | every task | Principal-engineer code critic: correctness, integration, placement, security hard-gate. |
+| `ux_reviewer` | high-risk tasks | Product/UX & scope critic — judges as a demanding end user; weighs DX/API ergonomics. |
+| `standards_keeper` | high-risk tasks | Best-practices critic. Curates `.opencode/STANDARDS.md` for the stack; flags version drift and past-EOL deps. |
+| `alignment_reviewer` | every task (planner) + high-risk (critic) | Mission/values/audience critic — judges whether a change serves the [profile](profile.md). |
+| `conflict_resolver` | on a merge conflict | Resolves a PR's conflicts by preserving both sides' intent; escalates UNRESOLVABLE. |
+| `launch_readiness_reviewer` | once, before a live promotion | Operational-readiness gate. Verifies a tested restore, rollback, secrets separation, and spend caps → GO / NO-GO. |
+
+> [!NOTE]
+> `launch_readiness_reviewer` is the one agent that does not run per feature. It runs a single time before a change is promoted to the live VPS.
+
+## Overseer brain
+
+The orchestrator's model is your choice; the nine subagents are fixed on DeepSeek V4.
+
+| Brain | Model id | Needs |
+|-------|----------|-------|
+| Claude Opus ✓ default | `anthropic/claude-opus-4-8` | a Claude Pro/Max plan |
+| Claude Sonnet | `anthropic/claude-sonnet-4-6` | a Claude Pro/Max plan — lighter quota, good for long autoruns |
+| OpenAI GPT-5 | `openai/gpt-5` | a ChatGPT login or `OPENAI_API_KEY` |
+| DeepSeek | `deepseek/deepseek-v4-pro` | no subscription |
+
+Pick the brain in `ace keys` (it sets `ORCH_PROVIDER`), or override the model directly with `MODEL_orchestrator`.
 
 ## Risk-gated review
 
-The orchestrator scales ceremony to the change:
+The orchestrator scales review ceremony to the change. Low-risk work takes a fast lane; high-risk work gets an independent test pass and the full critic panel.
 
-- **Low-risk** (docs/config/copy, test-only, a single non-security package) → fast lane: the
-  **verifier** gate + the **engineering reviewer**'s APPROVE.
-- **High-risk** (auth · money/orders/webhooks · DB migrations · secrets · public APIs · multi-package
-  — when unsure, treat as high) → an independent **`test_engineer`** authoring pass after the
-  implementer, then the **full panel**: `reviewer` + `ux_reviewer` + `standards_keeper` +
-  `alignment_reviewer`, all four must APPROVE, plus the security hard-gate.
+```mermaid
+flowchart TD
+    I["implementer"] --> Q{"high-risk?"}
+    Q -->|"no"| V1["verifier · ./ci.sh"] --> RV["reviewer APPROVE"] --> C["commit"]
+    Q -->|"yes"| TE["test_engineer<br/>(independent adversarial tests)"] --> V2["verifier · ./ci.sh"] --> P["full panel, all APPROVE:<br/>reviewer · ux_reviewer ·<br/>standards_keeper · alignment_reviewer<br/>+ security hard-gate"] --> C
+```
 
-A commit lands only on **verifier PASS** AND the risk-gated critics' **APPROVE**. The loop never
-self-merges unsafely — push → PR, and merge only when the [delivery gate](profile.md#delivery-policy--loop-behavior)
-is green.
+| Risk tier | Triggers | Test pass | Critics that must APPROVE |
+|-----------|----------|-----------|---------------------------|
+| **Low** | docs/config/copy · test-only · a single non-security package | implementer's own tests | `reviewer` |
+| **High** | auth · money/orders/webhooks · DB migrations · secrets · public APIs · multi-package (when unsure, treat as high) | `test_engineer` adds independent tests | `reviewer` + `ux_reviewer` + `standards_keeper` + `alignment_reviewer`, plus the security hard-gate |
+
+A commit lands only on **verifier PASS** and the required critics' **APPROVE**. The loop never self-merges unsafely: it pushes a branch, opens a PR, and merges only when the [delivery gate](profile.md#delivery-policy--loop-behavior) is green.
+
+> [!NOTE]
+> When the profile sets `auto_merge: true` (the loop self-merges with no human gate) and the audience is `oss-public`, `end-customer`, or `enterprise`, there is no low-risk fast lane — every change is treated as high-risk.
 
 ## The alignment critic
 
-`alignment_reviewer` is the newest critic. Its source of truth is the project
-[profile](profile.md) (`.opencode/profile.yaml` + `ARCHITECTURE.md`) — exactly as `standards_keeper`'s
-is `STANDARDS.md`. It runs in two ways:
+`alignment_reviewer` judges a change against the project [profile](profile.md) — `.opencode/profile.yaml` + `ARCHITECTURE.md` — exactly as `standards_keeper`'s source of truth is `STANDARDS.md`. It acts in two ways:
 
-1. **Always (planner-level):** the orchestrator reads the profile first and routes every task to
-   serve the stated mission/audience, flagging off-mission work.
-2. **Gated (dedicated critic):** on high-impact / user-facing changes it gives a focused verdict —
-   does this advance the mission, fit the audience, uphold the values/philosophy, and suit the
-   throughput target? — `APPROVE` / `CHANGES_REQUESTED` tied to specific profile fields. If no
-   profile exists, it says so and approves on scope-fit only (never blocks on a missing profile).
+| Mode | When | What it does |
+|------|------|--------------|
+| Planner-level | always | The orchestrator reads the profile first and routes every task to serve the stated mission and audience, flagging off-mission work. |
+| Dedicated critic | high-impact / user-facing changes | Gives a focused verdict — does this advance the mission, fit the audience, uphold the values/philosophy, and suit the throughput target? — as `APPROVE` / `CHANGES_REQUESTED` tied to specific profile fields. |
+
+If no profile exists, it says so and approves on scope-fit only — it never blocks on a missing profile.
 
 ## The test engineer
 
-The implementer already writes tests as part of its Definition of Done — but it tests its *own* code,
-so those tests can encode the same blind spots. On **high-risk or logic-dense** tasks (the same gate
-that triggers the full critic panel) the orchestrator adds an independent **`test_engineer`** pass: a
-specialist that authors tests *against* the implementer's mental model — trying to break the code, not
-confirm it. It writes test files + shared helpers only (never production code); if a test exposes a
-bug, it reports it for the implementer to fix rather than papering over it. Low-risk tasks skip it and
-rely on the implementer's own tests, so the extra cost only lands where it pays off.
+The implementer already writes tests as part of its Definition of Done, but it tests its own code, so those tests can carry the same blind spots. On **high-risk or logic-dense** tasks — the same gate that triggers the full critic panel — the orchestrator adds an independent `test_engineer` pass: a specialist that authors tests against the implementer's mental model, trying to break the code rather than confirm it.
 
-It picks the **test type per scenario** from the decision table in `.opencode/STANDARDS.md` (curated by
-`standards_keeper`) and mirrored in every project's `AGENTS.md`:
+- It writes test files and shared helpers only — never production code.
+- If a test exposes a bug, it reports it for the implementer to fix rather than papering over it.
+- Low-risk tasks skip it and rely on the implementer's own tests, so the extra cost only lands where it pays off.
+
+It picks the test type per scenario from the decision table in `.opencode/STANDARDS.md` (curated by `standards_keeper`), mirrored in every project's `AGENTS.md`:
 
 | Code under test | Test type |
-|---|---|
+|-----------------|-----------|
 | Branchy logic, boundaries | Table-driven (happy + error + edge) |
 | Parser / serializer / encoder / math | Property + fuzz (roundtrip & invariants) |
 | Generated output | Golden / snapshot |
@@ -71,11 +89,22 @@ It picks the **test type per scenario** from the decision table in `.opencode/ST
 | Concurrency | Race detector + contention cases |
 | Critical user flow | One end-to-end test, sparingly |
 
-Scaffolded projects ship a **shared test-support module** to reuse (Go `internal/testutil` with a
-FakeClock + golden helper · Node `tests/` factories + helpers · Python `tests/conftest.py` fixtures),
-and `./ci.sh` reports **coverage of the changed code** as a signal (no blanket-% gate — that just
-invites gaming). High-stakes packages can be **mutation-tested** (`scripts/mutation.sh`) for a stronger
-signal than coverage. Tests always ship in the **same PR** as the code they cover.
+Scaffolded projects ship a shared test-support module to reuse:
 
-After editing the agent config in `lib/install.sh`, run `ace opencode` to regenerate the live
-config, then restart opencode (it loads config at launch).
+| Stack | Module | Includes |
+|-------|--------|----------|
+| Go | `internal/testutil` | a FakeClock + golden helper |
+| Node | `tests/` | factories + helpers |
+| Python | `tests/conftest.py` | fixtures |
+
+`./ci.sh` reports **coverage of the changed code** as a signal — there is no blanket-percentage gate, which just invites gaming. High-stakes packages can be mutation-tested (`scripts/mutation.sh`) for a stronger signal than coverage. Tests always ship in the **same PR** as the code they cover.
+
+> [!IMPORTANT]
+> After editing the agent config in `lib/install.sh`, run `ace opencode` to regenerate the live config, then restart opencode — it loads config at launch.
+
+## See also
+
+- [autorun.md](autorun.md) — the loop these agents drive
+- [the-gate.md](the-gate.md) — `./ci.sh`, the check the `verifier` runs
+- [profile.md](profile.md) — the mission/values the `alignment_reviewer` enforces
+- [configuration.md](configuration.md) — overseer brain, per-agent model overrides, and other knobs
