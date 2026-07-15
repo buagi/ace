@@ -25,7 +25,7 @@ flowchart TD
 | **Build** | opencode builds the next ROADMAP item in the 10-agent loop — a fresh session per feature. |
 | **Gate** | Push a branch and open a PR, then run the merge gate. Red → pull the failed log, fix the root cause, push, re-gate. |
 | **Merge** | On green, `merge_if_ready` squash-merges, deletes the branch, and pulls `main`. |
-| **Roll** | Refresh the code-map, deploy + healthcheck (when enabled), then take the next item. |
+| **Roll** | Refresh the code-map (and the human [Architecture Atlas](configuration.md#architecture-atlas) every `MAP_EVERY` merges), deploy + healthcheck (when enabled), then take the next item. |
 
 ## The merge gate
 

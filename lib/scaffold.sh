@@ -267,6 +267,7 @@ description: How to run the tiered verification gate. Use before committing/push
 Exit 0 = GREEN. Never commit/push on RED.
 EOF
   ensure_graph_refresh
+  ensure_atlas_refresh
 }
 
 # ---------------------------------------------------------------- Node stack
@@ -943,6 +944,7 @@ ensure_agents_arch_pointer() {
 - The project profile is the source of truth: `.opencode/profile.yaml` (structured) + `ARCHITECTURE.md` (prose).
 - Read it before planning: serve the stated mission, values, audience, and throughput target.
 - Delivery policy (git / ci_cd / gitflow / merge_gate / auto_merge) is recorded there and drives the loop.
+- `docs/atlas.md` is the GENERATED human atlas (system map · data flow · feature map) — do NOT hand-edit it; it is rebuilt by `scripts/atlas-refresh.sh` (`ace atlas`). `docs/architecture.md` is the agent-facing code map (GitNexus/Serena).
 EOF
 }
 
@@ -2082,6 +2084,19 @@ graph_refresh() {
   ok "Code map refreshed. Agents navigate via GitNexus (impact/context/query) + Serena."
 }
 
+# ace atlas — refresh the HUMAN architecture atlas (docs/atlas.md 3 views + the README system-map block).
+# Companion to `ace graph` (which refreshes the AGENT-facing docs/architecture.md). Idempotently installs
+# the generator first, so it also works on repos that predate the atlas.
+atlas_refresh() {
+  banner; step "Refresh the human Architecture Atlas (docs/atlas.md + README map)"
+  local root; root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"; cd "$root" || return 1
+  info "Project: $root"
+  ensure_atlas_refresh   # write the generator if this repo predates it (kept-if-present)
+  if [ -x scripts/atlas-refresh.sh ]; then spin "atlas → docs/atlas.md + README block" env ATLAS_FORCE=1 bash scripts/atlas-refresh.sh
+  else warn "no scripts/atlas-refresh.sh here"; fi
+  ok "Atlas refreshed → docs/atlas.md (system map · data flow · feature map) + the README block."
+}
+
 # live-refresh the map as files change; ace graph --watch
 graph_watch() {
   local root; root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"; cd "$root" || return 1
@@ -3001,6 +3016,156 @@ EOF
   chmod +x scripts/graph-refresh.sh; ok "added scripts/graph-refresh.sh"
 }
 
+ensure_atlas_refresh() {
+  [ -f scripts/atlas-refresh.sh ] && { info "kept scripts/atlas-refresh.sh"; return; }
+  mkdir -p scripts
+  cat > scripts/atlas-refresh.sh <<'ATLAS_GEN_EOF'
+#!/usr/bin/env bash
+# atlas-refresh.sh — regenerate the human Architecture Atlas (docs/atlas.md) + the README system-map block.
+# Deterministic skeleton (project structure / GitNexus) + optional grounded narrative (cartographer, DeepSeek).
+# Runs on main after merge (autoloop, every MAP_EVERY) and on demand (`ace atlas`). NEVER in swarm workers.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 0
+
+[ "${ATLAS:-1}" = 0 ] && { echo "[atlas] disabled (ATLAS=0)"; exit 0; }
+
+# Swarm flow: skip — regenerating tracked files churns across parallel worktrees and gets swept into
+# unrelated PRs (identical guard to graph-refresh). ATLAS_FORCE=1 overrides.
+[ -n "${SWARM_WORKER:-}" ] && [ "${ATLAS_FORCE:-0}" != 1 ] && { echo "[atlas] swarm flow — skip (avoid tracked-file churn)"; exit 0; }
+
+# Skip when nothing changed since last time (excluding the files we generate). ATLAS_FORCE=1 overrides.
+sig="$(git rev-parse HEAD 2>/dev/null):$( { \
+  git diff HEAD -- . ':(exclude)docs/atlas.md' ':(exclude)README.md' ':(exclude).gitnexus' 2>/dev/null
+  git ls-files --others --exclude-standard -- . ':(exclude)docs/atlas.md' ':(exclude)README.md' 2>/dev/null; \
+  } | sha1sum 2>/dev/null | cut -c1-16)"
+stamp=".opencode/.atlas-sig"
+if [ "${ATLAS_FORCE:-0}" != 1 ] && [ -f "$stamp" ] && [ -f docs/atlas.md ] && [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ]; then
+  echo "[atlas] unchanged since last run — skipping (ATLAS_FORCE=1 to force)"; exit 0
+fi
+
+mkdir -p docs .opencode
+HEAD_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# provenance timestamp = the COMMIT date (strict ISO, from the commit itself, not wall-clock) so regenerating
+# at the same SHA is byte-identical — a stale page then reads as visibly stale rather than silently churning.
+NOW="$(git show -s --format=%cI HEAD 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+NAME="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+
+# ---- 1. deterministic skeleton: two Mermaid blocks (system map, then data flow) -------------------
+# Isolated so HOW the Mermaid is produced never leaks upstream. Prefers a native GitNexus mermaid export
+# (confirm the flag on a real project — atlas plan §G.5); ships a dependency-light dir-graph fallback.
+gitnexus_export_mermaid() {
+  # Option A (preferred, once the CLI flag is confirmed): native GitNexus mermaid export.
+  #   CI=1 timeout -k 10 300 npx -y gitnexus@latest <EXPORT-SUBCOMMAND> --format mermaid 2>/dev/null && return 0
+  # Option B (fallback, always ships): a coarse map from top-level source dirs + cross-dir imports.
+  local dirs; dirs="$(git ls-files 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go|rs|cs|java)$' \
+    | sed -E 's#/.*##' | sort -u | grep -vE '^(node_modules|dist|build|vendor|\.[^/]*)$' | head -12)"
+  {
+    echo "flowchart TD"
+    if [ -z "$dirs" ]; then printf '  root["%s"]\n' "$NAME"; else
+      while IFS= read -r d; do [ -n "$d" ] && printf '  %s["%s"]\n' "$(printf '%s' "$d" | tr -cd '[:alnum:]')" "$d"; done <<EOD
+$dirs
+EOD
+      while IFS= read -r a; do [ -z "$a" ] && continue
+        while IFS= read -r b; do { [ -z "$b" ] || [ "$a" = "$b" ]; } && continue
+          if git grep -qiE "(import|require|from|use).*\\b$b\\b" -- "$a/" 2>/dev/null; then
+            printf '  %s --> %s\n' "$(printf '%s' "$a" | tr -cd '[:alnum:]')" "$(printf '%s' "$b" | tr -cd '[:alnum:]')"
+          fi
+        done <<EOD
+$dirs
+EOD
+      done <<EOD
+$dirs
+EOD
+    fi
+    echo "%%---FLOW---"
+    echo "flowchart LR"
+    printf '  input(["input"]) --> app["%s"] --> output(["output"])\n' "$NAME"
+  }
+}
+
+RAW="$(gitnexus_export_mermaid)"
+SYS_MAP="${RAW%%%%---FLOW---*}"
+DATA_FLOW="${RAW#*%%---FLOW---}"
+
+# ---- 2. optional grounded narrative (cartographer, DeepSeek worker) — OFF by default for now ------
+# Skeleton-only until the grounded cartographer agent (read-only, DeepSeek) is proven; set ATLAS_NARRATIVE=1
+# to opt into the inline pass early (ATLAS_AGENT selects the subagent; falls back cleanly if it/opencode absent).
+FEATURE_TABLE="| Feature | Lives in | Key symbols | Purpose |
+|---|---|---|---|
+| _(feature map: narrative pass off — set ATLAS_NARRATIVE=1)_ |  |  |  |"
+if [ "${ATLAS_NARRATIVE:-0}" = 1 ] && command -v opencode >/dev/null 2>&1; then
+  NARR="$(CI=1 timeout -k 10 300 opencode run --agent "${ATLAS_AGENT:-cartographer}" \
+    "Regenerate the Architecture Atlas feature map for '$NAME'. Ticked features are in ROADMAP.md. Ground EVERY row in a real GitNexus/Serena lookup; OMIT any row you cannot ground. Output ONLY a markdown table with header 'Feature | Lives in | Key symbols | Purpose', max 20 rows, no prose, no code fences." </dev/null 2>/dev/null || true)"
+  printf '%s' "$NARR" | grep -q '|' && FEATURE_TABLE="$NARR"
+fi
+
+# ---- 3. assemble docs/atlas.md -------------------------------------------------------------------
+cat > docs/atlas.md <<EOF
+# $NAME — Architecture Atlas
+
+> **Generated — do not edit by hand.** Rebuilt by \`scripts/atlas-refresh.sh\` (\`ace atlas\`), and
+> automatically every \`MAP_EVERY\` merged features by the autorun loop.
+> Built from commit \`$HEAD_SHA\` at $NOW.
+>
+> **System map** = the modules and how they connect · **Data flow** = how data moves ·
+> **Feature map** = what each shipped feature is and where it lives.
+
+## System map
+
+\`\`\`mermaid
+$SYS_MAP
+\`\`\`
+
+## Data flow
+
+\`\`\`mermaid
+$DATA_FLOW
+\`\`\`
+
+## Feature map — what lives where
+
+$FEATURE_TABLE
+
+---
+
+- Mission, values, delivery policy → [ARCHITECTURE.md](../ARCHITECTURE.md)
+- Agent-facing code map (GitNexus / Serena) → [docs/architecture.md](architecture.md)
+- Regenerate: \`ace atlas\`  ·  disable in a run: \`ATLAS=0\`  ·  cadence: \`MAP_EVERY=N\`
+EOF
+
+# ---- 4. README managed block (create-if-absent, update ONLY between the sentinels) ----------------
+_atlas_readme() {
+  local start='<!-- ace:atlas:start -->' end='<!-- ace:atlas:end -->' block
+  block="$start
+## 📐 Architecture Atlas
+
+\`\`\`mermaid
+$SYS_MAP
+\`\`\`
+
+**Full atlas — data flow + feature map → [\`docs/atlas.md\`](docs/atlas.md)**
+$end"
+  if [ ! -f README.md ]; then
+    printf '# %s\n\n%s\n\n_See [ARCHITECTURE.md](ARCHITECTURE.md) for mission & [OBJECTIVES.md](OBJECTIVES.md) for goals._\n' "$NAME" "$block" > README.md
+    echo "[atlas] created README.md with atlas block"; return 0
+  fi
+  if grep -qF "$start" README.md; then
+    awk -v s="$start" -v e="$end" -v b="$block" '$0==s{print b; skip=1; next} $0==e{skip=0; next} !skip{print}' README.md > README.md.tmp && mv README.md.tmp README.md
+    echo "[atlas] updated README atlas block"
+  else
+    awk -v b="$block" '!done && /^# /{print; print ""; print b; done=1; next} {print} END{if(!done){print ""; print b}}' README.md > README.md.tmp && mv README.md.tmp README.md
+    echo "[atlas] inserted README atlas block"
+  fi
+}
+_atlas_readme
+
+# ---- 5. stamp ------------------------------------------------------------------------------------
+printf '%s\n' "$sig" > "$stamp" 2>/dev/null || true
+echo "[atlas] docs/atlas.md + README block refreshed (commit $HEAD_SHA)"
+ATLAS_GEN_EOF
+  chmod +x scripts/atlas-refresh.sh; ok "added scripts/atlas-refresh.sh"
+}
+
 ensure_env_merge() {
   [ -f scripts/env-merge.sh ] && { info "kept scripts/env-merge.sh"; return; }
   mkdir -p scripts
@@ -3088,6 +3253,8 @@ upgrade_repo() {
   info "Stack: $([ "$node" = 1 ] && echo 'Node/TS monorepo' || echo 'generic')"
   hr
   ensure_graph_refresh
+  ensure_atlas_refresh
+  [ -x scripts/atlas-refresh.sh ] && env ATLAS_FORCE=1 bash scripts/atlas-refresh.sh >/dev/null 2>&1 || true   # back-fill: generate docs/atlas.md + the README block now (idempotent; §G.10 phase 6)
   ensure_env_merge
   gen_autoloop "$root"
   # WIRE THE LOCAL CI GATE — the loop relies on it, and adopt used to skip it entirely (gate-less repo).
@@ -3428,7 +3595,9 @@ publish_repo() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { run git init -q; ok "git init"; }
   git branch -M main 2>/dev/null || true
   if [ -z "$(git rev-parse --verify -q HEAD 2>/dev/null)" ] || [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-    git add -A; git -c core.hooksPath=/dev/null commit -q -m "chore: scaffold $name via ACE" 2>/dev/null || true
+    git add -A
+    [ -x scripts/atlas-refresh.sh ] && env ATLAS_FORCE=1 bash scripts/atlas-refresh.sh >/dev/null 2>&1 && git add -A || true   # section G: ship docs/atlas.md + the README system-map in the scaffold commit (files are tracked now → real skeleton)
+    git -c core.hooksPath=/dev/null commit -q -m "chore: scaffold $name via ACE" 2>/dev/null || true
   fi
 
   # RE-PUSH path: origin already wired (a prior attempt set it, or the repo was published before).
