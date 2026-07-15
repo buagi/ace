@@ -4,7 +4,7 @@ Every `ace` subcommand. Flags: `--dry-run` · `--watch` · `--version` · `--hel
 
 | Sector | Command | Does |
 |--------|---------|------|
-| **rig** | `ace install` / `guided` | host tools + key + 9-agent config + git login |
+| **rig** | `ace install` / `guided` | host tools + key + 10-agent config + git login |
 | | `ace keys` | set/validate DeepSeek + Context7 key, pick model profile + overseer brain |
 | | `ace opencode` | (re)write the OpenCode config |
 | | `ace settings` | thematic settings: providers/keys · **which model each agent runs** · model profile · appearance (theme/animation/art) · toolchain |
@@ -34,7 +34,7 @@ Every `ace` subcommand. Flags: `--dry-run` · `--watch` · `--version` · `--hel
 | | `ace swarm sandbox\|selftest\|policy\|wire` | free DRY demo · coordination tests · conflict-policy table · per-project wiring |
 | **remote** | `ace loop start\|stop\|restart\|status\|logs\|update` | run the loop as a detached systemd **user service** (survives terminal-close), steerable from chat — see [remote-control.md](remote-control.md) |
 | | `ace loop stats` | per-run timing **post-mortem** — time-by-phase + slowest steps (`.opencode/run-summary.txt` + `metrics.csv`) |
-| | `ace loop dash [--demo]` | live full-screen **dashboard** — wordmark · status bar · 9 agent boxes (recolor per state) · scrolling log. Watches a running loop's files; `--demo` plays a scripted preview |
+| | `ace loop dash [--demo]` | live full-screen **dashboard** — wordmark · status bar · 10 agent boxes (recolor per state) · scrolling log. Watches a running loop's files; `--demo` plays a scripted preview |
 | | `ace hermes` | wire loop milestones + command-back to Hermes (→ Telegram/Signal/phone) |
 | | `ace hermes mcp\|webhook` | ground the chat agent on this repo (Serena/GitNexus) · route GitHub CI/PR events → chat |
 | | `ace approve [tok] yes\|no` | answer a pending loop merge-approval request (paired with `MERGE_APPROVAL=hermes`) |

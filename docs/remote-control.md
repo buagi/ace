@@ -76,7 +76,7 @@ captures the **launch-time** policy into that file — set knobs on the command 
 ### Watch it live — `ace loop dash`
 
 A full-screen terminal **dashboard** (truecolor): the ACE wordmark, a status bar (cycle · ci · repo ·
-overseer · features), the **9 agent boxes** that recolor per state (active / done / idle / fail), and a
+overseer · features), the **10 agent boxes** that recolor per state (active / done / idle / fail), and a
 scrolling log — all read live from the loop's own files (`loop-state.env` · `last-run.log` · `.agents`).
 Run it in a **second terminal/pane** next to a running loop (it watches; it doesn't drive). `q` quits,
 `p` pauses. `ace loop dash --demo` plays a scripted cycle so you can see it without a live loop.

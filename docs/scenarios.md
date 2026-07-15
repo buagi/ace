@@ -5,7 +5,7 @@ Concrete command sequences for the jobs you'll actually run. Run `ace` from **in
 **① New project → autonomous, from a clean machine**
 ```bash
 git clone <this-repo> ace && cd ace && ln -s "$PWD/ace" ~/.local/bin/ace
-ace install                 # host tools · key · 9-agent config · gh login · Serena
+ace install                 # host tools · key · 10-agent config · gh login · Serena
 ace scaffold                # new Node / Python / Go / Config project + full machinery
 cd <project> && $EDITOR OBJECTIVES.md
 ace autorun                 # hands-off

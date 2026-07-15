@@ -9,7 +9,7 @@ OBJECTIVES.md ──(roadmap empty?)──▶ PLANNER breaks the top objective i
      │ progress                  next ROADMAP item
      └────────────────◀──────────────┘
                        ▼
-        opencode builds it (9-agent loop)          ◄ fresh session per feature
+        opencode builds it (10-agent loop)          ◄ fresh session per feature
                        ▼
         push PR ▸ gate ── 🔴 ─▶ pull failed log ─▶ opencode fixes ROOT cause ─▶ push ─▶ re-gate
                           └─ 🟢 ─▶ merge_if_ready ─▶ squash-merge · delete branch · pull main

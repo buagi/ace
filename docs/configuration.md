@@ -9,7 +9,7 @@
 use **`ace settings`** below.
 
 ## Providers & per-agent models (`ace settings`)
-`ace settings → Models & agents` sets **which model each of the 9 agents runs** (DeepSeek · Anthropic ·
+`ace settings → Models & agents` sets **which model each of the 10 agents runs** (DeepSeek · Anthropic ·
 OpenAI), independently or via a preset (overseer-Claude · overseer-OpenAI · all-DeepSeek · mixed). Stored as
 `MODEL_<agent>` in `~/.config/ace/config` (an unset overseer ⇒ the **Claude Opus default**; the 8 workers ⇒
 DeepSeek). `ace settings → Providers & keys`:
@@ -173,7 +173,7 @@ a systemd service. `VPS_DOMAIN` enables the DNS + TLS-SAN checks in `ace vps che
 
 ```
 GLOBAL  (machine-wide · loaded by opencode at launch)
-  ~/.config/opencode/opencode.json   9 agents · DeepSeek workers · MCP · compaction ~80%
+  ~/.config/opencode/opencode.json   10 agents · DeepSeek workers · MCP · compaction ~80%
   ~/.config/opencode/AGENTS.md       grounding · navigation · Definition-of-Done · git · handover
   ~/.config/ace/secrets.env          DEEPSEEK_API_KEY / CONTEXT7_API_KEY  (chmod 600)
   ~/.config/ace/vps.env              host/user/key/port/dir/os

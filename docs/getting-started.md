@@ -10,7 +10,7 @@ ln -s "$PWD/ace" ~/.local/bin/ace      # now `ace` works anywhere (clone whereve
 ## 2. Wire the rig
 ```bash
 ace install        # host tools (fnm/node · uv · bun · jq · opencode · gh · Go toolchain) + key
-                   # + 9-agent OpenCode config + GitHub login — all user-local, no root
+                   # + 10-agent OpenCode config + GitHub login — all user-local, no root
 ```
 `ace status` confirms the rig is green (tools · keys · gh · VPS · profile).
 

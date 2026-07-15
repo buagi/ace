@@ -410,7 +410,7 @@ profile_values() {  # echoes "EFF_MAIN EFF_VERIFIER VERIFIER_MODEL"  (default = 
 }
 
 # ---------------------------------------------------------------- per-agent models + provider auth
-ACE_AGENTS="orchestrator implementer test_engineer verifier reviewer ux_reviewer standards_keeper alignment_reviewer conflict_resolver"
+ACE_AGENTS="orchestrator implementer test_engineer verifier reviewer ux_reviewer standards_keeper alignment_reviewer conflict_resolver launch_readiness_reviewer"
 
 # effort tier per agent (checkers use the verifier tier)
 _agent_eff() { case "$1" in verifier|standards_keeper|alignment_reviewer) printf '%s' "${EFF_VERIFY:-max}" ;; *) printf '%s' "${EFF_MAIN:-max}" ;; esac; }
@@ -466,7 +466,7 @@ ensure_provider_auth() {  # <provider>  e.g. anthropic | openai
 
 # ---------------------------------------------------------------- opencode config
 write_opencode_config() {
-  step "OpenCode config (9 agents: orchestrator/implementer/test_engineer/verifier/reviewer/ux_reviewer/standards_keeper/alignment_reviewer/conflict_resolver + MCP)"
+  step "OpenCode config (10 agents: orchestrator/implementer/test_engineer/verifier/reviewer/ux_reviewer/standards_keeper/alignment_reviewer/conflict_resolver/launch_readiness_reviewer + MCP)"
   local cfgdir="$HOME/.config/opencode"
   run mkdir -p "$cfgdir"
   read -r EFF_MAIN EFF_VERIFY VERIFIER_MODEL <<<"$(profile_values)"
@@ -678,10 +678,10 @@ Navigate FIRST, before writing code.
 - Before a non-trivial edit, run GitNexus impact on the symbol and address every caller.
 
 ## Roles, tools & permissions (don't waste turns on denied calls)
-- The ORCHESTRATOR can run ONLY git + gh — no other bash, no file writes/reads via shell. It must
-  NEVER attempt cat/ls/sed/echo/mkdir/heredocs/`./ci.sh`/writing files: those are DENIED and each
-  try wastes a turn + credits. It delegates ALL writes (specs included), `./ci.sh`, and other shell
-  to the implementer/verifier.
+- The ORCHESTRATOR can run git + gh, read-only inspection (cat · ls · sed · awk · find) and output
+  filters (echo · head · tail · wc · grep · sort), INCLUDING heredocs for gh/git PR + commit bodies.
+  DENIED (each try wastes a turn + credits): direct file WRITES, mkdir, and `./ci.sh`. It delegates
+  ALL file writes (specs included), `./ci.sh`, and build steps to the implementer/verifier.
 - Discover via GitNexus (gitnexus_query/gitnexus_context/gitnexus_impact) + Serena symbols — do NOT re-read whole files or shell
   out to find things; it's slower and costs more.
 - Need a LIVE fact the model can't be trusted to recall (current LTS / latest stable / EOL date /

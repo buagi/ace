@@ -3080,7 +3080,7 @@ upgrade_repo() {
   [ -d .github/workflows ] && info "Existing CI workflow left untouched — add a 'pnpm lint' step + a codemap job if you want them in CI."
   hr
   ok "Upgrade complete (additive). Review 'git status', then commit."
-  warn "Restart opencode so it loads the global 9-agent config + AGENTS.md rules."
+  warn "Restart opencode so it loads the global 10-agent config + AGENTS.md rules."
   have pnpm && [ "$node" = 1 ] && confirm "Run pnpm install now (for any new eslint deps)?" Y && spin "pnpm install" pnpm install || true
 }
 

@@ -127,7 +127,7 @@ settings_menu() {
   while true; do
     menu "ACE — Settings" \
       "Providers & keys::DeepSeek · Anthropic · OpenAI · Context7" \
-      "Models & agents::which model each of the 9 agents runs" \
+      "Models & agents::which model each of the 10 agents runs" \
       "Model profile::DeepSeek effort (max/high/balanced)" \
       "Appearance::theme · animation · pixel art" \
       "(Re)write OpenCode config::apply current settings now" \
@@ -165,7 +165,7 @@ appearance_menu() {
 # ---------------------------------------------------------------- thematic top-level submenus
 setup_menu() {
   menu "Setup / install" \
-    "Full guided setup::host tools · keys · 9-agent config · git" \
+    "Full guided setup::host tools · keys · 10-agent config · git" \
     "Host tools only::fnm/node · uv · bun · jq · opencode · Go" \
     "Connect Git + GitHub::identity · gh login · credentials" \
     "(Re)write OpenCode config::agents + models + MCP" \

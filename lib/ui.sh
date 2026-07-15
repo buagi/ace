@@ -181,7 +181,7 @@ _wordmark() {
 }
 # mockup status bar — a chip row (● dot · label · value) reflecting live system state.
 _statusbar() {
-  [ "$ACE_COLOR" = 1 ] || { printf '    v%s · %s · 9 agents\n' "${ACE_VERSION:-?}" "${ACE_DISTRO_PRETTY:-?}"; return; }
+  [ "$ACE_COLOR" = 1 ] || { printf '    v%s · %s · 10 agents\n' "${ACE_VERSION:-?}" "${ACE_DISTRO_PRETTY:-?}"; return; }
   local R="$C_RESET" g="$C_GREEN" y="$C_YELLOW" a="$C_ACCENT"
   local kc="$g" ks=ok; [ -z "${DEEPSEEK_API_KEY:-}" ] && { kc="$y"; ks="run keys"; }
   local hc="$g" hs=ok; command -v gh >/dev/null 2>&1 || { hc="$y"; hs="install"; }

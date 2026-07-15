@@ -1,8 +1,9 @@
-# The crew — 9 agents
+# The crew — 10 agents
 
 The OpenCode config (`~/.config/opencode/opencode.json`, written by `ace install` / `ace opencode`)
-defines a 9-agent crew. The **orchestrator** runs on your chosen overseer brain (**Claude Opus by
+defines a 10-agent crew. The **orchestrator** runs on your chosen overseer brain (**Claude Opus by
 default** · Sonnet · OpenAI GPT-5 · or DeepSeek for no subscription); the rest run on DeepSeek V4.
+Nine drive each feature's build loop; **launch_readiness_reviewer** runs once before a live promotion.
 
 | Agent | Role |
 |-------|------|
@@ -15,6 +16,7 @@ default** · Sonnet · OpenAI GPT-5 · or DeepSeek for no subscription); the res
 | **standards_keeper** | Best-practices critic. Curates `.opencode/STANDARDS.md` for the stack; flags version drift / past-EOL deps. |
 | **alignment_reviewer** | **Mission/values/audience critic** — judges whether a change serves the [profile](profile.md). |
 | **conflict_resolver** | Resolves a PR's merge conflicts by preserving **both** sides' intent; escalates UNRESOLVABLE. |
+| **launch_readiness_reviewer** | Operational-readiness gate. Runs **once before a live promotion** (not per feature) — verifies a tested restore, rollback, secrets separation, and spend caps → GO / NO-GO. |
 
 ## Risk-gated review
 
