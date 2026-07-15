@@ -104,6 +104,7 @@ The sandbox exercises the whole coordination substrate — leases, worktrees, me
 | `ace swarm drain` | finish + stop — workers complete the current item, claim no new work, then the swarm stops |
 | `ace swarm kill wN` | kill worker N (its in-flight WIP is preserved as a commit) |
 | `ace swarm status` | active claims (the MCP `status` tool returns the one-line form) |
+| `ace swarm stats` | per-run outcome tally (merged / conflict / gate-red / stopped / incomplete), **main health**, and the path-disjoint plan |
 | `ace swarm tail [N]` | tail the last N (default 40) coordination events |
 | `ace swarm sandbox` | DRY-run demo — zero credits |
 | `ace swarm selftest` | run the coordination unit tests (leasing, disjointness, wait) |
@@ -121,7 +122,7 @@ A self-contained TUI, no tmux required. It reads only the shared store, so you c
 | pipeline | `PLAN · BUILD · GATE · REVIEW · MERGE` with the current stage lit `▸…◂`, inferred live from the worker's log so it advances through all stages |
 | agents strip | all 9 subagents — `✓` once run, `▸active◂` now, dim while pending (`plan·impl·test·gate·rev·ux·std·algn·rslv`) |
 | ⚙ agent | the subagent working right now (reviewer / verifier / implementer …) |
-| BUS | cross-worker milestones (claimed · gate · merged · conflict · reaped) |
+| BUS | cross-worker milestones (claimed · gate · merged · conflict · gate-red · red-main · standby · reaped) |
 
 ### Keys
 
@@ -176,9 +177,11 @@ If a worker or the coordinator's planning step hits a Claude/OpenAI usage cap, t
 | **Workers never deploy** | they run with `DEPLOY=0`, so they merge to `main` but never ship. Deploy stays milestone-gated (`DEPLOY_GATE`, see [deploy](deploy.md)) |
 | **Full review on auto-merge** | with `auto_merge: true` on a public/customer/enterprise project, the orchestrator's safety rail treats every change as high-risk — the full 4-critic panel plus the security gate — so nothing merges to `main` on a weak review |
 | **Predictable conflicts handled up front** | path-disjoint leases plus the [conflict policy](conflict-policy.md) resolve version, changelog, lockfile, and manifest collisions before they happen |
+| **Broke-together caught at the gate** | before a worker lands, the merge queue rebases its branch onto the freshest `main` and re-runs `./ci.sh --container` on the combined tree — a green-alone / broken-together integration break surfaces at the gate, not on `main` |
+| **RED-main circuit breaker** | if `main` does go RED, one worker is elected to fix it while the rest stand down and rebase onto the recovered tip once it's GREEN — no dogpiling a break none of them caused (`ace swarm stats` → *main health*; hold tuned by `SWARM_REDMAIN_WAIT`) |
 
-> [!WARNING]
-> **Semantic conflicts** — two disjoint-but-interacting merges (green alone, broken together) — are the one gap the swarm doesn't fully guard yet. A serialized rebase-and-re-gate is documented and deferred in [deferred-decisions](deferred-decisions.md). If `main` goes RED right after a concurrent merge, that's the trigger to enable it. Start a real-money project at parallelism `2` and watch the first run.
+> [!NOTE]
+> **Semantic conflicts** — two disjoint-but-interacting merges (green alone, broken together) — are handled in two layers. The **tentative-merge gate** re-runs the full container CI on each branch *after* rebasing it onto the freshest `main`, so an integration break is caught before it lands. If a break still reaches `main`, the **RED-main circuit breaker** elects a single fixer and stands the rest down until `main` is GREEN again (watch it with `ace swarm stats` → *main health*). Starting a real-money project at parallelism `2` and watching the first run is still the prudent default.
 
 ## Config knobs
 
@@ -197,6 +200,7 @@ All optional — the defaults are tuned. Set them in the environment or `~/.conf
 | `SWARM_BEAT` | `30` | worker heartbeat interval (seconds) |
 | `SWARM_WATCH` | `0` | `1` = surface waiting / blocked / conflict events to Hermes / Telegram |
 | `SWARM_MAIN` | `main` | the branch workers merge into |
+| `SWARM_REDMAIN_WAIT` | `120` | if `main` goes RED, how many 5-second ticks a non-fixer worker holds for GREEN before exiting cleanly (≈10 min) |
 | `SWARM_REPO` | *cwd repo* | the project repo (defaults to the current git root) |
 | `SWARM_DIR` | `~/.config/ace/swarm/<slug>` | the coordination store (state, logs, worktrees, archives) |
 | `SWARM_META_FREE` | *ROADMAP / OBJECTIVES / …* | files never leased per-item (coordinator-ticked / union-merged) |

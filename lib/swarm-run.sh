@@ -93,6 +93,19 @@ _do_work() {
   # Only the session DB is isolated — auth.json + config/plugins stay in the shared default dir, so no re-auth.
 }
 
+# _swarm_outcome_class LOG — why did a worker's item NOT land on main? Classify from the loop's log tail so
+# the bus records the REAL reason (item 5) — a real merge conflict vs a RED gate vs a non-code stop — instead
+# of the old blanket "conflict". Fail-open: an unreadable/ambiguous log → "incomplete" (honest: not-yet-merged).
+_swarm_outcome_class() {
+  local t; t="$(tail -n 80 "$1" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+  case "$t" in
+    *CONFLICT*|*"conflicts with main"*|*UNRESOLVABLE*|*conflict_resolver*)               echo conflict ;;
+    *"reached without green"*|*"CI RED"*|*"LAUNCH RED"*|*"NO-GO"*|*"FAILS ./ci.sh"*)      echo gate-red ;;
+    *"limit hasn't reset"*|*"usage limit"*|*"rathole persisted"*|*"stopping for review"*|*"STOPPING:"*) echo stopped ;;
+    *) echo incomplete ;;
+  esac
+}
+
 # DRY merge: local no-ff into main (clean by disjointness). For the sandbox.
 _merge_dry() {
   git -C "$REPO" checkout -q "$MAIN" || return 2
@@ -131,6 +144,20 @@ run_worker() {
     [ -f "$SWARM_DIR/control.kill-$wid" ] && { swarm_post "$wid" idle "killed by operator" ; rm -f "$SWARM_DIR/control.kill-$wid"; break; }
     [ -f "$SWARM_DIR/control.drain" ]     && { swarm_post "$wid" idle "drain — claiming no new work"; break; }
     while [ -f "$SWARM_DIR/control.pause" ]; do sleep 3; [ -f "$SWARM_DIR/control.kill-$wid" ] && break 2; done
+    # item 3: RED-main circuit breaker — don't claim new work onto a RED main. The elected FIXER keeps going to
+    # repair it; every other worker HOLDS (bounded) for GREEN, then claims fresh work on the recovered main.
+    # This is what "others rebase on last-green" reduces to under one shared main: hold, then the merge queue
+    # rebases the next item onto the now-GREEN tip. Fail-safe: prolonged RED → the worker exits cleanly (no dogpile).
+    if [ -f "$SWARM_DIR/main-red" ] && [ "$(cat "$SWARM_DIR/fixer" 2>/dev/null)" != "$wid" ]; then
+      local _rw=0 _cap="${SWARM_REDMAIN_WAIT:-120}"
+      swarm_post "$wid" standby "main is RED — holding for the fixer to restore GREEN" ""
+      while [ -f "$SWARM_DIR/main-red" ] && [ "$(cat "$SWARM_DIR/fixer" 2>/dev/null)" != "$wid" ]; do
+        { [ -f "$SWARM_DIR/control.kill-$wid" ] || [ -f "$SWARM_DIR/control.drain" ]; } && break
+        _rw=$((_rw+1)); [ "$_rw" -ge "$_cap" ] && { swarm_post "$wid" idle "main RED > $((_cap*5))s — exiting; re-run once green"; break 2; }
+        sleep 5
+      done
+      [ -f "$SWARM_DIR/main-red" ] || swarm_post "$wid" acquired "main GREEN again — resuming" ""
+    fi
     res="$(swarm_next "$wid" "$REPO/ROADMAP.md")"
     [ -z "$res" ] && { swarm_post "$wid" idle "nothing claimable — exit"; break; }
     hash="${res%%$'\t'*}"; item="${res#*$'\t'}"
@@ -171,7 +198,11 @@ run_worker() {
       # Tick the REAL ROADMAP on main (serialized via the merge lock) so a merged
       # item is never re-selected — the root of the repeated VERIFY-ONLY no-ops.
       [ "$DRY_RUN" = 1 ] || with_merge_lock _tick_roadmap "$item"
-    else swarm_post "$wid" conflict "→ conflict_resolver: $item" "$item"; swarm_release "$wid" "$hash" conflict; fi
+    else
+      local _oc; _oc="$(_swarm_outcome_class "$SWARM_DIR/$wid.log")"   # item 5: classify WHY it didn't land
+      swarm_post "$wid" "$_oc" "$_oc → $([ "$_oc" = conflict ] && echo conflict_resolver || echo requeue): $item" "$item"
+      swarm_release "$wid" "$hash" "$_oc"
+    fi
     # Preserve this worker's run artefacts BEFORE `worktree remove` deletes .opencode/ — solo runs persist these,
     # but a swarm worker's metrics/post-mortems are worktree-local + gitignored and would vanish. CSVs are
     # concatenated (header-dedup, run-tagged rows); text post-mortems get an item banner. (subagent_report already
@@ -348,6 +379,7 @@ swarm_run() {
   # self-heal on start: reclaim leftover leases from a crashed prior run + prune.
   while IFS=$'\t' read -r _ h it; do [ -n "$h" ] && { _clean_hash "$h"; echo "  reconcile: requeued '$it'"; }; done < <(swarm_reconcile)
   git -C "$REPO" worktree prune 2>/dev/null || true
+  rm -f "$SWARM_DIR/main-red" "$SWARM_DIR/fixer" 2>/dev/null || true   # item 3: never inherit a prior run's RED-main standdown (a genuine RED main re-latches on the first merge)
   local allowed; allowed="$(_allowed)"
   printf '%s🐝 swarm%s %s%s/%s workers%s %s· live=%s dry=%s · %s · self-heal TTL=%ss tries=%s%s\n' \
     "${_B:-}${_PUR:-}" "${_R:-}" "${_GRN:-}" "$allowed" "$MAX" "${_R:-}" "${_MUT:-}" "$LIVE" "$DRY_RUN" "$(basename "$REPO")" "${LEASE_TTL}" "${MAX_TRIES}" "${_R:-}"
@@ -573,6 +605,7 @@ case "${1:-}" in
   resume)     swarm_init; rm -f "$SWARM_DIR/control.pause" "$SWARM_DIR/control.drain"; echo "resumed" ;;
   drain)      swarm_init; : > "$SWARM_DIR/control.drain"; echo "draining — workers finish the current item, then claim no new work" ;;
   kill)       swarm_init; : > "$SWARM_DIR/control.kill-${2:?usage: kill wN}"; echo "kill signal → ${2} (exits after its current item)" ;;
+  stats)      swarm_stats ;;
   coexist)    swarm_apply_coexistence "${2:-$REPO}" ;;
   "" ) ;;
   *) echo "usage: swarm-run.sh {start|startd|stop|dash|split|sandbox|worker N|watch|coexist}" >&2; exit 2 ;;
