@@ -440,6 +440,17 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+# STRICT security gate: an unattended PUBLIC self-merge has no human to catch a "major" security gap, so the
+# security [major] warnings below become HARD BLOCKERS (the orchestrator's AUTO-ACCEPT SAFETY RAIL, made
+# mechanical). ON when the profile audience is public/customer/enterprise AND auto_merge is on; force either
+# way with ACE_STRICT_SECURITY=1 / =0. (Heuristic greps → a false positive blocks a merge; that is the
+# fail-closed trade for shipping to real users with no reviewer. Set ACE_STRICT_SECURITY=0 to opt a run out.)
+_strict=0
+_paud="$(sed -n 's/^[[:space:]]*audience:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
+_pam="$(sed -n 's/^[[:space:]]*auto_merge:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
+case "$_paud" in oss-public|end-customer|enterprise) case "$_pam" in true|yes|1) _strict=1 ;; esac ;; esac
+case "${ACE_STRICT_SECURITY:-}" in 1) _strict=1 ;; 0) _strict=0 ;; esac
+_secwarn(){ if [ "$_strict" = 1 ]; then echo "RED [blocker]: $* [strict: public + auto_merge, no human reviewer]"; fail=1; else echo "WARN [major]: $*"; fi; }
 if [ "$MODE" = launch ]; then
   section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
   # Composition-aware (like the stack-conditional gates above): only require the DB restore-drill when the
@@ -512,7 +523,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     if ! grep -rIqE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" --include='*.sql' . 2>/dev/null; then
       echo "RED [blocker]: table '${t}' created without ENABLE ROW LEVEL SECURITY"; fail=1
     elif ! grep -rIqE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" --include='*.sql' . 2>/dev/null; then
-      echo "WARN [major]: table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
+      _secwarn "table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
@@ -521,8 +532,8 @@ section "[7/13] LLM call-site guards (cost / abuse)"
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
   if [ -n "$llm_calls" ]; then
-    printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens' 2>/dev/null | grep -q . || echo "WARN [major]: LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
-    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
+    printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens' 2>/dev/null | grep -q . || _secwarn "LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
+    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
 section "[8/13] Webhook handler integrity (payment/event webhooks)"
@@ -534,7 +545,7 @@ if [ -n "$money_wh" ]; then
   if printf '%s\n' "$money_wh" | xargs grep -lIE "$wh_sig" 2>/dev/null | grep -q .; then
     echo "(webhook signature verification present)"
     wh_dedupe='event[._]?id|eventId|idempotenc|processed|dedup|on conflict|already|\bseen\b'
-    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || echo "WARN [major]: money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
+    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || _secwarn "money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
   else
     echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
   fi
@@ -544,12 +555,12 @@ section "[9/13] Auth & session edge cases (reset tokens / enumeration)"
 auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
 if [ -n "$auth_files" ]; then
   if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
-    echo "WARN [major]: an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
+    _secwarn "an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
   fi
   reset_files=$(printf '%s\n' "$auth_files" | xargs grep -lIiE 'reset[_-]?token|password[_-]?reset|forgot' 2>/dev/null || true)
   if [ -n "$reset_files" ]; then
-    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || echo "WARN [major]: reset token may be stored in plaintext — store only its HASH and compare hashes"
-    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || echo "WARN [major]: reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || _secwarn "reset token may be stored in plaintext — store only its HASH and compare hashes"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || _secwarn "reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
   fi
 else echo "(no auth routes — skipping)"; fi
 section "[10/13] Migration safety (expand-contract)"
@@ -715,6 +726,17 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+# STRICT security gate: an unattended PUBLIC self-merge has no human to catch a "major" security gap, so the
+# security [major] warnings below become HARD BLOCKERS (the orchestrator's AUTO-ACCEPT SAFETY RAIL, made
+# mechanical). ON when the profile audience is public/customer/enterprise AND auto_merge is on; force either
+# way with ACE_STRICT_SECURITY=1 / =0. (Heuristic greps → a false positive blocks a merge; that is the
+# fail-closed trade for shipping to real users with no reviewer. Set ACE_STRICT_SECURITY=0 to opt a run out.)
+_strict=0
+_paud="$(sed -n 's/^[[:space:]]*audience:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
+_pam="$(sed -n 's/^[[:space:]]*auto_merge:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
+case "$_paud" in oss-public|end-customer|enterprise) case "$_pam" in true|yes|1) _strict=1 ;; esac ;; esac
+case "${ACE_STRICT_SECURITY:-}" in 1) _strict=1 ;; 0) _strict=0 ;; esac
+_secwarn(){ if [ "$_strict" = 1 ]; then echo "RED [blocker]: $* [strict: public + auto_merge, no human reviewer]"; fail=1; else echo "WARN [major]: $*"; fi; }
 if [ "$MODE" = launch ]; then
   section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
   # Composition-aware (like the stack-conditional gates above): only require the DB restore-drill when the
@@ -773,7 +795,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     if ! grep -rIqE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" --include='*.sql' . 2>/dev/null; then
       echo "RED [blocker]: table '${t}' created without ENABLE ROW LEVEL SECURITY"; fail=1
     elif ! grep -rIqE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" --include='*.sql' . 2>/dev/null; then
-      echo "WARN [major]: table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
+      _secwarn "table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
@@ -782,8 +804,8 @@ section "[7/12] LLM call-site guards (cost / abuse)"
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
   if [ -n "$llm_calls" ]; then
-    printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens' 2>/dev/null | grep -q . || echo "WARN [major]: LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
-    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
+    printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens' 2>/dev/null | grep -q . || _secwarn "LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
+    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
 section "[8/12] Webhook handler integrity (payment/event webhooks)"
@@ -795,7 +817,7 @@ if [ -n "$money_wh" ]; then
   if printf '%s\n' "$money_wh" | xargs grep -lIE "$wh_sig" 2>/dev/null | grep -q .; then
     echo "(webhook signature verification present)"
     wh_dedupe='event[._]?id|eventId|idempotenc|processed|dedup|on conflict|already|\bseen\b'
-    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || echo "WARN [major]: money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
+    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || _secwarn "money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
   else
     echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
   fi
@@ -805,12 +827,12 @@ section "[9/12] Auth & session edge cases (reset tokens / enumeration)"
 auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
 if [ -n "$auth_files" ]; then
   if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
-    echo "WARN [major]: an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
+    _secwarn "an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
   fi
   reset_files=$(printf '%s\n' "$auth_files" | xargs grep -lIiE 'reset[_-]?token|password[_-]?reset|forgot' 2>/dev/null || true)
   if [ -n "$reset_files" ]; then
-    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || echo "WARN [major]: reset token may be stored in plaintext — store only its HASH and compare hashes"
-    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || echo "WARN [major]: reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || _secwarn "reset token may be stored in plaintext — store only its HASH and compare hashes"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || _secwarn "reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
   fi
 else echo "(no auth routes — skipping)"; fi
 section "[10/12] Migration safety (expand-contract)"
@@ -1521,6 +1543,17 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 [ "$MODE" = container ] && [ ! -f Containerfile ] && { echo "[ci] no Containerfile — running the host gate."; MODE="fast"; }
 export CGO_ENABLED=0 CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+# STRICT security gate: an unattended PUBLIC self-merge has no human to catch a "major" security gap, so the
+# security [major] warnings below become HARD BLOCKERS (the orchestrator's AUTO-ACCEPT SAFETY RAIL, made
+# mechanical). ON when the profile audience is public/customer/enterprise AND auto_merge is on; force either
+# way with ACE_STRICT_SECURITY=1 / =0. (Heuristic greps → a false positive blocks a merge; that is the
+# fail-closed trade for shipping to real users with no reviewer. Set ACE_STRICT_SECURITY=0 to opt a run out.)
+_strict=0
+_paud="$(sed -n 's/^[[:space:]]*audience:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
+_pam="$(sed -n 's/^[[:space:]]*auto_merge:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
+case "$_paud" in oss-public|end-customer|enterprise) case "$_pam" in true|yes|1) _strict=1 ;; esac ;; esac
+case "${ACE_STRICT_SECURITY:-}" in 1) _strict=1 ;; 0) _strict=0 ;; esac
+_secwarn(){ if [ "$_strict" = 1 ]; then echo "RED [blocker]: $* [strict: public + auto_merge, no human reviewer]"; fail=1; else echo "WARN [major]: $*"; fi; }
 if [ "$MODE" = launch ]; then
   section "Launch-readiness (mechanical pre-promotion gate — the launch_readiness_reviewer agent does the judgment)"
   # Composition-aware (like the stack-conditional gates above): only require the DB restore-drill when the
@@ -1591,7 +1624,7 @@ if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
     if ! grep -rIqE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" --include='*.sql' . 2>/dev/null; then
       echo "RED [blocker]: table '${t}' created without ENABLE ROW LEVEL SECURITY"; fail=1
     elif ! grep -rIqE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" --include='*.sql' . 2>/dev/null; then
-      echo "WARN [major]: table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
+      _secwarn "table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
     fi
   done
 else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
@@ -1600,8 +1633,8 @@ section "[8/13] LLM call-site guards (cost / abuse)"
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
   llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent|CreateChatCompletion|CreateMessage|CreateCompletion' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
   if [ -n "$llm_calls" ]; then
-    printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens|MaxTokens' 2>/dev/null | grep -q . || echo "WARN [major]: LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
-    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null || echo "WARN [major]: no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
+    printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens|MaxTokens' 2>/dev/null | grep -q . || _secwarn "LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
+    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
 section "[9/13] Webhook handler integrity (payment/event webhooks)"
@@ -1613,7 +1646,7 @@ if [ -n "$money_wh" ]; then
   if printf '%s\n' "$money_wh" | xargs grep -lIE "$wh_sig" 2>/dev/null | grep -q .; then
     echo "(webhook signature verification present)"
     wh_dedupe='event[._]?id|eventId|idempotenc|processed|dedup|on conflict|already|\bseen\b'
-    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || echo "WARN [major]: money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
+    printf '%s\n' "$money_wh" | xargs grep -lIiE "$wh_dedupe" 2>/dev/null | grep -q . || _secwarn "money webhook has no visible event-ID dedupe (at-least-once delivery + multi-day retries can double-process)"
   else
     echo "RED [blocker]: money webhook handler with NO signature verification — forgeable 'payment succeeded':"; printf '%s\n' "$money_wh" | head -10; fail=1
   fi
@@ -1623,12 +1656,12 @@ section "[10/13] Auth & session edge cases (reset tokens / enumeration)"
 auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
 if [ -n "$auth_files" ]; then
   if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
-    echo "WARN [major]: an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
+    _secwarn "an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
   fi
   reset_files=$(printf '%s\n' "$auth_files" | xargs grep -lIiE 'reset[_-]?token|password[_-]?reset|forgot' 2>/dev/null || true)
   if [ -n "$reset_files" ]; then
-    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || echo "WARN [major]: reset token may be stored in plaintext — store only its HASH and compare hashes"
-    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || echo "WARN [major]: reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'hash|bcrypt|argon2|scrypt|sha256|createhash|digest' 2>/dev/null | grep -q . || _secwarn "reset token may be stored in plaintext — store only its HASH and compare hashes"
+    printf '%s\n' "$reset_files" | xargs grep -lIiE 'expir|ttl|valid[_-]?until|used|consumed|redeemed|single[_-]?use' 2>/dev/null | grep -q . || _secwarn "reset token has no visible expiry or single-use flag — make it time-limited AND single-use"
   fi
 else echo "(no auth routes — skipping)"; fi
 section "[11/13] Migration safety (expand-contract)"
