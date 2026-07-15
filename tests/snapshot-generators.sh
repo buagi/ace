@@ -57,7 +57,8 @@ d="$WORK/go/app"; mkdir -p "$d"
 
 # --- compare or update ---
 if [ "$UPDATE" = 1 ]; then
-  rm -rf "$SNAP"; mkdir -p "$SNAP"; cp "$OUT"/* "$SNAP"/
+  mkdir -p "$SNAP"; find "$SNAP" -maxdepth 1 -type f -delete 2>/dev/null   # replace generator snapshots (top-level files) but PRESERVE subdirs (e.g. agents/ — F3 goldens)
+  cp "$OUT"/* "$SNAP"/
   echo "snapshots updated ($(ls "$SNAP" | wc -l) files) -> tests/snapshots/"
   exit 0
 fi
