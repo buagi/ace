@@ -12,7 +12,7 @@ overview + quickstart, then dive into a page below.
 | [stacks.md](stacks.md) | The scaffoldable stacks (Node · Python · Go · Config) **and how to add a new one**. |
 | [go-stack.md](go-stack.md) | The Go route: architecture profile wizard, gopls MCP, hardened release binaries. |
 | [profile.md](profile.md) | The editable project profile (`.opencode/profile.yaml`) + delivery policy (merge gate / auto-accept). |
-| [agents.md](agents.md) | The 9-agent crew, risk-gated review, and the alignment critic. |
+| [agents.md](agents.md) | The 10-agent crew, risk-gated review, and the alignment critic. |
 | [autorun.md](autorun.md) | The autonomous loop, its lifecycle, per-run metrics, and the read-only ACE self-triage. |
 | [swarm.md](swarm.md) | **Parallel loops** — N workers in path-disjoint worktrees, the live cockpit (`ace swarm dash`), finish+stop, per-run archives, every `SWARM_*` knob. |
 | [conflict-policy.md](conflict-policy.md) | How the swarm handles *predictable* merge conflicts up front (version · changelog · lockfiles · manifests) — union / structured-merge / regenerate. |

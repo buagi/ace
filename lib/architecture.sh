@@ -20,7 +20,7 @@ ${C_BOLD}The loop you're installing${C_RESET}    ${C_GREY}(two nested loops)${C_
   └─────────────────────────────────────────────────────────────────┘
         │ each ROADMAP item = one fresh session
         ▼
-  ${C_DIM}INNER — the 9-agent build (one feature)${C_RESET}
+  ${C_DIM}INNER — the 10-agent build (one feature)${C_RESET}
   ┌───────────────────────────────────────────────────────────────────┐
   │ ${C_BOLD}orchestrator${C_RESET}  (Claude Opus ${C_GREY}· Sonnet/GPT/DS${C_RESET}; plans, never edits)    │
   │   1. PLAN     break into small testable tasks (GitNexus impact)    │
@@ -100,7 +100,7 @@ explain_autoloop() {
     "  ${C_BOLD}1. plan${C_RESET}     roadmap empty? the planner decomposes the top OBJECTIVE into" \
     "             ROADMAP tasks (two-tier brain: OBJECTIVES.md = north star, you edit;" \
     "             ROADMAP.md = task queue, the loop fills + ticks)." \
-    "  ${C_BOLD}2. build${C_RESET}    a FRESH opencode session builds the next roadmap item (9-agent" \
+    "  ${C_BOLD}2. build${C_RESET}    a FRESH opencode session builds the next roadmap item (10-agent" \
     "             inner loop) — context never piles up across features." \
     "  ${C_BOLD}3. self-heal${C_RESET} push PR ▸ watch CI; on red it pulls 'gh run --log-failed'," \
     "             feeds it to opencode, fixes the ROOT cause (no band-aids), re-watches." \

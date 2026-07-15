@@ -20,7 +20,7 @@ metadata:
 
 # ACE — chat conductor
 
-ACE is a user-local bash rig that wires **OpenCode** into a 9-agent crew (8 workers on DeepSeek V4, overseer on Claude Opus by default — or Sonnet/GPT-5/DeepSeek)
+ACE is a user-local bash rig that wires **OpenCode** into a 10-agent crew (8 workers on DeepSeek V4, overseer on Claude Opus by default — or Sonnet/GPT-5/DeepSeek)
 (orchestrator · implementer · test_engineer · verifier · 4 critics: reviewer/ux_reviewer/standards_keeper/alignment_reviewer
 · conflict_resolver). It scaffolds projects, runs a self-healing build→CI→review→merge→deploy loop, and
 deploys — all driven by **flags/env, no TTY needed**.

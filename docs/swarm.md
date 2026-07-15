@@ -5,15 +5,15 @@ ROADMAP item, works it in its own git worktree, and self-merges to `main` — al
 workers never fight over the same files. It's the same loop as [autorun](autorun.md), fanned out.
 
 ```
-                         ┌─ worker 1 · worktree ─▶ item A ─▶ 9-agent loop ─▶ gate ─▶ self-merge ─┐
-   ROADMAP.md ──leases──▶├─ worker 2 · worktree ─▶ item B ─▶ 9-agent loop ─▶ gate ─▶ self-merge ─┤──▶ main
-   (path-disjoint)       └─ worker 3 · worktree ─▶ item C ─▶ 9-agent loop ─▶ gate ─▶ self-merge ─┘     ▲
+                         ┌─ worker 1 · worktree ─▶ item A ─▶ 10-agent loop ─▶ gate ─▶ self-merge ─┐
+   ROADMAP.md ──leases──▶├─ worker 2 · worktree ─▶ item B ─▶ 10-agent loop ─▶ gate ─▶ self-merge ─┤──▶ main
+   (path-disjoint)       └─ worker 3 · worktree ─▶ item C ─▶ 10-agent loop ─▶ gate ─▶ self-merge ─┘     ▲
                             coordinator: hands out disjoint leases · ticks ROADMAP · reaps stalls ─────┘
 ```
 
 - **Path-disjoint leasing** — the coordinator only hands a worker an item whose files don't overlap
   another in-flight item, so merges are clean *by construction* (see [conflict-policy](conflict-policy.md)).
-- **Self-merge on a local gate** — each worker runs the full [9-agent loop](agents.md) and merges its
+- **Self-merge on a local gate** — each worker runs the full [10-agent loop](agents.md) and merges its
   own PR when `./ci.sh --container` is green (`MERGE_GATE=local`) — no waiting on remote CI.
 - **A live cockpit** — `ace swarm dash` shows every worker's stage, agent, and live feed on one screen.
 
@@ -244,6 +244,6 @@ timeouts) that apply to each worker too.
 
 ---
 
-*Related: [autorun](autorun.md) (the single-flow loop) · [agents](agents.md) (the 9-agent crew) ·
+*Related: [autorun](autorun.md) (the single-flow loop) · [agents](agents.md) (the 10-agent crew) ·
 [conflict-policy](conflict-policy.md) (how predictable merge conflicts are handled) ·
 [deferred-decisions](deferred-decisions.md) (the serialized-merge re-gate, and why it's deferred).*
