@@ -61,7 +61,7 @@ _wcol(){ [ -n "${_R:-}" ] || return 0     # colour off (piped/dumb/NOCOLOR) → 
   esac; }
 # level → colour for bus/log lines
 _typc(){ case "$1" in done|acquired|ok) printf '%s' "$_GRN";; conflict|error|err|gate-red|red-main) printf '%s' "$_RED";;
-  waiting|blocked|defer|needs-attention|reap|warn|stopped|incomplete|standby) printf '%s' "$_GOLD";; claimed|merging|accent|fixer) printf '%s' "$_PUR";; *) printf '%s' "$_FG";; esac; }
+  waiting|blocked|defer|needs-attention|reap|warn|stopped|incomplete|standby) printf '%s' "$_GOLD";; claimed|merging|accent|fixer|main-adv) printf '%s' "$_PUR";; *) printf '%s' "$_FG";; esac; }
 _clip(){ printf '%s' "$1" | sed -E 's/^[0-9]+:[[:space:]]*- \[[ xX]\] //; s/\*//g' | cut -c1-"${2:-40}"; }
 _wname(){ case "$1" in w[0-9]*) printf 'worker %s' "${1#w}";; *) printf '%s' "$1";; esac; }  # w1 → "worker 1"; coordinator/reaper unchanged
 
@@ -499,7 +499,7 @@ swarm_post() {
          --arg to "$to" --arg tp "$topic" --argjson ts "$(_now)" \
      '{ts:$ts, from:$f, to:$to, type:$t, body:$b, item:$it, topic:$tp}' >> "$MSG"
   # mirror onto the unified event stream (dash + web read this): map bus type → level
-  local lvl=info; case "$type" in done|acquired) lvl=ok;; conflict|error|gate-red|red-main) lvl=err;; waiting|blocked|defer|needs-attention|reap|stopped|incomplete|standby) lvl=warn;; claimed|merging|fixer) lvl=accent;; esac
+  local lvl=info; case "$type" in done|acquired) lvl=ok;; conflict|error|gate-red|red-main) lvl=err;; waiting|blocked|defer|needs-attention|reap|stopped|incomplete|standby) lvl=warn;; claimed|merging|fixer|main-adv) lvl=accent;; esac
   jq -cn --arg w "$from" --arg t "$type" --arg b "$body" --arg it "$item" --arg l "$lvl" --argjson ts "$(_now)" \
      '{ts:$ts, run:"", worker:$w, feat:$it, hash:"", phase:$t, agent:"coordinator", level:$l, msg:$b}' >> "$SWARM_DIR/events.jsonl" 2>/dev/null || true
   flock -u "$fd"; exec {fd}>&-

@@ -93,7 +93,7 @@ Not built — design-cli has no DB yet. Two options when it does:
 Remaining backlog, ranked by lever:
 
 > [!NOTE]
-> **Status (2026-07-15): items 1–7 are shipped.** #1 batch/disjoint planning, #2 semantic re-gate (`_tentative_merge_ci_ok`), and #4 single-owner hot files (`assign` policy) landed earlier; #6 + #7 lease-hygiene shipped in PR #56; #5 `ace swarm stats` + truthful outcome telemetry and #3 the RED-main circuit breaker shipped 2026-07-15. **#8–#10 remain open.** Rows below are kept as design rationale.
+> **Status (2026-07-15): items 1–9 are shipped or already done.** #1 batch/disjoint planning, #2 semantic re-gate (`_tentative_merge_ci_ok`), and #4 single-owner hot files (`assign` policy) landed earlier; #6 + #7 lease-hygiene shipped in PR #56; #5 `ace swarm stats` + truthful outcome telemetry and #3 the RED-main circuit breaker shipped in PR #57; #8 the "main advanced" bus broadcast shipped 2026-07-15; #9 the dead `_merge_real` was already removed in PR #45. **Only #10 (lighter overseer option) remains open.** Rows below are kept as design rationale.
 
 | # | Fix | What it does | Where / knob |
 |---|-----|--------------|--------------|
