@@ -446,10 +446,10 @@ if [ "$MODE" = launch ]; then
   # project HAS a database, and rollback/SLO/runbook only for a deployed service (deploy_kind=service). A
   # no-DB CLI / library is not NO-GO'd for a backup it cannot have.
   _hasdb=0
-  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _hasdb=1
-  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
-  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
-  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _hasdb=1
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sqlite3|sequelize|typeorm|knex|kysely|pg-promise|@libsql/client|@neondatabase/serverless|@planetscale/database|@vercel/postgres)"' package.json; } && _hasdb=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|jackc/pgconn|go-sql-driver|mattn/go-sqlite3|modernc\.org/sqlite|glebarez/sqlite|gorm\.io|entgo\.io/ent|uptrace/bun|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
+  grep -qiE 'psycopg|sqlalchemy|sqlmodel|asyncpg|pymysql|mysqlclient|mariadb|aiosqlite|pymongo|django|tortoise|peewee|alembic' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql migrations/0*.py */migrations/0*.py alembic/versions/*.py 2>/dev/null | grep -q .; } && _hasdb=1
   _svc=0; [ "$(sed -n 's/^[[:space:]]*deploy_kind:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)" = service ] && _svc=1
   if [ "$_hasdb" = 1 ]; then
     if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
@@ -721,10 +721,10 @@ if [ "$MODE" = launch ]; then
   # project HAS a database, and rollback/SLO/runbook only for a deployed service (deploy_kind=service). A
   # no-DB CLI / library is not NO-GO'd for a backup it cannot have.
   _hasdb=0
-  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _hasdb=1
-  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
-  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
-  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _hasdb=1
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sqlite3|sequelize|typeorm|knex|kysely|pg-promise|@libsql/client|@neondatabase/serverless|@planetscale/database|@vercel/postgres)"' package.json; } && _hasdb=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|jackc/pgconn|go-sql-driver|mattn/go-sqlite3|modernc\.org/sqlite|glebarez/sqlite|gorm\.io|entgo\.io/ent|uptrace/bun|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
+  grep -qiE 'psycopg|sqlalchemy|sqlmodel|asyncpg|pymysql|mysqlclient|mariadb|aiosqlite|pymongo|django|tortoise|peewee|alembic' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql migrations/0*.py */migrations/0*.py alembic/versions/*.py 2>/dev/null | grep -q .; } && _hasdb=1
   _svc=0; [ "$(sed -n 's/^[[:space:]]*deploy_kind:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)" = service ] && _svc=1
   if [ "$_hasdb" = 1 ]; then
     if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
@@ -1527,10 +1527,10 @@ if [ "$MODE" = launch ]; then
   # project HAS a database, and rollback/SLO/runbook only for a deployed service (deploy_kind=service). A
   # no-DB CLI / library is not NO-GO'd for a backup it cannot have.
   _hasdb=0
-  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _hasdb=1
-  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
-  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
-  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _hasdb=1
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sqlite3|sequelize|typeorm|knex|kysely|pg-promise|@libsql/client|@neondatabase/serverless|@planetscale/database|@vercel/postgres)"' package.json; } && _hasdb=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|jackc/pgconn|go-sql-driver|mattn/go-sqlite3|modernc\.org/sqlite|glebarez/sqlite|gorm\.io|entgo\.io/ent|uptrace/bun|jmoiron/sqlx|mongo-driver' go.mod; } && _hasdb=1
+  grep -qiE 'psycopg|sqlalchemy|sqlmodel|asyncpg|pymysql|mysqlclient|mariadb|aiosqlite|pymongo|django|tortoise|peewee|alembic' requirements*.txt pyproject.toml 2>/dev/null && _hasdb=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql migrations/0*.py */migrations/0*.py alembic/versions/*.py 2>/dev/null | grep -q .; } && _hasdb=1
   _svc=0; [ "$(sed -n 's/^[[:space:]]*deploy_kind:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)" = service ] && _svc=1
   if [ "$_hasdb" = 1 ]; then
     if [ -f ops/restore-drill.result ] && grep -qiE 'rows_verified=[1-9]|status=(verified|pass|ok)' ops/restore-drill.result 2>/dev/null; then echo "tested restore: recorded"; else echo "NO-GO [blocker]: ops/restore-drill.result missing or shows no verified restore (needs rows_verified / RPO / RTO) — a backup is not done until a restore has been run: ./ops/restore-drill.sh"; fail=1; fi
@@ -2232,10 +2232,10 @@ RPGO
   # rollback/SLO/runbook service-ops when it's a deployed service. A no-DB CLI gets neither the artefact nor
   # a task it can't do (mirrors the stack-conditional ci.sh gates + the payment-reconcile scaffold above).
   local _dbp=0 _svcp=0
-  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sequelize|typeorm|knex)"' package.json; } && _dbp=1
-  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|go-sql-driver|mattn/go-sqlite3|gorm\.io|jmoiron/sqlx|mongo-driver' go.mod; } && _dbp=1
-  grep -qiE 'psycopg|sqlalchemy|asyncpg|pymysql|aiosqlite|pymongo' requirements*.txt pyproject.toml 2>/dev/null && _dbp=1
-  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql 2>/dev/null | grep -q .; } && _dbp=1
+  { [ -f package.json ] && grep -qiE '"(pg|postgres|prisma|@prisma/client|drizzle-orm|mysql2?|mongoose|mongodb|better-sqlite3|sqlite3|sequelize|typeorm|knex|kysely|pg-promise|@libsql/client|@neondatabase/serverless|@planetscale/database|@vercel/postgres)"' package.json; } && _dbp=1
+  { [ -f go.mod ] && grep -qiE 'lib/pq|jackc/pgx|jackc/pgconn|go-sql-driver|mattn/go-sqlite3|modernc\.org/sqlite|glebarez/sqlite|gorm\.io|entgo\.io/ent|uptrace/bun|jmoiron/sqlx|mongo-driver' go.mod; } && _dbp=1
+  grep -qiE 'psycopg|sqlalchemy|sqlmodel|asyncpg|pymysql|mysqlclient|mariadb|aiosqlite|pymongo|django|tortoise|peewee|alembic' requirements*.txt pyproject.toml 2>/dev/null && _dbp=1
+  { ls prisma/schema.prisma migrations/*.sql db/migrations/*.sql migrations/0*.py */migrations/0*.py alembic/versions/*.py 2>/dev/null | grep -q .; } && _dbp=1
   [ "$(_prof_get deploy_kind 2>/dev/null)" = service ] && _svcp=1
   mkdir -p ops
   [ -f LAUNCH-READINESS.md ] || cat > LAUNCH-READINESS.md <<'LRMD'
