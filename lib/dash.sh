@@ -9,6 +9,10 @@ _dvis(){ local s; s="$(printf '%s' "$1" | sed $'s/\033\\[[0-9;:]*m//g')"; printf
 _drep(){ local i s=''; for ((i=0;i<${2:-0};i++)); do s+="$1"; done; printf %s "$s"; }
 _dpad(){ local w="$1" s="$2" v; v="$(_dvis "$s")"; [ "$v" -ge "$w" ] && { printf '%s' "$s"; return; }; printf '%s%*s' "$s" "$((w-v))" ''; }
 _dcen(){ local w="$1" s="$2" v l; v="$(_dvis "$s")"; [ "$v" -ge "$w" ] && { printf '%s' "$s"; return; }; l=$(((w-v)/2)); printf '%*s%s%*s' "$l" '' "$s" "$((w-v-l))" ''; }
+# recursive process-tree kill. The loop's opencode is a grandchild via the `opencode … | tee` pipeline, and a
+# bare SIGTERM to the loop is DEFERRED while it's blocked in that pipeline — so a signal to the loop pid alone
+# won't stop opencode. Kill the whole TREE (opencode first) to actually take it down.
+_dash_killtree(){ local p="$1" s="${2:-TERM}" k; [ -n "$p" ] || return 0; for k in $(pgrep -P "$p" 2>/dev/null); do _dash_killtree "$k" "$s"; done; kill -"$s" "$p" 2>/dev/null; }
 
 loop_dash() {
   local demo=0 test=0
@@ -164,7 +168,7 @@ loop_dash() {
     done
     # footer
     local pz="${CR}◆${RS}"; [ "$paused" = 1 ] && pz="${GO}❚❚${RS}"
-    buf+="$(_at "$ROWS" "  $pz ${MU}$([ "$paused" = 1 ] && echo 'paused ' || echo 'running')${RS}   ${AC}cycle #$cyc${RS}   ${DM}q quit · p pause${RS}")"
+    buf+="$(_at "$ROWS" "  $pz ${MU}$([ "$paused" = 1 ] && echo 'paused ' || echo 'running')${RS}   ${AC}cycle #$cyc${RS}   ${DM}q quit · p pause · ${CR}x KILL ACE+quit${RS}")"
     printf '\033[?2026h%b\033[?2026l' "$buf"
   }
 
@@ -186,7 +190,22 @@ loop_dash() {
     if [ "$demo" = 1 ]; then [ $((frame % 5)) -eq 0 ] && _demo_step; else _refresh; fi
     _render
     if read -rsn1 -t 0.16 key 2>/dev/null; then
-      case "$key" in q|Q) break ;; p|P) paused=$((1-paused)) ;; esac
+      case "$key" in
+        q|Q) break ;;
+        p|P) paused=$((1-paused)) ;;
+        x|X) # KILL ACE — stop the loop + its opencode subtree, then quit. A bare SIGTERM to the loop does NOT
+             # cascade (it's blocked in the `opencode … | tee` pipeline, so its cleanup trap is deferred), so we
+             # kill the process TREES directly — opencode (.oppid) FIRST to stop spend, then the loop.
+             printf '\n  %s⛔ kill the loop + opencode and quit? press y%s' "${CR}" "${RS}"; local yn lp op
+             read -rsn1 yn 2>/dev/null || yn=""
+             case "$yn" in y|Y)
+               systemctl --user stop ace-loop.service 2>/dev/null || true   # service loop: systemd force-stops the cgroup
+               op="$(cat "$proj/.opencode/.oppid" 2>/dev/null)"; lp="$(sed -n 's/^pid=//p' "$proj/.opencode/loop-state.env" 2>/dev/null | head -1)"
+               _dash_killtree "$op" TERM; _dash_killtree "$lp" TERM; sleep 2
+               _dash_killtree "$op" KILL; _dash_killtree "$lp" KILL
+               break ;;
+             esac ;;
+      esac
     fi
     frame=$((frame+1))
   done

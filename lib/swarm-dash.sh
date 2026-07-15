@@ -13,7 +13,7 @@
 # RESILIENT: workers are sourced from status/*.stat (+ wN.log mtime for liveness), so a
 # lagging/rebuilding state.json can NEVER blank the workers out. Reads only the shared
 # store, so it attaches to a detached run and N viewers can watch at once.
-# Keys: p pause · r resume · d drain · k kill wN · g grid/stacked · +/- feed size · q quit
+# Keys: p pause · r resume · d drain · k kill wN · x KILL ACE+quit (whole swarm) · g grid/stacked · +/- feed size · q quit
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/swarm.sh" 2>/dev/null || true
@@ -363,9 +363,10 @@ dash_bus(){
 dash_footer(){
   local cols_t; cols_t="$(tput cols 2>/dev/null || echo 100)"
   printf ' %s%s%s\n' "$c_border" "$(_dashes $(( cols_t - 2 )))" "$c_reset"
-  printf ' %s●%s %sthe forge never sleeps%s   %sp%s pause · %sr%s resume · %sd%s finish+stop · %sk%s kill · %sg%s %s · %s±%s feed · %sq%s quit dash\n' \
+  printf ' %s●%s %sthe forge never sleeps%s   %sp%s pause · %sr%s resume · %sd%s finish+stop · %sk%s kill wN · %sx%s KILL ACE+quit · %sg%s %s · %s±%s feed · %sq%s quit dash\n' \
     "$c_crimson" "$c_reset" "$c_dim" "$c_reset" \
     "$c_accent$bold" "$c_muted" "$c_accent$bold" "$c_muted" "$c_accent$bold" "$c_muted" "$c_accent$bold" "$c_muted" \
+    "$c_crimson$bold" "$c_muted" \
     "$c_accent$bold" "$c_muted" "$([ "${DASH_MODE:-stacked}" = grid ] && echo stacked || echo panel)" "$c_accent$bold" "$c_muted" "$c_accent$bold" "$c_muted"
 }
 
@@ -409,6 +410,23 @@ swarm_dash(){
       -|_) DASH_FEED_OVR=$(( ${DASH_FEED_OVR:-8} - 2 )); [ "${DASH_FEED_OVR}" -lt 3 ] && DASH_FEED_OVR=3 ;;
       k|K) printf '%s kill which worker (e.g. w1): %s' "$c_gold" "$c_reset"
            if [ -n "$_tty" ]; then read -r kw <"$_tty"; else read -r kw; fi; [ -n "$kw" ] && : > "$SWARM_DIR/control.kill-$kw" ;;
+      x|X) # KILL ACE — stop the WHOLE swarm (coordinator + workers + their opencode) and quit the dash
+           printf '%s⛔ KILL the whole swarm — all workers + opencode — and quit? [y/N]: %s' "$c_crimson" "$c_reset"
+           if [ -n "$_tty" ]; then read -r kw <"$_tty"; else read -r kw; fi
+           case "$kw" in
+             y|Y) printf '%s stopping — SIGTERM the swarm process group; in-flight work is committed as WIP on the worker branches…%s\n' "$c_gold" "$c_reset"
+                  : > "$SWARM_DIR/control.drain" 2>/dev/null   # stop claiming new work at once
+                  local cp; cp="$(cat "$SWARM_DIR/coordinator.pid" 2>/dev/null)"
+                  if [ -n "$cp" ] && kill -0 "$cp" 2>/dev/null; then
+                    # -"$cp" targets the coordinator's process GROUP (setsid leader): reaper + workers + opencode.
+                    # Each worker's autoloop cleanup trap fires on TERM → preserves WIP + kills its opencode subtree.
+                    kill -TERM -"$cp" 2>/dev/null || kill -TERM "$cp" 2>/dev/null
+                    sleep 4
+                    kill -KILL -"$cp" 2>/dev/null || kill -KILL "$cp" 2>/dev/null
+                  fi
+                  rm -f "$SWARM_DIR/coordinator.pid" 2>/dev/null
+                  break ;;
+           esac ;;
     esac
   done
 }
