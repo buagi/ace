@@ -25,22 +25,38 @@ _telemetry_db(){
 # _telemetry_render <since_ms> <root_prefix> <scope_label> [by:agent|task]  — print the markdown report.
 # rc 0 = report printed · 1 = unavailable (no python3/DB) · 2 = no sessions matched.
 _telemetry_render(){
-  local db since="${1:-0}" root="${2:-}" scope="${3:-}" by="${4:-agent}"
-  db="$(_telemetry_db)"
-  [ -f "$db" ] || return 1
+  local since="${1:-0}" root="${2:-}" scope="${3:-}" by="${4:-agent}" sdir="" d
+  # Gather ALL relevant DBs: the default store + any per-worker SWARM DBs. E4 isolates each swarm worker's
+  # opencode sessions into $SWARM_DIR/*.opencode.db (invisible to the default DB) — include them or swarm
+  # cost is undercounted ~Nx. Worker sessions live under ~/.config/ace/swarm/<project>/worktrees/ (matched below).
+  local dbs=(); local dflt="${OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"; [ -f "$dflt" ] && dbs+=("$dflt")
+  if [ -n "$root" ]; then
+    sdir="$HOME/.config/ace/swarm/$(basename "$root")"
+    for d in "$sdir"/*.opencode.db; do [ -f "$d" ] && dbs+=("$d"); done
+  else
+    for d in "$HOME"/.config/ace/swarm/*/*.opencode.db; do [ -f "$d" ] && dbs+=("$d"); done
+  fi
+  [ "${#dbs[@]}" -gt 0 ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
-  python3 - "$db" "$since" "$root" "$scope" "$by" "${RUN_ID:-?}" <<'PY'
+  python3 - "$since" "$root" "$sdir" "$scope" "$by" "${RUN_ID:-?}" "${dbs[@]}" <<'PY'
 import sqlite3, sys, re
 from collections import defaultdict
-db, since, root, scope, by, run_id = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
-try:
-    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True); con.execute('PRAGMA busy_timeout=2000'); cur = con.cursor()
-except Exception:
-    sys.exit(1)
+since, root, sdir, scope, by, run_id = int(sys.argv[1] or 0), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+dbs = sys.argv[7:]
 where, args = ["time_created >= ?"], [since]
 if root:
-    where.append("(directory = ? OR directory LIKE ?)"); args += [root, root.rstrip('/') + '/%']
+    # a solo session's dir is under the project root; a swarm worker's is under ~/.config/ace/swarm/<proj>/worktrees/
+    where.append("(directory = ? OR directory LIKE ? OR directory LIKE ?)")
+    args += [root, root.rstrip('/') + '/%', (sdir.rstrip('/') + '/%') if sdir else root]
 W = " AND ".join(where)
+def q(sql):   # UNION the query across every gathered DB (default + per-worker swarm DBs); fail-soft per DB
+    out = []
+    for db in dbs:
+        try:
+            con = sqlite3.connect(f'file:{db}?mode=ro', uri=True); con.execute('PRAGMA busy_timeout=2000')
+            out += con.execute(sql, args).fetchall(); con.close()
+        except Exception: pass
+    return out
 def worker(d):
     m = re.search(r'worktrees/([^/]+)', d or ''); return m.group(1) if m else 'main'
 def h(n):
@@ -58,19 +74,15 @@ def cachepct(inp, cr):
     # cache-hit% = cached input / TOTAL prompt (fresh input + cache_read); opencode's tokens_input is
     # the FRESH (uncached) portion only, so dividing by it alone yields nonsense >100%.
     t = (inp or 0) + (cr or 0); return int((cr or 0)*100/t) if t else 0
-try:
-    if by == 'task':
-        rows = cur.execute(
-            "SELECT id, parent_id, COALESCE(NULLIF(agent,''),'(root)'), COALESCE(NULLIF(title,''),'(untitled)'), "
-            "directory, tokens_input, tokens_cache_read, tokens_output, cost FROM session WHERE " + W, args).fetchall()
-    else:
-        rows = cur.execute(
-            "SELECT directory, COALESCE(NULLIF(agent,''),'(root)') ag, model, COUNT(*) n, "
-            "SUM(tokens_input), SUM(tokens_cache_read), SUM(tokens_cache_write), "
-            "SUM(tokens_output), SUM(tokens_reasoning), SUM(cost) "
-            "FROM session WHERE " + W + " GROUP BY directory, ag, model", args).fetchall()
-except Exception:
-    sys.exit(1)
+if by == 'task':
+    rows = q("SELECT id, parent_id, COALESCE(NULLIF(agent,''),'(root)'), COALESCE(NULLIF(title,''),'(untitled)'), "
+             "directory, tokens_input, tokens_cache_read, tokens_output, cost FROM session WHERE " + W)
+else:
+    # GROUP BY runs per-DB; the same (worker,agent,model) key across DBs is re-summed by the renderer below.
+    rows = q("SELECT directory, COALESCE(NULLIF(agent,''),'(root)') ag, model, COUNT(*) n, "
+             "SUM(tokens_input), SUM(tokens_cache_read), SUM(tokens_cache_write), "
+             "SUM(tokens_output), SUM(tokens_reasoning), SUM(cost) "
+             "FROM session WHERE " + W + " GROUP BY directory, ag, model")
 if not rows:
     sys.exit(2)
 print(f"# Token & cost report — {scope}")
