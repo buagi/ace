@@ -144,6 +144,20 @@ run_worker() {
     [ -f "$SWARM_DIR/control.kill-$wid" ] && { swarm_post "$wid" idle "killed by operator" ; rm -f "$SWARM_DIR/control.kill-$wid"; break; }
     [ -f "$SWARM_DIR/control.drain" ]     && { swarm_post "$wid" idle "drain — claiming no new work"; break; }
     while [ -f "$SWARM_DIR/control.pause" ]; do sleep 3; [ -f "$SWARM_DIR/control.kill-$wid" ] && break 2; done
+    # item 3: RED-main circuit breaker — don't claim new work onto a RED main. The elected FIXER keeps going to
+    # repair it; every other worker HOLDS (bounded) for GREEN, then claims fresh work on the recovered main.
+    # This is what "others rebase on last-green" reduces to under one shared main: hold, then the merge queue
+    # rebases the next item onto the now-GREEN tip. Fail-safe: prolonged RED → the worker exits cleanly (no dogpile).
+    if [ -f "$SWARM_DIR/main-red" ] && [ "$(cat "$SWARM_DIR/fixer" 2>/dev/null)" != "$wid" ]; then
+      local _rw=0 _cap="${SWARM_REDMAIN_WAIT:-120}"
+      swarm_post "$wid" standby "main is RED — holding for the fixer to restore GREEN" ""
+      while [ -f "$SWARM_DIR/main-red" ] && [ "$(cat "$SWARM_DIR/fixer" 2>/dev/null)" != "$wid" ]; do
+        { [ -f "$SWARM_DIR/control.kill-$wid" ] || [ -f "$SWARM_DIR/control.drain" ]; } && break
+        _rw=$((_rw+1)); [ "$_rw" -ge "$_cap" ] && { swarm_post "$wid" idle "main RED > $((_cap*5))s — exiting; re-run once green"; break 2; }
+        sleep 5
+      done
+      [ -f "$SWARM_DIR/main-red" ] || swarm_post "$wid" acquired "main GREEN again — resuming" ""
+    fi
     res="$(swarm_next "$wid" "$REPO/ROADMAP.md")"
     [ -z "$res" ] && { swarm_post "$wid" idle "nothing claimable — exit"; break; }
     hash="${res%%$'\t'*}"; item="${res#*$'\t'}"
@@ -365,6 +379,7 @@ swarm_run() {
   # self-heal on start: reclaim leftover leases from a crashed prior run + prune.
   while IFS=$'\t' read -r _ h it; do [ -n "$h" ] && { _clean_hash "$h"; echo "  reconcile: requeued '$it'"; }; done < <(swarm_reconcile)
   git -C "$REPO" worktree prune 2>/dev/null || true
+  rm -f "$SWARM_DIR/main-red" "$SWARM_DIR/fixer" 2>/dev/null || true   # item 3: never inherit a prior run's RED-main standdown (a genuine RED main re-latches on the first merge)
   local allowed; allowed="$(_allowed)"
   printf '%s🐝 swarm%s %s%s/%s workers%s %s· live=%s dry=%s · %s · self-heal TTL=%ss tries=%s%s\n' \
     "${_B:-}${_PUR:-}" "${_R:-}" "${_GRN:-}" "$allowed" "$MAX" "${_R:-}" "${_MUT:-}" "$LIVE" "$DRY_RUN" "$(basename "$REPO")" "${LEASE_TTL}" "${MAX_TRIES}" "${_R:-}"

@@ -10,6 +10,10 @@ set -uo pipefail
 # function defs, safe to source; guarded so a missing module never breaks the single-flow loop.
 # shellcheck source=/dev/null
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-policy.sh" 2>/dev/null || true
+# item 3: RED-main circuit breaker — driven via the swarm.sh CLI (autoloop does NOT source swarm.sh; this keeps
+# them decoupled). No-op outside a swarm (SWARM_WORKER unset) or if swarm.sh is absent. SWARM_DIR flows in via env.
+_SWARM_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm.sh"
+_swarm(){ [ -n "${SWARM_WORKER:-}" ] && [ -f "$_SWARM_SH" ] && bash "$_SWARM_SH" "$@" 2>/dev/null; }
 # per-subagent token/cost telemetry from opencode's session DB (subagent_report / ace stats). Fail-soft.
 # shellcheck source=/dev/null
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/telemetry.sh" 2>/dev/null || true
@@ -65,6 +69,7 @@ RESOLVE_CONFLICTS="${RESOLVE_CONFLICTS:-1}"      # 1 => auto-resolve a conflicti
 MAX_CONFLICT="${MAX_CONFLICT:-2}"               # max conflict-resolution attempts per branch before stopping
 STOP_ON_DEPLOY_FAIL="${STOP_ON_DEPLOY_FAIL:-1}"  # 1 => a failed VPS deploy/health-check HALTS the loop (don't ship more onto a broken live deploy); 0 => log + keep going
 RESOLVE_INSTR="The PR for the current branch CONFLICTS with main. Resolve it per your CONFLICT RESOLUTION protocol: merge origin/main into this branch, delegate to the conflict_resolver subagent (preserve BOTH intents; NO reverts to old; escalate UNRESOLVABLE), then have the reviewer confirm NO intended change was lost or reverted (APPROVE required). Ensure ./ci.sh GREEN, commit the merge, and push. If UNRESOLVABLE or any intended change would be lost, abort the merge and report — do NOT force it. NEVER merge the PR."
+MAINFIX_INSTR="The main branch is RED ON ITS OWN — its latest container build (./ci.sh --container) FAILS independent of your branch (another flow's merge broke it). You are the designated FIXER. Read .opencode/ci-failure.log, find the ROOT cause, and fix it MINIMALLY on this branch — do NOT revert unrelated work, do NOT implement new features, touch only what the failing build needs to go GREEN. Ensure ./ci.sh is GREEN, commit, and push so this branch lands the repair onto main. If the failure is infra / not code-fixable (billing/network/host), report and stop — do NOT force a merge."
 SELF_IMPROVE="${SELF_IMPROVE:-0}"                # 1 => when all objectives done, keep improving
 IMPROVE_GOAL="${IMPROVE_GOAL:-generate income · solve real user problems · professional, reliable UX}"  # the end goal self-improvement optimizes toward
 # ── structured, traceable telemetry (feeds `ace swarm dash` now + the web UI later) ──
@@ -789,6 +794,33 @@ _tentative_merge_ci_ok(){
   say "tentative-merge gate: FULL ci RED on the merge with current origin/main — a green-alone/broke-together break. NOT landing (.opencode/ci-failure.log)."
   return 1
 }
+# item 3: is origin/main RED on its OWN — independent of THIS branch? Distinguishes a real RED main (a bad
+# commit already landed; every worker's tentative merge is doomed) from a green-alone/broke-together break
+# THIS branch caused. Verifies main's tip ALONE in a throwaway detached worktree; result cached per-sha in
+# SWARM_DIR and serialized by a DEDICATED lock (fd 8, NOT the merge queue) so — even if two workers probe at
+# once — the expensive build runs ONCE per bad sha. Fail-open (return 1 = "not proven RED"): no ./ci.sh, no
+# worktree, or any error → we never INVENT a RED main (worst case = the old conflict path, no regression).
+_main_head_red(){
+  [ -n "${SWARM_WORKER:-}" ] || return 1
+  [ -e ./ci.sh ] || return 1
+  local msha; msha="$(git rev-parse origin/main 2>/dev/null)"; [ -n "$msha" ] || return 1
+  local dir="${SWARM_DIR:-.opencode}"; local cache="$dir/main-ci.$msha"
+  [ -f "$cache" ] && { [ "$(cat "$cache" 2>/dev/null)" = red ]; return; }
+  exec 8>"$dir/main-check.lock" 2>/dev/null && flock -w "${LOCAL_CI_TIMEOUT:-1800}" 8 2>/dev/null
+  [ -f "$cache" ] && { flock -u 8 2>/dev/null; [ "$(cat "$cache" 2>/dev/null)" = red ]; return; }   # built while we waited
+  local base wt rc=0; base="$(mktemp -d)"; wt="$base/main-check"
+  if git worktree add -q --detach "$wt" "$msha" 2>/dev/null; then
+    say "RED-main probe: building origin/main ($( printf '%.12s' "$msha" )) ALONE to see if the break is ours or main's…"
+    ( cd "$wt" && timeout "${LOCAL_CI_TIMEOUT:-1800}" ./ci.sh --container >/dev/null 2>&1 ) || rc=1
+    git worktree remove --force "$wt" 2>/dev/null
+  else rc=2; fi   # couldn't isolate main → fail-open
+  rm -rf "$base"; flock -u 8 2>/dev/null
+  case "$rc" in
+    0) echo green > "$cache" 2>/dev/null; say "RED-main probe: main is GREEN on its own — the break is THIS branch's (conflict/fix path)."; return 1 ;;
+    1) echo red   > "$cache" 2>/dev/null; say "RED-main probe: main is RED on its own — a bad commit landed. Triggering the RED-main breaker."; return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # returns: 0 merged now · 2 nothing to merge (already merged / no PR / on main) · 1 PR present but not mergeable -> caller should stop
 # When LOCAL_VOUCHED=1 (remote CI blocked but the local VPS-parity gate is GREEN) it skips the
@@ -833,7 +865,13 @@ merge_if_ready(){
         # B3: the branch now MERGES current origin/main — a tree the isolation gate never saw. Re-verify
         # THAT tentative merge with the FULL container gate before landing; a semantic break is caught here,
         # not on main. RED → defer to the conflict/fix path (bounded by MAX_CONFLICT), NOT a blind land.
-        if ! _tentative_merge_ci_ok; then flock -u 9 2>/dev/null; return 3; fi
+        if ! _tentative_merge_ci_ok; then
+          flock -u 9 2>/dev/null   # release the merge queue BEFORE the (slow) main-alone probe — don't stall siblings
+          # item 3: is main RED on its OWN (not this branch's fault)? Then skip the conflict path — raise the
+          # RED-main breaker (distinct return 4) so ONE worker fixes main and the rest stand down.
+          if _main_head_red; then _swarm main-red set "$(git rev-parse origin/main 2>/dev/null)"; return 4; fi
+          return 3
+        fi
       else
         git merge --abort 2>/dev/null; flock -u 9 2>/dev/null
         say "PR #$pr: rebase onto main conflicts → deferring to the conflict path"; return 3
@@ -859,6 +897,9 @@ merge_if_ready(){
   if [ -n "$feat" ] && [ "$feat" != main ] && [ "$feat" != master ] && [ -z "$(git status --porcelain)" ]; then
     git branch -D "$feat" >/dev/null 2>&1 && say "deleted merged branch '$feat' (local; remote removed by --delete-branch)."
   fi
+  # item 3: this land passed the tentative gate → the NEW main tip is GREEN. Record it as last-green and clear
+  # any RED-main flag — if we were the fixer, main is healthy again and the standby workers may resume.
+  _swarm green-set "$(git fetch -q origin main 2>/dev/null; git rev-parse origin/main 2>/dev/null)"; _swarm main-red clear
   [ "$_mlk" = 1 ] && flock -u 9 2>/dev/null   # release the swarm merge queue
   return 0
 }
@@ -1085,6 +1126,23 @@ while :; do
         say "PR CONFLICTS with main — resolving while preserving both intents (attempt #$conflicts/$MAX_CONFLICT)…"
         agent_state conflict; drive "resolve conflicts (#$conflicts)" "$RESOLVE_INSTR" || { say "conflict resolution errored — stopping for review."; break; }
         say "resolution attempt #$conflicts done — re-checking CI + mergeability."; continue
+      elif [ "$mrc" = 4 ]; then
+        # item 3: main is RED on its OWN — NOT this branch's fault. Elect ONE fixer to repair main; everyone
+        # else stands down until main is GREEN again (then rebases onto it via the merge queue). Prevents N
+        # workers dogpiling a phantom "conflict" and colliding on the same repair.
+        _rmrole="$(_swarm main-red elect "${SWARM_WORKER:-}")"
+        if [ "$_rmrole" = fixer ]; then
+          _swarm post "${SWARM_WORKER:-w?}" fixer "elected FIXER — repairing RED main" "$(branch)"
+          conflicts=$((conflicts+1))
+          if [ "$conflicts" -gt "$MAX_CONFLICT" ]; then say "main-repair attempts exhausted ($((conflicts-1))) — stopping for human review."; break; fi
+          say "main is RED on its own — elected FIXER. Repairing from the failing build log (attempt #$conflicts/$MAX_CONFLICT)…"
+          agent_state implementer; drive "repair RED main (#$conflicts)" "$MAINFIX_INSTR" || { say "main-repair errored — stopping for review."; break; }
+          say "main-repair attempt #$conflicts done — re-checking."; continue
+        else
+          _swarm post "${SWARM_WORKER:-w?}" standby "standby — another worker is fixing RED main; holding $(branch)" "$(branch)"
+          say "main is RED on its own and another worker is the FIXER — standing down; the swarm will rebase this branch onto main once it's GREEN."
+          break
+        fi
       else
         say "green run, but the PR isn't fully ready to merge (checks pending/failed) — stopping for your review."; break
       fi
