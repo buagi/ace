@@ -158,7 +158,7 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
                         interrupted run left uncommitted, then continues (same as autorun).
   ace swarm start|stop|dash|split|pause|resume|drain|kill wN|status|tail|sandbox|selftest|wire
                       PARALLEL loops: N path-disjoint workers, each self-merging, with a live cockpit
-                      ('ace swarm dash'). 'ace autorun' also gates it (pick 2-8). 'sandbox' = free DRY demo.
+                      ('ace swarm dash'). 'ace autorun' also gates it (pick 2-5). 'sandbox' = free DRY demo.
                       'drain' = finish current work + stop. See docs/swarm.md.
   ace loop start|stop|restart|status|logs|stats|update    (stats = per-run timing post-mortem)
                       run the loop as a detached systemd user service (survives terminal-close

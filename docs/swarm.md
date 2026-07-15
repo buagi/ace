@@ -53,7 +53,7 @@ flowchart LR
 `ace autorun` asks for parallelism up front:
 
 ```
-Parallel flows — SWARM (1 = single loop · 2-8 = parallel workers, path-disjoint + self-merging) [1]:
+Parallel flows — SWARM (1 = single loop · 2-5 = parallel workers, path-disjoint + self-merging) [1]:
 ```
 
 | Choice | Result |
@@ -69,7 +69,7 @@ SWARM_MAX=4 ace autorun --yes   # headless: 4 workers, no prompts
 ```
 
 > [!NOTE]
-> The prompt accepts up to 8, but the coordinator clamps the worker count to `SWARM_CEIL` (default **5**) and logs the clamp. 3–5 is the evidence-backed maximum; past that, coordination and the serialized merge step dominate without a matching speed-up.
+> The coordinator clamps the worker count to `SWARM_CEIL` (default **5**) and logs any clamp — 3–5 is the evidence-backed maximum; past that, coordination and the serialized merge step dominate without a matching speed-up. Raise `SWARM_CEIL` to override.
 
 ### `ace swarm start` (explicit)
 
