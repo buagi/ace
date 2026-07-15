@@ -899,7 +899,14 @@ merge_if_ready(){
   fi
   # item 3: this land passed the tentative gate → the NEW main tip is GREEN. Record it as last-green and clear
   # any RED-main flag — if we were the fixer, main is healthy again and the standby workers may resume.
-  _swarm green-set "$(git fetch -q origin main 2>/dev/null; git rev-parse origin/main 2>/dev/null)"; _swarm main-red clear
+  local _newmain; _newmain="$(git fetch -q origin main 2>/dev/null; git rev-parse origin/main 2>/dev/null)"
+  _swarm green-set "$_newmain"; _swarm main-red clear
+  # item 8: broadcast "main advanced → <sha>" on the bus — the one safe pub/sub use. A DETERMINISTIC notice
+  # (not agents reasoning over the bus) that other flows are now behind main. Consumption is deliberately left
+  # to the merge queue's rebase-and-re-gate at land time: rebasing a worktree earlier, before its own gate,
+  # would run the gate on a main-merged tree and so BYPASS the RED-main breaker (item 3), which must see the
+  # break at the tentative gate. So this stays a signal (observability + a hook) — correctness is the queue's.
+  _swarm post "${SWARM_WORKER:-w?}" main-adv "main advanced → ${_newmain:0:12}" ""
   [ "$_mlk" = 1 ] && flock -u 9 2>/dev/null   # release the swarm merge queue
   return 0
 }
