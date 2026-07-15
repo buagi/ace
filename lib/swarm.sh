@@ -177,6 +177,22 @@ _swarm_scope_expand(){
   fi
   printf '%s %s' "$base" "$extra"
 }
+# _swarm_leasable_only "a b c" — keep only paths a worker MAY hold: drop coordinator/union/regenerated META
+# (SWARM_META_FREE) + policy LEASE-FREE globs (contended-by-design), then normalize + dedup. ONE filter behind
+# BOTH the plan-time scrape AND a mid-flight lease grow (swarm_touch), so a raw path can't re-enter via a grow.
+_swarm_leasable_only() {
+  if [ -z "${_SWARM_LEASEFREE+x}" ]; then
+    _SWARM_LEASEFREE=" $(command -v swarm_policy_leasefree >/dev/null 2>&1 && swarm_policy_leasefree "${REPO:-$PWD}" 2>/dev/null) "
+  fi
+  local _t _lf out=""
+  for _t in $1; do
+    [ -n "$_t" ] || continue
+    case "$SWARM_META_FREE" in *" $_t "*) continue ;; esac
+    for _lf in $_SWARM_LEASEFREE; do case "$_t" in ${_lf//\*\*/\*}) continue 2 ;; esac; done
+    out="$out $_t"
+  done
+  printf '%s' "$out" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '
+}
 swarm_paths_for_item() {
   local text="$1" tok paths="" lf
   # lease-free globs from the conflict policy (union/struct/regenerate/assign/allocate/ignore) —
@@ -191,6 +207,15 @@ swarm_paths_for_item() {
     case "$tok" in
       http*|*.com*|*@*) continue ;;      # skip urls/emails
     esac
+    # phantom guard (item 7): never lease a BARE directory that doesn't exist — prose like
+    # "sentiment/ratings/scores" would otherwise lock a whole subtree that no file in the item touches.
+    # Keep a token only if it carries a real file extension (a concrete file, even a new one) OR it already
+    # exists in the repo (a real dir/file). Dropping a token just narrows the lease; if ALL drop, the
+    # fail-safe below leases "." (run alone) — safer than leasing a phantom subtree.
+    case "$tok" in
+      *.sh|*.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.json|*.prisma|*.yaml|*.yml|*.md|*.go|*.py|*.rs|*.rb|*.java|*.php|*.toml|*.css|*.scss|*.html|*.sql|*.txt) : ;;
+      *) [ -e "${REPO:-$PWD}/$tok" ] || continue ;;   # no known extension + not a real path → phantom, drop
+    esac
     case "$SWARM_META_FREE" in *" $tok "*) continue ;; esac   # never lease coordinator/union/regenerated meta files
     for lf in $_SWARM_LEASEFREE; do case "$tok" in ${lf//\*\*/\*}) continue 2 ;; esac; done  # policy lease-free (glob)
     paths="$paths $tok"
@@ -201,13 +226,8 @@ swarm_paths_for_item() {
   # expand toward the true blast radius, then RE-FILTER the whole set through meta/lease-free so an added
   # test/impacted file that happens to be policy-managed is never leased. Overlapping items now serialize
   # at claim time instead of racing into a mid-flight conflict.
-  local _raw _t; _raw="$(_swarm_scope_expand "$paths" "$text")"; paths=""
-  for _t in $_raw; do
-    case "$SWARM_META_FREE" in *" $_t "*) continue ;; esac
-    for lf in $_SWARM_LEASEFREE; do case "$_t" in ${lf//\*\*/\*}) continue 2 ;; esac; done
-    paths="$paths $_t"
-  done
-  paths="$(printf '%s' "$paths" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
+  local _raw; _raw="$(_swarm_scope_expand "$paths" "$text")"
+  paths="$(_swarm_leasable_only "$_raw")"   # re-filter post-expansion (an added test/impacted file may be policy-managed)
   [ -n "${paths// /}" ] && printf '%s\n' "${paths# }" || printf '.\n'
 }
 
@@ -382,7 +402,9 @@ swarm_scope_stats() {
 # flow discovers it must edit more files. Succeeds iff ADDPATHS don't overlap
 # ANOTHER worker's active lease (a flow's own lease can always grow). ok/busy.
 swarm_touch() {
-  local worker="$1" hash="$2" add="$3"
+  local worker="$1" hash="$2" add
+  add="$(_swarm_leasable_only "$3")"   # item 6: re-filter a mid-flight grow so a raw/policy-managed path can't re-enter a lease
+  [ -n "${add// /}" ] || { echo ok; return 0; }   # nothing leasable to add → no-op success
   _touch_txn() {
     local other
     other="$(jq -r --arg h "$hash" '.claims|to_entries[]|select(.value.status=="active" and .key!=$h)|.value.paths' "$STATE" 2>/dev/null)"
@@ -618,8 +640,20 @@ swarm_selftest() {
   printf '%s' "$nfield" | grep -qF -- '- [ ]' && clean=0
   [ -n "$nfield" ] || clean=0
   echo "[selftest] swarm_next clean item: '$nfield'  clean=$clean  (expect 1 — no 'N:'/'- [ ]')"
+  # 6) phantom guard (item 7): a slash-token with no extension that isn't in the repo is NOT leased.
+  local _ph nophantom=1; _ph="$(REPO="$(mktemp -d)" swarm_paths_for_item 'improve sentiment/ratings scoring in apps/x.ts')"
+  printf '%s' "$_ph" | grep -q 'sentiment/ratings' && nophantom=0
+  echo "[selftest] phantom bare-dir dropped: '$_ph'  nophantom=$nophantom  (expect 1 — keeps apps/x.ts, drops sentiment/ratings)"
+  # 7) swarm_touch re-filter (item 6): a mid-flight grow onto a META file (ROADMAP.md) is filtered out.
+  swarm_try_claim wT "touch-item" "apps/t.ts" >/dev/null
+  local hT nofilt=1; hT="$(printf '%s' "touch-item" | cksum | cut -d' ' -f1)"
+  swarm_touch wT "$hT" "ROADMAP.md apps/more.ts" >/dev/null
+  local leaseT; leaseT="$(jq -r --arg h "$hT" '.claims[$h].paths' "$STATE" 2>/dev/null)"
+  printf '%s' "$leaseT" | grep -q 'ROADMAP.md' && nofilt=0
+  echo "[selftest] touch re-filters meta: '$leaseT'  nofilt=$nofilt  (expect 1 — no ROADMAP.md in the lease)"
   # verdict
   [ "$A" = ok ] && [ "$B" = ok ] && [ "$C" = busy ] && [ "$wins" = 1 ] && [ "$D" = ok ] && [ "$clean" = 1 ] \
+    && [ "$nophantom" = 1 ] && [ "$nofilt" = 1 ] \
     && echo "[selftest] PASS ✓" || { echo "[selftest] FAIL ✗"; return 1; }
 }
 
