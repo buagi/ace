@@ -186,7 +186,7 @@ All optional — the defaults are tuned. Set them in the environment or `~/.conf
 
 | Knob | Default | What it does |
 |---|---|---|
-| `SWARM_MAX` | `4` | requested worker count (the `ace autorun` prompt sets this) |
+| `SWARM_MAX` | `2` | requested worker count (the `ace autorun` prompt sets this; clamped to `SWARM_CEIL`) |
 | `SWARM_CEIL` | `5` | hard ceiling on workers; a higher `SWARM_MAX` is clamped down and logged (3–5 is the evidence-backed max) |
 | `SWARM_LIVE` | `0` | `1` = spend credits on the real loop (set by `ace swarm start` / `autorun`) |
 | `DRY_RUN` | `1` | `1` = simulated edits, zero credits (sandbox); `0` = real |

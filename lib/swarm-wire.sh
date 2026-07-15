@@ -85,7 +85,7 @@ wire_systemd() {
   { echo "[Unit]"; echo "Description=ACE swarm (parallel loop)"; echo "After=network-online.target"
     echo "StartLimitIntervalSec=600"; echo "StartLimitBurst=6"
     echo "[Service]"; echo "Type=simple"; echo "WorkingDirectory=$REPO"
-    echo "Environment=SWARM_LIVE=1 DRY_RUN=0 SWARM_MAX=${SWARM_MAX:-4} SWARM_WATCH=1"
+    echo "Environment=SWARM_LIVE=1 DRY_RUN=0 SWARM_MAX=${SWARM_MAX:-2} SWARM_WATCH=1"
     echo "ExecStart=/usr/bin/env bash $LIB/swarm-run.sh start"
     echo "Restart=on-abnormal"; echo "RestartSec=20"; echo "OOMPolicy=continue"
     echo "MemoryAccounting=yes"; echo "MemoryLow=${LOOP_MEMORY_LOW:-1G}"

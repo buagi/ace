@@ -7,7 +7,7 @@
 `OpenCode` + `DeepSeek V4` · 10-agent crew · self-healing CI · limit-resilient autonomous PR runner
 Runs on **Fedora Silverblue / Arch** · Node · Python · **Go** · everything user-local, no root
 
-<img src="https://img.shields.io/badge/version-v0.0.1--alpha-8b0000?style=flat-square&labelColor=0b0b0b">
+<img src="https://img.shields.io/badge/version-v0.0.2--alpha-8b0000?style=flat-square&labelColor=0b0b0b">
 <a href="https://github.com/buagi/ace/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/buagi/ace/ci.yml?branch=main&style=flat-square&labelColor=0b0b0b&label=CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-556b2f?style=flat-square&labelColor=0b0b0b"></a>
 <img src="https://img.shields.io/badge/overseer-Claude_Opus_(swappable)-b8860b?style=flat-square&labelColor=0b0b0b">

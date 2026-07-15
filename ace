@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later  ·  Copyright (c) 2026 buagi  ·  Provided "AS IS", no warranty (see LICENSE).
 # AUTONOMOUS AGENT — runs commands, pushes, deploys, spends money. Use at your own risk (see README ◢ DISCLAIMER ◣).
 set -uo pipefail
-ACE_VERSION="0.0.1-alpha"
+ACE_VERSION="0.0.2-alpha"
 ACE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 for m in ui core dash architecture install scaffold gitflow vps audit consistency menu; do source "$ACE_DIR/lib/$m.sh"; done
 
