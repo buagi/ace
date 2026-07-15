@@ -189,6 +189,21 @@ run_worker() {
       # item is never re-selected — the root of the repeated VERIFY-ONLY no-ops.
       [ "$DRY_RUN" = 1 ] || with_merge_lock _tick_roadmap "$item"
     else swarm_post "$wid" conflict "→ conflict_resolver: $item" "$item"; swarm_release "$wid" "$hash" conflict; fi
+    # Preserve this worker's run artefacts BEFORE `worktree remove` deletes .opencode/ — solo runs persist these,
+    # but a swarm worker's metrics/post-mortems are worktree-local + gitignored and would vanish. CSVs are
+    # concatenated (header-dedup, run-tagged rows); text post-mortems get an item banner. (subagent_report already
+    # unions the per-worker DBs centrally, so this preserves the per-phase-timings + F4-quality half.)
+    if [ -d "$wt/.opencode" ]; then
+      local _wo="$SWARM_DIR/workers/$wid" _art; mkdir -p "$_wo" 2>/dev/null
+      for _art in metrics.csv quality-metrics.csv; do
+        [ -f "$wt/.opencode/$_art" ] || continue
+        [ -f "$_wo/$_art" ] || head -1 "$wt/.opencode/$_art" > "$_wo/$_art" 2>/dev/null
+        tail -n +2 "$wt/.opencode/$_art" >> "$_wo/$_art" 2>/dev/null || true
+      done
+      for _art in run-summary.txt token-report.md; do
+        [ -f "$wt/.opencode/$_art" ] && { printf '\n===== %s =====\n' "$item"; cat "$wt/.opencode/$_art"; } >> "$_wo/$_art" 2>/dev/null || true
+      done
+    fi
     git -C "$REPO" worktree remove -f "$wt" 2>/dev/null
     git -C "$REPO" branch -D "$branch" 2>/dev/null
   done
