@@ -9,7 +9,7 @@ Maintainer reference for work ACE intentionally leaves unbuilt, with enough cont
 
 | Decision | Why deferred | Trigger to revisit |
 |----------|--------------|--------------------|
-| Semantic re-gate on the combined post-rebase state | The merge queue already rebases before merging; re-running `./ci.sh --container` on *every* merge is expensive | `main` goes RED right after a merge despite green branches — scope the re-gate to union/registry hotspots (`SWARM_REQUEUE_GATE=1`) |
+| Semantic re-gate on the combined post-rebase state **— shipped 2026-07-15** | Now on by default: every swarm merge re-runs `./ci.sh --container` on the post-rebase tree (`_tentative_merge_ci_ok`); a RED `main` triggers the circuit breaker | *(done — see next-round #2 / #3)* |
 | Registry-as-directory convention | It is a per-project **code convention** for `standards_keeper` / `STANDARDS.md`, not a merge-layer change | Repeated conflicts/escalations on a central-list / registry file |
 | `allocate` for sequential ids | design-cli has no DB yet | The project gains migrations or any auto-increment id file |
 | Structured set-union for scalar arrays | `merge-structured.sh` only auto-merges object-key additions; array-valued manifests are rare | Array-manifest escalations become frequent |
@@ -32,11 +32,9 @@ Deferred 2026-07-04. In the live swarm, workers self-merge their own PRs concurr
 | Serialized rebase-before-merge queue *(shipped 2026-07-07)* | `merge_if_ready`, in a swarm (`SWARM_WORKER` set; `SWARM_MERGE_QUEUE=0` disables), takes a `flock` on `$SWARM_DIR/.merge.lock` across the whole rebase → merge: `git merge origin/main` onto the freshest main, push, re-check mergeability, merge. Fail-safe — a rebase conflict returns `3` and routes to `conflict_resolver`. Closes the "merge a stale-based branch" gap. | `merge_if_ready`, `lib/autoloop.sh` |
 | Tightened test gate | `go test -timeout 120s -count=2` in the `--container` gate. | `ci.sh --container` |
 
-### The remaining gap: semantic re-gate
+### The semantic re-gate — shipped 2026-07-15
 
-The queue rebases before merging but does **not** re-run `./ci.sh --container` on the combined state. So two workers with disjoint-but-*interacting* changes — each green alone, broken together — can still land a **semantic** break on `main`. Examples: both add a `case` to a `main.go` dispatch, or both touch a shared type. The `conflict_resolver` handles *textual* conflicts, not *semantic* ones.
-
-This is the open half of the merge queue. It is tracked as next-round #2 (`SWARM_REQUEUE_GATE=1`), with a cheaper hotspot-scoped variant under *Smarter conflict handling* #2.
+The queue rebases before merging **and now re-runs `./ci.sh --container` on the combined post-rebase tree** (`_tentative_merge_ci_ok` in `autoloop.sh`), landing only on green. Two workers with disjoint-but-*interacting* changes — each green alone, broken together — therefore surface RED **at the gate**, not on `main`. If a break still reaches `main` (an infra failure, a flake), the **RED-main circuit breaker** (next-round #3, shipped) elects one fixer and stands the rest down until `main` is GREEN. The `conflict_resolver` still handles *textual* conflicts, which are a separate case.
 
 ### The airtight fix
 
@@ -50,7 +48,7 @@ The target design gates every merge against the *actual* post-rebase combined st
 - **Where:** `lib/swarm-run.sh`, the live `_do_work` / `run_worker` path. Either wire a rebase + re-gate into the live feature merge instead of the auto-loop self-merge, or add a coordinator-side rebase + re-gate before confirming the merge.
 - **Cost:** merges serialize — one worker merges at a time. Implement work still parallelizes fully; only the final merge step queues.
 
-The 2026-07-07 queue took the lighter path (Design B plus Design A's rebase step) and already does steps 1, 2 and 4 — leaving only the step-3 `--container` re-gate open. That lighter path is also why the old `_merge_real` design is now redundant (next-round #9).
+The 2026-07-07 queue took the lighter path (Design B plus Design A's rebase step) and does steps 1, 2 and 4; the step-3 `--container` re-gate shipped 2026-07-15 (`_tentative_merge_ci_ok`), closing the design. That lighter path is also why the old `_merge_real` design is now redundant (next-round #9).
 
 **Revisit when:** a swarm run where `main` goes RED right after a merge despite green branches, or any breakage traced to two concurrent merges interacting.
 
@@ -93,6 +91,9 @@ Not built — design-cli has no DB yet. Two options when it does:
 > From the deep validation. A 14h trading-portal run produced ~2 PRs. Three audits plus a reproduction found the "5/5 conflicts" was mostly a bookkeeping bug (fixed, PR #7), plus no rebase-before-merge (fixed, PR #8) and a RED-main freeze from a wall-clock golden (hermetic-test mandate, PR #7). The earlier GitNexus-impact scope work was largely misaimed and is now off by default and bounded.
 
 Remaining backlog, ranked by lever:
+
+> [!NOTE]
+> **Status (2026-07-15): items 1–7 are shipped.** #1 batch/disjoint planning, #2 semantic re-gate (`_tentative_merge_ci_ok`), and #4 single-owner hot files (`assign` policy) landed earlier; #6 + #7 lease-hygiene shipped in PR #56; #5 `ace swarm stats` + truthful outcome telemetry and #3 the RED-main circuit breaker shipped 2026-07-15. **#8–#10 remain open.** Rows below are kept as design rationale.
 
 | # | Fix | What it does | Where / knob |
 |---|-----|--------------|--------------|
