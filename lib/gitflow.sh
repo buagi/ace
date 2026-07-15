@@ -51,22 +51,31 @@ gh_protect_main() {
   need gh
   local slug; slug="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
   [ -z "$slug" ] && { warn "no GitHub origin — skipping protection"; return 0; }
-  step "Branch protection on main ($slug)"
-  if [ "$ACE_DRY_RUN" = 1 ]; then info "[dry-run] would create a ruleset: PR required + 'build-test' must pass on main"; return 0; fi
+  # Only require a status CHECK when a CI actually produces one. With ci_cd:none / a local gate there is NO
+  # check, so 'required_status_checks' would block EVERY merge forever (the check never reports). Detect from
+  # the project profile + the presence of a workflow; otherwise protect main WITHOUT a required check.
+  local cicd checks_rule="" checkmsg=""
+  cicd="$(sed -n 's/^[[:space:]]*ci_cd:[[:space:]]*\([^ #]*\).*/\1/p' .opencode/profile.yaml 2>/dev/null | head -1)"
+  if [ "$cicd" = github-actions ] || ls .github/workflows/*.yml >/dev/null 2>&1; then
+    checks_rule=',
+    { "type":"required_status_checks", "parameters":{ "strict_required_status_checks_policy":true, "required_status_checks":[ { "context":"build-test" } ] } }'
+    checkmsg=" + 'build-test' must pass"
+  fi
+  step "Branch protection on main ($slug)${checkmsg:+ (CI-gated)}${checkmsg:- (local gate — no required CI check)}"
+  if [ "$ACE_DRY_RUN" = 1 ]; then info "[dry-run] would create a ruleset: PR required${checkmsg}"; return 0; fi
   local tmp out rc; tmp="$(mktmp)/ruleset.json"
-  cat > "$tmp" <<'JSON'
+  cat > "$tmp" <<JSON
 { "name":"ace: protect main", "target":"branch", "enforcement":"active",
   "conditions":{ "ref_name":{ "include":["refs/heads/main"], "exclude":[] } },
   "rules":[
     { "type":"deletion" },
     { "type":"non_fast_forward" },
-    { "type":"pull_request", "parameters":{ "required_approving_review_count":0, "dismiss_stale_reviews_on_push":false, "require_code_owner_review":false, "require_last_push_approval":false, "required_review_thread_resolution":false } },
-    { "type":"required_status_checks", "parameters":{ "strict_required_status_checks_policy":true, "required_status_checks":[ { "context":"build-test" } ] } }
+    { "type":"pull_request", "parameters":{ "required_approving_review_count":0, "dismiss_stale_reviews_on_push":false, "require_code_owner_review":false, "require_last_push_approval":false, "required_review_thread_resolution":false } }${checks_rule}
   ] }
 JSON
   out="$(gh api -X POST "repos/$slug/rulesets" --input "$tmp" 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ]; then
-    ok "Ruleset active: PR required + 'build-test' must pass to merge to main."
+    ok "Ruleset active: PR required${checkmsg} to merge to main."
   elif printf '%s' "$out" | grep -qiE 'already exists|name.*exists'; then
     ok "main is already protected (ruleset exists)."
   elif printf '%s' "$out" | grep -qiE 'Pro|upgrade|payment|403'; then
