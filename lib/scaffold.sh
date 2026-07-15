@@ -3411,7 +3411,7 @@ _publish_status() {
   local slug ahead; slug="$(repo_slug 2>/dev/null)"
   git fetch origin -q 2>/dev/null || true
   ahead="$(git rev-list --count @{u}..HEAD 2>/dev/null || echo '?')"
-  if [ "${ahead:-0}" = 0 ] 2>/dev/null; then ok "loop-ready: origin=${slug:-$(git remote get-url origin)} · branch=$(branch) · pushed. Run: ${C_BOLD}ace autorun${C_RESET}"
+  if [ "${ahead:-0}" = 0 ] 2>/dev/null; then ok "loop-ready: origin=${slug:-$(git remote get-url origin)} · branch=$(git branch --show-current 2>/dev/null) · pushed. Run: ${C_BOLD}ace autorun${C_RESET}"
   else warn "origin set but $ahead local commit(s) unpushed — run: ${C_BOLD}ace publish${C_RESET} (or git push)"; return 1; fi
 }
 
