@@ -172,7 +172,7 @@ The most-used knobs; the full table with defaults is in [swarm.md](swarm.md#conf
 
 | Var | Default | What it does |
 |-----|---------|--------------|
-| `SWARM_MAX` | `4` | Worker count (the `ace autorun` prompt sets this; capped at 8). Sticky in `config.env`. |
+| `SWARM_MAX` | `2` | Worker count (the `ace autorun` prompt sets this; clamped to `SWARM_CEIL`, default 5). Sticky in `config.env`. |
 | `SWARM_LIVE` | *(off)* | `1` spends credits on the real loop (set for you by `ace swarm start` / `autorun`; the real loop refuses without it). |
 | `DRY_RUN` | `1` | `1` = simulated edits, zero credits (the sandbox). `0` = real. |
 | `SWARM_SYNC` | `1` | Run the OBJECTIVES → ROADMAP planning sync at start. `0` skips it. |

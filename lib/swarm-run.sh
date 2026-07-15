@@ -23,7 +23,7 @@ MAIN="${SWARM_MAIN:-main}"
 # SERIAL merge step (Amdahl) dominate and integration risk climbs without proportional speedup. This
 # is a hard, mechanical floor-of-safety (P8) even if a user forces SWARM_MAX high; NEVER 6+ workers.
 SWARM_CEIL="${SWARM_CEIL:-5}"
-MAX="${SWARM_MAX:-4}"; MAX="${MAX//[!0-9]/}"; [ -z "$MAX" ] && MAX=4   # sanitize a non-numeric request
+MAX="${SWARM_MAX:-2}"; MAX="${MAX//[!0-9]/}"; [ -z "$MAX" ] && MAX=2   # default 2 workers; sanitize a non-numeric request
 _SWARM_REQ="$MAX"                                                     # raw request, so swarm_run can log a ceiling clamp
 [ "$MAX" -gt "$SWARM_CEIL" ] && MAX="$SWARM_CEIL"                     # cap at the ceiling
 [ "$MAX" -lt 1 ] && MAX=1
