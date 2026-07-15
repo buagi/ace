@@ -15,13 +15,6 @@
 
 telemetry_on(){ [ "${ACE_TELEMETRY:-1}" = 1 ]; }
 
-# path to opencode's session DB (honors a per-worker OPENCODE_DB; falls back to the default store)
-_telemetry_db(){
-  local d="${OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
-  [ -f "$d" ] && { printf '%s' "$d"; return 0; }
-  printf '%s' "$HOME/.local/share/opencode/opencode.db"   # per-worker DB may not exist for a solo run
-}
-
 # _telemetry_render <since_ms> <root_prefix> <scope_label> [by:agent|task]  — print the markdown report.
 # rc 0 = report printed · 1 = unavailable (no python3/DB) · 2 = no sessions matched.
 _telemetry_render(){
@@ -196,7 +189,9 @@ ace_stats(){
 #                                                    that causes MORE retries — a false economy)
 # The FALSE-POSITIVE rate is the most important missing metric: in an autonomous loop a wrong finding
 # doesn't just annoy — it sends the implementer to "fix" a non-bug, burning a retry and sometimes creating
-# a real defect. quality_record appends (the loop calls it at the review->fix seam); quality_report renders.
+# a real defect. WIRING: the bash loop records the `retry` row at end-of-run (autoloop.sh — $fixes, the real
+# CI-fix count). The per-critic `finding accepted|rejected` rows still need IN-OPENCODE capture (the 4 critics
+# run INSIDE the orchestrator, not at a bash seam), so the FP table stays empty until that lands. quality_report renders.
 # Gated by ACE_TELEMETRY; fail-soft.
 
 quality_record(){ # <type> <agent> <detail> [outcome]  — append one quality row
