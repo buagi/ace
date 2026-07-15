@@ -3017,13 +3017,18 @@ EOF
 }
 
 ensure_atlas_refresh() {
-  [ -f scripts/atlas-refresh.sh ] && { info "kept scripts/atlas-refresh.sh"; return; }
+  local ver=2 act=added   # bump `ver` (+ the 'atlas-gen-version:' stamp in the emitted script) when the generator changes, so `ace upgrade` refreshes an outdated copy instead of keeping the buggy one.
+  if [ -f scripts/atlas-refresh.sh ]; then
+    grep -q "atlas-gen-version: $ver" scripts/atlas-refresh.sh 2>/dev/null && { info "kept scripts/atlas-refresh.sh (v$ver)"; return; }
+    act=updated   # present but an older version → rewrite so ace generator fixes propagate
+  fi
   mkdir -p scripts
   cat > scripts/atlas-refresh.sh <<'ATLAS_GEN_EOF'
 #!/usr/bin/env bash
 # atlas-refresh.sh — regenerate the human Architecture Atlas (docs/atlas.md) + the README system-map block.
 # Deterministic skeleton (project structure / GitNexus) + optional grounded narrative (cartographer, DeepSeek).
 # Runs on main after merge (autoloop, every MAP_EVERY) and on demand (`ace atlas`). NEVER in swarm workers.
+# atlas-gen-version: 2
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 0
 
@@ -3058,7 +3063,7 @@ gitnexus_export_mermaid() {
   #   CI=1 timeout -k 10 300 npx -y gitnexus@latest <EXPORT-SUBCOMMAND> --format mermaid 2>/dev/null && return 0
   # Option B (fallback, always ships): a coarse map from top-level source dirs + cross-dir imports.
   local dirs; dirs="$(git ls-files 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go|rs|cs|java)$' \
-    | sed -E 's#/.*##' | sort -u | grep -vE '^(node_modules|dist|build|vendor|\.[^/]*)$' | head -12)"
+    | grep -E '/' | sed -E 's#/.*##' | sort -u | grep -vE '^(node_modules|dist|build|vendor|test|tests|\.[^/]*)$' | head -12)"
   {
     echo "flowchart TD"
     if [ -z "$dirs" ]; then printf '  root["%s"]\n' "$NAME"; else
@@ -3163,7 +3168,7 @@ _atlas_readme
 printf '%s\n' "$sig" > "$stamp" 2>/dev/null || true
 echo "[atlas] docs/atlas.md + README block refreshed (commit $HEAD_SHA)"
 ATLAS_GEN_EOF
-  chmod +x scripts/atlas-refresh.sh; ok "added scripts/atlas-refresh.sh"
+  chmod +x scripts/atlas-refresh.sh; ok "$act scripts/atlas-refresh.sh (v$ver)"
 }
 
 ensure_env_merge() {
