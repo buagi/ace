@@ -137,14 +137,20 @@ _con_fix_gitnexus(){
   fi
 }
 
-_con_fix_opencode(){
-  local db="$HOME/.local/share/opencode/opencode.db"
-  [ -f "$db" ] || return 0
+_con_reset_db_if_big(){   # size-cap ONE opencode sqlite db; skip while opencode is live (fail-closed)
+  local db="$1"; [ -f "$db" ] || return 0
   local mb; mb="$(du -sm "$db" 2>/dev/null | cut -f1)"
   [ "${mb:-0}" -ge "$ACE_OPENCODE_DB_MAX_MB" ] || return 0
   if pgrep -x opencode >/dev/null 2>&1; then
-    warn "opencode: db ${mb}MB over threshold but opencode is running — skipping reset (fail-closed)"; return 0; fi
-  rm -f "$db" "$db-wal" "$db-shm" && ok "opencode: db was ${mb}MB ≥ ${ACE_OPENCODE_DB_MAX_MB}MB — reset (history is disposable; recreates fresh)"
+    warn "opencode: $(basename "$db") ${mb}MB over threshold but opencode is running — skipping reset (fail-closed)"; return 0; fi
+  rm -f "$db" "$db-wal" "$db-shm" && ok "opencode: $(basename "$db") was ${mb}MB ≥ ${ACE_OPENCODE_DB_MAX_MB}MB — reset (history is disposable; recreates fresh)"
+}
+_con_fix_opencode(){
+  _con_reset_db_if_big "$HOME/.local/share/opencode/opencode.db"
+  # E4: each swarm worker keeps its OWN opencode.db under ~/.config/ace/swarm/<proj>/, REUSED (appended to)
+  # across runs → it grows unboundedly and was never capped (only the default store was). Cap those too.
+  local d
+  for d in "$HOME"/.config/ace/swarm/*/*.opencode.db; do [ -f "$d" ] && _con_reset_db_if_big "$d"; done
 }
 
 _con_fix_podman(){
