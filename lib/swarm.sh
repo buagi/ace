@@ -60,8 +60,8 @@ _wcol(){ [ -n "${_R:-}" ] || return 0     # colour off (piped/dumb/NOCOLOR) → 
          printf "\033[38;2;%d;%d;%dm",(r+m)*255,(gg+m)*255,(b+m)*255 }' ;;
   esac; }
 # level → colour for bus/log lines
-_typc(){ case "$1" in done|acquired|ok) printf '%s' "$_GRN";; conflict|error|err) printf '%s' "$_RED";;
-  waiting|blocked|defer|needs-attention|reap|warn) printf '%s' "$_GOLD";; claimed|merging|accent) printf '%s' "$_PUR";; *) printf '%s' "$_FG";; esac; }
+_typc(){ case "$1" in done|acquired|ok) printf '%s' "$_GRN";; conflict|error|err|gate-red) printf '%s' "$_RED";;
+  waiting|blocked|defer|needs-attention|reap|warn|stopped|incomplete) printf '%s' "$_GOLD";; claimed|merging|accent) printf '%s' "$_PUR";; *) printf '%s' "$_FG";; esac; }
 _clip(){ printf '%s' "$1" | sed -E 's/^[0-9]+:[[:space:]]*- \[[ xX]\] //; s/\*//g' | cut -c1-"${2:-40}"; }
 _wname(){ case "$1" in w[0-9]*) printf 'worker %s' "${1#w}";; *) printf '%s' "$1";; esac; }  # w1 → "worker 1"; coordinator/reaper unchanged
 
@@ -499,7 +499,7 @@ swarm_post() {
          --arg to "$to" --arg tp "$topic" --argjson ts "$(_now)" \
      '{ts:$ts, from:$f, to:$to, type:$t, body:$b, item:$it, topic:$tp}' >> "$MSG"
   # mirror onto the unified event stream (dash + web read this): map bus type → level
-  local lvl=info; case "$type" in done|acquired) lvl=ok;; conflict|error) lvl=err;; waiting|blocked|defer|needs-attention|reap) lvl=warn;; claimed|merging) lvl=accent;; esac
+  local lvl=info; case "$type" in done|acquired) lvl=ok;; conflict|error|gate-red) lvl=err;; waiting|blocked|defer|needs-attention|reap|stopped|incomplete) lvl=warn;; claimed|merging) lvl=accent;; esac
   jq -cn --arg w "$from" --arg t "$type" --arg b "$body" --arg it "$item" --arg l "$lvl" --argjson ts "$(_now)" \
      '{ts:$ts, run:"", worker:$w, feat:$it, hash:"", phase:$t, agent:"coordinator", level:$l, msg:$b}' >> "$SWARM_DIR/events.jsonl" 2>/dev/null || true
   flock -u "$fd"; exec {fd}>&-
@@ -600,6 +600,39 @@ swarm_status() {
           "$(_wcol "$w")" "$_R" "$(_wcol "$w")$_B" "$(_wname "$w")" "$_R" "$_FG" "$(_clip "$item" 30)" "$_R" \
           "$_GOLD" "${ph:+·$ph}" "$_R" "$_DIM" "$(printf '%s' "$paths" | cut -c1-40)" "$_R"
       done
+}
+
+# swarm_stats — truthful outcome telemetry (item 5). Classifies how each claimed item ENDED from the event
+# stream: merged (done) · conflict (a real merge conflict) · gate-red (the gate never went green) · stopped
+# (a non-code halt: limit/rathole/review) · incomplete (not-yet-merged). The old dash called EVERY non-merge
+# "conflict"; this makes the real failure mode visible so regressions are actionable. Also prints the current
+# path-disjoint plan (how much parallelism the ROADMAP actually affords). Read-only; no credits.
+swarm_stats() {
+  swarm_init
+  local ev="$SWARM_DIR/events.jsonl"
+  printf '%s🐝 swarm stats%s %s· %s%s\n' "${_B:-}${_PUR:-}" "${_R:-}" "${_MUT:-}" "$(basename "$SWARM_DIR")" "${_R:-}"
+  if [ -s "$ev" ] && command -v jq >/dev/null 2>&1; then
+    # LAST terminal event per (worker,item) — a retried item is counted once, in its FINAL state.
+    local rows; rows="$(jq -rc 'select(.phase|IN("done","conflict","gate-red","stopped","incomplete"))|[.worker,.feat,.phase]|@tsv' "$ev" 2>/dev/null \
+      | awk -F'\t' '{o[$1 FS $2]=$3} END{for(k in o) print o[k]}')"
+    local nd nc ng ns ni
+    nd="$(printf '%s\n' "$rows" | grep -c '^done$')"; nc="$(printf '%s\n' "$rows" | grep -c '^conflict$')"
+    ng="$(printf '%s\n' "$rows" | grep -c '^gate-red$')"; ns="$(printf '%s\n' "$rows" | grep -c '^stopped$')"
+    ni="$(printf '%s\n' "$rows" | grep -c '^incomplete$')"
+    printf '   %smerged%s %s%s%s   %sconflict%s %s%s%s   %sgate-red%s %s%s%s   %sstopped%s %s%s%s   %sincomplete%s %s%s%s\n' \
+      "${_MUT:-}" "${_R:-}" "${_GRN:-}${_B:-}" "$nd" "${_R:-}" \
+      "${_MUT:-}" "${_R:-}" "${_RED:-}" "$nc" "${_R:-}" \
+      "${_MUT:-}" "${_R:-}" "${_RED:-}" "$ng" "${_R:-}" \
+      "${_MUT:-}" "${_R:-}" "${_GOLD:-}" "$ns" "${_R:-}" \
+      "${_MUT:-}" "${_R:-}" "${_GOLD:-}" "$ni" "${_R:-}"
+  else printf '   %sno events yet (run: ace swarm start)%s\n' "${_DIM:-}" "${_R:-}"; fi
+  local rm="${REPO:-$PWD}/ROADMAP.md"
+  if [ -f "$rm" ]; then
+    local plan par ser blk; plan="$(swarm_disjoint_plan "$rm" "${SWARM_CEIL:-5}" 2>/dev/null)"
+    par="$(printf '%s\n' "$plan" | grep -c '^parallel')"; ser="$(printf '%s\n' "$plan" | grep -c '^serialize')"; blk="$(printf '%s\n' "$plan" | grep -c '^blocked')"
+    printf '   %splan%s   %s%s parallel%s · %s serialized (share a file) · %s dep-blocked  (cap %s)\n' \
+      "${_MUT:-}" "${_R:-}" "${_GRN:-}" "$par" "${_R:-}" "$ser" "$blk" "${SWARM_CEIL:-5}"
+  fi
 }
 
 # --- self-test: prove concurrency safety + path-disjoint claiming. ------------
@@ -736,6 +769,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     disjoint-batch) swarm_disjoint_batch "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
     disjoint-plan)  swarm_disjoint_plan "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
     scope-stats)    swarm_scope_stats ;;
+    stats)          swarm_stats ;;
     *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|scope-stats}" >&2; exit 2 ;;
   esac
 fi

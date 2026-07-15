@@ -296,13 +296,14 @@ case "${cmd:-menu}" in
                        drain)     ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" drain ) ;;
                        kill)      ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" kill "${ACE_ARG2:?ace swarm kill wN}" ) ;;
                        status)    ( cd "$_sr" && bash "$_sl/swarm.sh" status ) ;;
+                       stats)     ( cd "$_sr" && REPO="$_sr" bash "$_sl/swarm.sh" stats ) ;;
                        tail|logs) ( cd "$_sr" && bash "$_sl/swarm.sh" tail "${ACE_ARG2:-40}" ) ;;
                        sandbox)   bash "$_sl/swarm-run.sh" sandbox ;;
                        selftest)  bash "$_sl/swarm.sh" selftest && bash "$_sl/swarm.sh" waittest ;;
                        policy)    ( cd "$_sr" && bash "$_sl/swarm.sh" policy ) ;;
                        policy-selftest) bash "$_sl/swarm.sh" policy-selftest ;;
                        wire)      bash "$_sl/swarm-wire.sh" "${ACE_ARG2:-check}" "$_sr" ;;
-                       *) echo "usage: ace swarm {start[ fg]|stop|dash|split|pause|resume|drain|kill wN|status|tail|sandbox|selftest|policy|wire [check|apply]}" ;;
+                       *) echo "usage: ace swarm {start[ fg]|stop|dash|split|pause|resume|drain|kill wN|status|stats|tail|sandbox|selftest|policy|wire [check|apply]}" ;;
                      esac ;;
   awake|caffeinate)  awake_ctl "${ACE_ARG:-status}" ;;
   upgrade|adopt)     upgrade_repo ;;

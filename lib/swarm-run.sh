@@ -93,6 +93,19 @@ _do_work() {
   # Only the session DB is isolated — auth.json + config/plugins stay in the shared default dir, so no re-auth.
 }
 
+# _swarm_outcome_class LOG — why did a worker's item NOT land on main? Classify from the loop's log tail so
+# the bus records the REAL reason (item 5) — a real merge conflict vs a RED gate vs a non-code stop — instead
+# of the old blanket "conflict". Fail-open: an unreadable/ambiguous log → "incomplete" (honest: not-yet-merged).
+_swarm_outcome_class() {
+  local t; t="$(tail -n 80 "$1" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+  case "$t" in
+    *CONFLICT*|*"conflicts with main"*|*UNRESOLVABLE*|*conflict_resolver*)               echo conflict ;;
+    *"reached without green"*|*"CI RED"*|*"LAUNCH RED"*|*"NO-GO"*|*"FAILS ./ci.sh"*)      echo gate-red ;;
+    *"limit hasn't reset"*|*"usage limit"*|*"rathole persisted"*|*"stopping for review"*|*"STOPPING:"*) echo stopped ;;
+    *) echo incomplete ;;
+  esac
+}
+
 # DRY merge: local no-ff into main (clean by disjointness). For the sandbox.
 _merge_dry() {
   git -C "$REPO" checkout -q "$MAIN" || return 2
@@ -171,7 +184,11 @@ run_worker() {
       # Tick the REAL ROADMAP on main (serialized via the merge lock) so a merged
       # item is never re-selected — the root of the repeated VERIFY-ONLY no-ops.
       [ "$DRY_RUN" = 1 ] || with_merge_lock _tick_roadmap "$item"
-    else swarm_post "$wid" conflict "→ conflict_resolver: $item" "$item"; swarm_release "$wid" "$hash" conflict; fi
+    else
+      local _oc; _oc="$(_swarm_outcome_class "$SWARM_DIR/$wid.log")"   # item 5: classify WHY it didn't land
+      swarm_post "$wid" "$_oc" "$_oc → $([ "$_oc" = conflict ] && echo conflict_resolver || echo requeue): $item" "$item"
+      swarm_release "$wid" "$hash" "$_oc"
+    fi
     # Preserve this worker's run artefacts BEFORE `worktree remove` deletes .opencode/ — solo runs persist these,
     # but a swarm worker's metrics/post-mortems are worktree-local + gitignored and would vanish. CSVs are
     # concatenated (header-dedup, run-tagged rows); text post-mortems get an item banner. (subagent_report already
@@ -573,6 +590,7 @@ case "${1:-}" in
   resume)     swarm_init; rm -f "$SWARM_DIR/control.pause" "$SWARM_DIR/control.drain"; echo "resumed" ;;
   drain)      swarm_init; : > "$SWARM_DIR/control.drain"; echo "draining — workers finish the current item, then claim no new work" ;;
   kill)       swarm_init; : > "$SWARM_DIR/control.kill-${2:?usage: kill wN}"; echo "kill signal → ${2} (exits after its current item)" ;;
+  stats)      swarm_stats ;;
   coexist)    swarm_apply_coexistence "${2:-$REPO}" ;;
   "" ) ;;
   *) echo "usage: swarm-run.sh {start|startd|stop|dash|split|sandbox|worker N|watch|coexist}" >&2; exit 2 ;;
