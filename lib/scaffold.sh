@@ -1181,6 +1181,15 @@ EOF
 seed_objectives() {
   local name="$1" domain="$2" mission="$3"
   [ -f OBJECTIVES.md ] && return 0
+  # shape-aware local-stack goals: an HTTP service gets health-endpoint + container goals; a
+  # cli/worker/library gets entrypoint/API goals (it has no /healthz surface to serve).
+  local _shape _l1 _l2; _shape="$(_prof_get shape 2>/dev/null)"; _shape="${_shape:-${PROFILE_SHAPE:-api}}"
+  case "$_shape" in
+    api|cli-web) _l1='- [ ] service builds + runs locally (./ci.sh GREEN, ./ci.sh --container GREEN)'
+                 _l2='- [ ] /healthz returns 200 and the core path is exercised by a test' ;;
+    *)           _l1='- [ ] builds + runs locally (./ci.sh GREEN)'
+                 _l2='- [ ] the primary entrypoint / public API is exercised by an integration test' ;;
+  esac
   cat > OBJECTIVES.md <<EOF
 # Objectives — the north star. The loop breaks the current objective into ROADMAP.md tasks,
 # implements them, and marks progress HERE. Edit freely.
@@ -1198,8 +1207,8 @@ $domain
 ## 1. Working, tested local stack
 Goal: a fully working LOCAL build where every test runs green (unit + integration) against the app.
 - status: not-started
-- [ ] service builds + runs locally (./ci.sh GREEN, ./ci.sh --container GREEN)
-- [ ] /healthz returns 200 and the core path is exercised by a test
+$_l1
+$_l2
 
 ## 2. Deliver the core domain value
 Goal: implement the primary capability described in the Domain above, to a high bar.
@@ -2111,6 +2120,7 @@ gen_autoloop() {
 
 ## Done
 EOF
+  local _seeded_obj=0; [ -f OBJECTIVES.md ] || _seeded_obj=1
   [ -f OBJECTIVES.md ] || cat > OBJECTIVES.md <<'EOF'
 # Objectives — the north star. The loop works top-down toward these: it breaks the current
 # objective into ROADMAP.md tasks, implements them, and marks progress HERE. Edit freely.
@@ -2142,6 +2152,13 @@ Goal: deepen and harden existing features (correctness, tests, robustness) where
 
 ## Done
 EOF
+  # shape-aware: a non-HTTP shape (cli/worker/library) has no web stack to bring up — rewrite the two
+  # service-flavored local-stack lines so its north-star isn't chasing a /healthz + running-app e2e it can't serve.
+  if [ "${_seeded_obj:-0}" = 1 ]; then case "$(_prof_get shape 2>/dev/null)" in
+    ''|api|cli-web) ;;
+    *) sed -i -e 's#^- \[ \] dev stack up (db + app) over self-signed HTTPS on localhost#- [ ] builds + runs locally (./ci.sh GREEN)#' \
+              -e 's#^- \[ \] e2e smoke validates the key user flows against the running app#- [ ] the primary entrypoint / public API is exercised by an integration test#' OBJECTIVES.md 2>/dev/null || true ;;
+  esac; fi
   # Payment reconciliation stub — scaffolded ONLY when a payment provider is already a dependency
   # (idempotent; a clean no-op on a greenfield skeleton). Reconciliation catches silent drift between the
   # provider and the local DB; the loop wires + schedules it (see the appended ROADMAP item).
@@ -2226,8 +2243,8 @@ RPGO
 # Legend: [ ] not-started · [~] present-untested · [x] verified. NO-GO until every BLOCK item is [x].
 
 ## BLOCK (launch must not proceed until all are [x])
-- [ ] Tested restore — run ops/restore-drill.sh; ops/restore-drill.result shows rows_verified (non-zero) + RPO/RTO
-- [ ] Rollback — ops/rollback.md documents the tested revert for the last deploy
+- [ ] Tested restore (if the app has a database) — run ops/restore-drill.sh; ops/restore-drill.result shows rows_verified (non-zero) + RPO/RTO
+- [ ] Rollback (if deployed as a service) — ops/rollback.md documents the tested revert for the last deploy
 - [ ] Secrets & env separation — prod secrets least-privilege, not in the client bundle, separated from staging
 - [ ] Money paths — webhook signature verify + reconciliation job (if the app takes payments)
 - [ ] Spend caps — token/iteration caps + a per-user/session budget (if the app calls an LLM)
@@ -3253,6 +3270,8 @@ gen_ci_workflow() {
     _dk="${ACE_DEPLOY:-$(_prof_get deploy_kind 2>/dev/null)}"; _dk="${_dk:-service}"
     case "$stack" in node|python) ;; *) _dk=none ;; esac          # only real runtimes deploy
     [ "${PROFILE_CONTAINER:-true}" = false ] && _dk=none           # no image → no service deploy
+    _shape="$(_prof_get shape 2>/dev/null)"; _shape="${_shape:-api}"
+    case "$_shape" in worker|library|cli) hpath='' ;; esac          # a non-HTTP shape has no health endpoint to curl (mirrors the go arm) — deploy uses liveness only
   fi
   mkdir -p .github/workflows
   trigger="  push: { branches: [main] }"; { [ "$stack" = go ] && [ "$_bin" = 1 ]; } && trigger="  push: { branches: [main], tags: ['v*'] }"
