@@ -2894,7 +2894,7 @@ autoloop_run() {
     vf=0; [ "$dp" = 1 ] && confirm "After each deploy, run the verify agent (triage live errors/improvements into ROADMAP)?" "$(_yn "${VERIFY:-1}")" && vf=1
     lf=0; confirm "If GitHub Actions is BLOCKED (billing/infra: a run that fails having executed no jobs), accept a GREEN local ./ci.sh --container as the pass and merge?" "$(_yn "${LOCAL_CI_FALLBACK:-0}")" && lf=1
     ask "Feature cap for this run (0 = unlimited, run until stopped)" "${MAX_FEATURES:-3}"; mf="$ASK_REPLY"
-    ask "Parallel flows — SWARM (1 = single loop · 2-8 = parallel workers, path-disjoint + self-merging)" "${SWARM_MAX:-$(config_get SWARM_MAX 2>/dev/null || echo 1)}"; par="$ASK_REPLY"
+    ask "Parallel flows — SWARM (1 = single loop · 2-5 = parallel workers, path-disjoint + self-merging)" "${SWARM_MAX:-$(config_get SWARM_MAX 2>/dev/null || echo 1)}"; par="$ASK_REPLY"
     si=0; ig="${IMPROVE_GOAL:-}"
     if confirm "When all objectives are done, keep improving the project toward an end goal?" "$(_yn "${SELF_IMPROVE:-0}")"; then
       si=1; ask "Optimize self-improvement toward (the system's end goal)" "${ig:-generate income · solve real user problems · professional, reliable UX}"; ig="$ASK_REPLY"

@@ -175,7 +175,7 @@ dash_no_workers(){
     printf '   %s⌁ finishing current tasks — swarm will STOP once workers are done (no new work claimed)%s\n' "$c_gold" "$c_reset"; return
   fi
   if ! _coord_up; then
-    printf '   %sno swarm running — start it: %sace autorun%s (pick 2-8) %sor%s ace swarm start%s\n' "$c_dim" "$c_fg" "$c_dim" "$c_muted" "$c_dim" "$c_reset"; return
+    printf '   %sno swarm running — start it: %sace autorun%s (pick 2-5) %sor%s ace swarm start%s\n' "$c_dim" "$c_fg" "$c_dim" "$c_muted" "$c_dim" "$c_reset"; return
   fi
   local ph si; IFS=$'\t' read -r ph si < <(_coord_phase)
   local wcol; wcol="$(( $(tput cols 2>/dev/null || echo 100) - 10 ))"
