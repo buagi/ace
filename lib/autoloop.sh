@@ -407,9 +407,13 @@ preflight(){
     say "preflight — reconcile skipped (done <${_pfttl}s ago; PREFLIGHT_TTL=0 forces)"
   else
     command -v ace >/dev/null 2>&1 && { ace consistency fix </dev/null >/dev/null 2>&1 || true; say "preflight — consistency reconciled (git/gitnexus/opencode/podman)"; }
-    refresh_version_cache   # warm the LTS/EOL cache so standards_keeper reads it instead of webfetch-ing each review
     touch "$_pfs" 2>/dev/null || true
   fi
+  # version-cache warm is WORKTREE-LOCAL, NOT project-global: versions.json is gitignored, so each swarm worktree
+  # needs its own copy. It must run per-worktree — NOT behind the shared stamp above (which the coordinator/first
+  # worker warms, starving every other worker → standards_keeper webfetches endoflife.date each review). It carries
+  # its own 7-day mtime TTL (refresh_version_cache), so this is a cheap no-op once a worktree's cache is warm.
+  refresh_version_cache
   # STALE-BRANCH GUARD: if this branch's work is already shipped (a MERGED PR for its head), don't
   # reprocess it — return to main, delete the stale branch (local + remote), and continue from there.
   if [ "$b" != main ] && [ "$b" != master ]; then
@@ -1134,6 +1138,7 @@ while :; do
 done
 write_run_summary   # post-mortem → .opencode/run-summary.txt (this run's time-by-phase + slowest steps)
 subagent_report     # per-subagent × worker tokens/cost from the opencode session DB → .opencode/token-report.md (falls back to token_report if the DB is unavailable)
+command -v quality_record >/dev/null 2>&1 && quality_record retry "$RUN_ID" "$fixes"   # F4: this run's real CI-fix retry count (the "false economy" indicator) — the one quality signal the bash loop owns
 command -v quality_report >/dev/null 2>&1 && quality_report   # F4: per-critic FP + retry + escaped-bug → .opencode/quality-report.md (leading quality indicators)
 say "──────── run report ────────"
 say "laps=$lap · features=$features · CI-fixes=$fixes · plans=$plans · conflicts=$conflicts · branch=$(branch)"
