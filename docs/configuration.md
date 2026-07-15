@@ -91,6 +91,17 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 | `EXPECT_REPO` | *(empty)* | Preflight hard-guard: refuse to run if `origin` isn't `owner/name`. |
 | `FIX_ACE` | `0` | `1` triages ACE first when rathole notes exist (read-only — files a GitHub issue for you to fix). |
 
+### Architecture atlas
+
+The human-facing project map — `docs/atlas.md` (system map · data flow · feature map) plus an inline system-map block in the project `README.md`. Refreshed on cadence by the loop and on demand with `ace atlas`. Generated deterministically from project structure; never regenerated in a swarm worker (avoids churning parallel PRs).
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `MAP_EVERY` | `3` | Refresh the atlas every N merged features in the loop (never per-commit, never in a swarm worker). |
+| `ATLAS` | `1` | `0` disables atlas generation entirely (the generator exits immediately). |
+| `ATLAS_NARRATIVE` | `0` | `1` adds a grounded feature-map narrative (read-only cartographer pass on `ATLAS_AGENT`). Off = deterministic skeleton only, zero tokens. |
+| `ATLAS_FORCE` | `0` | `1` overrides the swarm-worker skip and the unchanged-signature skip (what `ace atlas` uses). |
+
 ### Per-step time budget
 
 The clock counts active work; slow deterministic steps pause it (see `SLOW_STEPS`).

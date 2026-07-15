@@ -954,7 +954,7 @@ $fresh" 2>/dev/null)"
 
 preflight
 hermes_notify "▶ autorun started on $(branch) (self-merge=$AUTOMERGE deploy=$DEPLOY features=$([ "$MAX_FEATURES" = 0 ] && echo ∞ || echo "$MAX_FEATURES"))"
-features=0; fixes=0; plans=0; conflicts=0; lap=0
+features=0; fixes=0; plans=0; conflicts=0; lap=0; atlas_since=0
 RUN_ID="$(date +%Y%m%d-%H%M%S)"; RUN_T0=$(date +%s); export RUN_ID   # tags every metrics row so stats are filterable PER RUN
 mkdir -p .opencode 2>/dev/null; write_state startup   # heartbeat (pid) so a FOREGROUND autorun is visible to `ace loop status` + the digest, not just the systemd service
 metric "run_start,,$(orch_provider 2>/dev/null) gate=${MERGE_GATE:-remote},0,0,0,0"
@@ -1103,6 +1103,11 @@ while :; do
         conflicts=0
         hermes_notify "✅ merged to main$([ "${LOCAL_VOUCHED:-0}" = 1 ] && printf ' — local gate (Actions blocked)')"
         [ -x scripts/graph-refresh.sh ] && bash scripts/graph-refresh.sh </dev/null >/dev/null 2>&1 || true   # keep main's map fresh
+        atlas_since=$((atlas_since+1))   # section G: refresh the human Architecture Atlas every MAP_EVERY merges (never per-commit; the generator's own SWARM_WORKER guard keeps worker worktrees a no-op)
+        if [ -x scripts/atlas-refresh.sh ] && [ "$atlas_since" -ge "${MAP_EVERY:-3}" ]; then
+          _at=$(date +%s); bash scripts/atlas-refresh.sh </dev/null >/dev/null 2>&1; _arc=$?
+          phase_metric atlas "" $(( $(date +%s) - _at )) "$_arc"; atlas_since=0   # docs/atlas.md + README block ship with this merge
+        fi
         [ "$HARVEST" = 1 ] && { harvest_warnings "$id" || true; }   # build warnings the gate let through -> ROADMAP
           kanban_sync || true   # reflect the merge on the chat-visible board (opt-in HERMES_KANBAN=1)
         if [ "$DEPLOY_KIND" != service ]; then

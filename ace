@@ -151,6 +151,7 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace import          import existing code/data into brownfield/ and map it (GitNexus+Serena)
   ace upgrade         adopt an EXISTING repo: add missing ACE machinery (additive, non-destructive)
   ace graph [--watch] refresh the code map (GitNexus + Serena); --watch = live on change
+  ace atlas           refresh the human architecture atlas (docs/atlas.md + README map): system map · data flow · feature map
   ace autoloop|autorun  autonomous loop: build feature -> watch CI -> auto-fix -> merge when
                         all-green -> (deploy) -> next roadmap item. Fresh session per feature.
   ace autorun --explain print the resolved delivery policy (merge_gate/auto_merge/deploy_kind/caps) — no run
@@ -269,6 +270,7 @@ case "${cmd:-menu}" in
   stack)             case "${ACE_ARG:-}" in add) stack_add "${ACE_ARG2:-}" ;; *) stack_list ;; esac ;;
   import)            import_existing ;;
   graph)             [ "${ACE_WATCH:-0}" = 1 ] && graph_watch || graph_refresh ;;
+  atlas)             atlas_refresh ;;
   autoloop|autorun|loop|resume)
     case "${ACE_ARG:-}" in
       start|stop|restart|status|logs|tail|stats|metrics|up|update) loop_ctl "$ACE_ARG" ;;
