@@ -159,10 +159,13 @@ dash_statusbar(){
 # coordinator line + (if no live workers) a clear reason WHY, never a silent blank
 _coord_up(){ [ -f "$SWARM_DIR/coordinator.pid" ] && kill -0 "$(cat "$SWARM_DIR/coordinator.pid" 2>/dev/null)" 2>/dev/null; }
 dash_coord(){
-  local slug hb=""; slug="$(basename "$REPO")"
+  local slug hb="" wtr; slug="$(basename "$REPO")"; wtr="$SWARM_DIR/worktrees"
   _coord_up && hb="${c_green}$(_heartbeat)${c_reset} "     # live pulse so you can SEE it's not dead — during dispatch too
-  printf '  %s%s⚙ coordinator%s %s· %s · reconcile · merge-queue · ROADMAP tick%s\n' \
-    "$hb" "$c_accent$bold" "$c_reset" "$c_muted" "$slug" "$c_reset"
+  printf '  %s%s⚙ coordinator%s %s· %s%s%s · reconcile · merge-queue · ROADMAP tick%s\n' \
+    "$hb" "$c_accent$bold" "$c_reset" "$c_muted" "$c_fg$bold" "$slug" "$c_reset$c_muted" "$c_reset"
+  # WHERE ace is working: the project root (the repo the loop drives) + where each worker's isolated worktree lives.
+  printf '    %s📁 repo %s%s%s    %s⎇ worktrees %s%s%s\n' \
+    "$c_muted" "$c_fg" "$REPO" "$c_reset" "$c_muted" "$c_dim" "$wtr" "$c_reset"
 }
 # The reassuring PRE-DISPATCH panel: shown while the coordinator is up but no worker has claimed yet
 # (preflight / gate / planning can take minutes). Names the phase, tracks the step, and BEATS so nobody
@@ -225,7 +228,7 @@ _agents_line(){
 # ── STACKED layout: one full-bordered box per worker with its live feed inline ──
 dash_workers(){
   local cols_t rows_t; cols_t="$(tput cols 2>/dev/null || echo 100)"; rows_t="$(tput lines 2>/dev/null || echo 42)"
-  local BW CW; BW=$(( cols_t - 4 )); [ "$BW" -gt 116 ] && BW=116; CW=$(( BW - 4 ))
+  local BW CW; BW=$(( cols_t - 4 )); [ "$BW" -lt 44 ] && BW=44; CW=$(( BW - 4 ))   # scales to the FULL terminal width (no 116 cap → wide terminals get wide boxes, less truncation)
   dash_coord
   local rows; rows="$(_live_workers)"
   [ -z "$rows" ] && { dash_no_workers; return; }
@@ -236,9 +239,9 @@ dash_workers(){
   local buslines="${DASH_BL:-${DASH_BUSLINES:-5}}" feed maxbox shown="$n" hidden=0
   # never overflow a small window: cap boxes to what fits (5 chrome + ≥2 feed = 7 rows each); the rest
   # get a "+N more — press g for grid" note. This is what keeps ACE inside the terminal.
-  maxbox=$(( (rows_t - 10 - buslines) / 7 )); [ "$maxbox" -lt 1 ] && maxbox=1   # -10: 1 line reserved for the "+N more" note/rounding
+  maxbox=$(( (rows_t - 11 - buslines) / 9 )); [ "$maxbox" -lt 1 ] && maxbox=1   # -11 fixed chrome (coord now 2 lines); box = 7 chrome + ≥2 feed = 9
   [ "$n" -gt "$maxbox" ] && { shown="$maxbox"; hidden=$(( n - maxbox )); }
-  feed=$(( (rows_t - 10 - buslines) / (shown>0?shown:1) - 5 )); [ "$feed" -lt 2 ] && feed=2   # box = 5 chrome rows (+ agents strip)
+  feed=$(( (rows_t - 11 - buslines) / (shown>0?shown:1) - 7 )); [ "$feed" -lt 2 ] && feed=2   # box = 7 chrome rows (border·pipeline·agents·meta·paths·separator·border)
   [ -n "${DASH_FEED_OVR:-}" ] && feed="$DASH_FEED_OVR"; [ "$feed" -gt 24 ] && feed=24
   local w feat phase wall budget act paths shown_i=0
   while IFS=$'\t' read -r w feat phase wall budget act paths; do
@@ -253,11 +256,15 @@ dash_workers(){
     printf '  %s┌─ %s%s%s %s%s┐%s\n' "$wc" "$wc$bold" "$ttl" "$c_reset$wc" "$(_dashes $(( CW - $(_vw "$ttl") - 1 )))" "$wc" "$c_reset"
     _bx_row "$wc" "$CW" "$(_pipeline "$idx" "$cf")   ${c_muted}${bold}$([ -n "$agent" ] && printf '⚙ %s' "$agent" || _phase_label "$phase")${c_reset}"
     _bx_row "$wc" "$CW" "$(_agents_line "$w" "$agent" "$idx")"
-    _bx_row "$wc" "$CW" "${c_muted}wall ${c_fg}${wall:-?}m${c_muted}/${budget:-?}m   ${c_dim}⟨${paths:-…}⟩${c_reset}"
-    # live feed, ANSI-stripped + re-coloured by meaning
+    # WHERE this worker is working: its isolated worktree + branch, the wall/budget, then the file leases it holds
+    local _wt _br; _wt="$(ls -d "$SWARM_DIR/worktrees/$w"-* 2>/dev/null | head -1)"; _br="$(git -C "$_wt" symbolic-ref --short HEAD 2>/dev/null)"
+    _bx_row "$wc" "$CW" "${c_muted}wall ${c_fg}${wall:-?}m${c_muted}/${budget:-?}m    ${c_muted}⎇ ${c_fg}${_br:-—}    ${c_muted}📁 ${c_dim}${_wt##*/}${c_reset}"
+    _bx_row "$wc" "$CW" "${c_dim}⟨ $(printf '%s' "${paths:-…}" | cut -c1-$((CW-6))) ⟩${c_reset}"
+    _bx_row "$wc" "$CW" "${c_border}$(_dashes $(( CW - 1 )))${c_reset}"   # separator: meta ┄ live feed (cleaner line separation)
+    # live feed, ANSI-stripped + WRAPPED to the box width (fold at spaces — no more mid-line truncation)
     if [ "${DASH_FEEDS:-1}" != 0 ] && [ -s "$SWARM_DIR/$w.log" ]; then
-      tail -n "$feed" "$SWARM_DIR/$w.log" 2>/dev/null | sed "s/$ESC\\[[0-9;]*m//g" | while IFS= read -r ln; do
-        ln="$(printf '%s' "$ln" | cut -c1-$((CW-2)))"; local lc="$c_fg"   # -2 slack: wide glyphs can't wrap a row
+      tail -n "$feed" "$SWARM_DIR/$w.log" 2>/dev/null | sed "s/$ESC\\[[0-9;]*m//g" | fold -s -w "$(( CW - 2 ))" | tail -n "$feed" | while IFS= read -r ln; do
+        local lc="$c_fg"
         case "$ln" in *GREEN*|*✓*|*APPROVE*|*merged*|*PASS*|*done*) lc="$c_green";; *RED*|*✗*|*FAIL*|*error*|*⛔*|*CONFLICT*) lc="$c_red";;
           *⚠*|*WARN*|*CHANGES*|*HANG*|*waiting*) lc="$c_gold";; *'→ opencode'*|*Agent*|*'• '*) lc="$c_accent";; *'…'*|*thinking*|*'now:'*) lc="$c_muted";; esac
         _bx_row "$wc" "$CW" "${lc}${ln}${c_reset}"
@@ -284,7 +291,7 @@ dash_grid(){
   [ -z "$rows" ] && { dash_no_workers; return; }
   local n; n="$(printf '%s\n' "$rows" | grep -c .)"
   local ncols; ncols=$(( cols_t / 46 )); [ "$ncols" -lt 1 ] && ncols=1; [ "$ncols" -gt "$n" ] && ncols="$n"; [ "$ncols" -gt 4 ] && ncols=4
-  local cw; cw=$(( cols_t / ncols - 2 )); [ "$cw" -gt 58 ] && cw=58
+  local cw; cw=$(( cols_t / ncols - 2 )); [ "$cw" -gt 100 ] && cw=100   # cells scale with the terminal (was capped at 58)
   local nrows; nrows=$(( (n + ncols - 1) / ncols ))
   local ch; ch=$(( (rows_t - 11) / (nrows>0?nrows:1) )); [ "$ch" -lt 6 ] && ch=6; [ "$ch" -gt 16 ] && ch=16
   local feedh=$(( ch - 4 ))

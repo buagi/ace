@@ -136,7 +136,7 @@ loop_dash() {
     buf+="$(_at 8  "$(_dcen "$COLS" "${DM}the forge never sleeps · the loop is ${GO}eternal${RS}")")"
     # status chips
     local cis="$GN"; case "$ci" in *fail*|*RED*|red) cis="$RD";; running) cis="$GO";; idle) cis="$MU";; esac
-    local sb; sb=" $(_chip d "$AC" loop "#$cyc")    $(_chip d "$cis" ci "$ci")    $(_chip d "$GO" repo "$branch")    $(_chip d "$GN" overseer "$ovr")    $(_chip d "$AC" features "$feat/∞")    $(_chip d "$GO" fixes "$fixes")"
+    local sb; sb=" $(_chip d "$AC" loop "#$cyc")    $(_chip d "$cis" ci "$ci")    $(_chip d "$GO" repo "$(basename "$proj")")    $(_chip d "$GO" branch "$branch")    $(_chip d "$GN" overseer "$ovr")    $(_chip d "$AC" features "$feat/∞")"
     buf+="$(_at 9 "$sb")"
     # agent grid: 4 per row × 2 rows, 3 lines each (top border · name · role-in-bottom-border)
     local bw=$(( (W-3)/4 )) gi=0 top=10
@@ -158,7 +158,7 @@ loop_dash() {
     done
     # log pane
     local lh_row=$((top))
-    buf+="$(_at "$lh_row" "  ${MU}⛧  auto-logs  ⛧$(_drep ' ' 2)${DM}$(date +%H:%M:%S)${RS}")"
+    buf+="$(_at "$lh_row" "  ${MU}⛧  auto-logs  ⛧${RS}   ${MU}📁 ${FGc}${proj}${RS}  ${MU}⎇ ${FGc}${branch}${RS}$(_drep ' ' 2)${DM}$(date +%H:%M:%S)${RS}")"
     local LOG_TOP=$((lh_row+1)) LOG_BOT=$((ROWS-1)) lh n start i
     lh=$((LOG_BOT-LOG_TOP+1)); [ "$lh" -lt 1 ] && lh=1
     n=${#LOG[@]}; start=$((n-lh)); [ "$start" -lt 0 ] && start=0
