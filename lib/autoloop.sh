@@ -893,6 +893,20 @@ merge_if_ready(){
   local _mlk=""
   if [ "${SWARM_MERGE_QUEUE:-${SWARM_WORKER:+1}}" = 1 ] && [ -n "${SWARM_DIR:-}" ] && exec 9>"$SWARM_DIR/.merge.lock" 2>/dev/null && flock -w 900 9 2>/dev/null; then
     _mlk=1
+    # P1 FENCE (#62 hardening): last-moment ownership re-check, under the merge lock, right before we touch
+    # main. If a reap→reassign took this item while we were building/gating (the abandon TERM may not have
+    # reached us — we could be mid-merge, or racing our own watcher), we are NO LONGER the owner and must NOT
+    # land — a straggler merge would be the very double-work the claim store prevents. `owns` exit 1 = surely
+    # reassigned (bail + trip the abandoned path); 0 = still ours; 2 = can't tell → fail OPEN and proceed.
+    if [ -n "${SWARM_WORKER:-}" ] && [ -n "${SWARM_HASH:-}" ] && [ -f "$_SWARM_SH" ]; then
+      bash "$_SWARM_SH" owns "$SWARM_WORKER" "$SWARM_HASH" >/dev/null 2>&1
+      if [ "$?" = 1 ]; then
+        flock -u 9 2>/dev/null
+        say "swarm fence: $SWARM_HASH was reassigned away from $SWARM_WORKER — NOT merging (yielding to the new owner)."
+        : > "$SWARM_DIR/control.abandon-$SWARM_WORKER-$SWARM_HASH" 2>/dev/null   # trip run_worker's abandoned path → clean drop
+        return 1
+      fi
+    fi
     git fetch -q origin main 2>/dev/null || true
     if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
       say "swarm merge-queue: $(branch) is behind main — rebasing onto freshest origin/main before merge"

@@ -515,6 +515,21 @@ swarm_release() {
   _with_lock _rel_txn
 }
 
+# swarm_owns WORKER HASH — exit 0 iff HASH's claim is still ACTIVE and owned by WORKER; 1 if it was
+# re-assigned or is no longer active (a straggler must NOT land); 2 if it can't be determined (no store →
+# the caller fails OPEN and proceeds). The authoritative, store-read form of the abandon-flag fence (#62):
+# a worker calls it at the LAST moment before landing, in case a reap→reassign happened and the abandon
+# TERM hasn't reached it yet (it may be mid-merge, or racing its own watcher). Read-only — no swarm_init, so
+# it never creates a store just to answer "who owns this".
+swarm_owns() {
+  local worker="$1" hash="$2" w st
+  : "${STATE:=${SWARM_DIR:+$SWARM_DIR/state.json}}"
+  [ -n "$STATE" ] && [ -f "$STATE" ] || return 2
+  w="$(jq -r --arg h "$hash" '.claims[$h].worker // ""' "$STATE" 2>/dev/null)"
+  st="$(jq -r --arg h "$hash" '.claims[$h].status // "none"' "$STATE" 2>/dev/null)"
+  [ "$w" = "$worker" ] && [ "$st" = active ]
+}
+
 # ---- self-healing: liveness + reclaim + reconcile ----------------------------
 # swarm_beat WORKER HASH — a live worker refreshes its lease heartbeat.
 swarm_beat() {
@@ -796,6 +811,28 @@ swarm_abandon_selftest(){
   [ "$ok" = 1 ] && echo "[abandon-selftest] PASS ✓" || { echo "[abandon-selftest] FAIL ✗"; return 1; }
 }
 
+# selftest for the P1 merge-time fence (swarm_owns): the owner is recognised, a non-owner / reassigned
+# straggler / released claim is not, and a missing store fails OPEN (exit 2, caller proceeds).
+swarm_owns_selftest(){
+  export SWARM_DIR; SWARM_DIR="$(mktemp -d)/s"; swarm_init
+  local ok=1 h rc
+  swarm_try_claim w1 "item-Y" "src/y.ts" >/dev/null
+  h="$(printf '%s' "item-Y" | cksum | cut -d' ' -f1)"
+  swarm_owns w1 "$h"; [ $? -eq 0 ] || { echo "[owns] owner w1 not recognised"; ok=0; }
+  swarm_owns w2 "$h"; [ $? -eq 1 ] || { echo "[owns] non-owner w2 should be 1"; ok=0; }
+  # backdate + reap + reassign to w2 → w1 is no longer the owner
+  local tmp; tmp="$(mktemp)"; jq --arg h "$h" '.claims[$h].hb = 1' "$STATE" > "$tmp" && mv "$tmp" "$STATE"
+  swarm_reap 1 >/dev/null; swarm_try_claim w2 "item-Y" "src/y.ts" >/dev/null
+  swarm_owns w1 "$h"; [ $? -eq 1 ] || { echo "[owns] reassigned-away w1 should be 1 (would-be double-merge)"; ok=0; }
+  swarm_owns w2 "$h"; [ $? -eq 0 ] || { echo "[owns] new owner w2 not recognised"; ok=0; }
+  swarm_release w2 "$h" done
+  swarm_owns w2 "$h"; [ $? -eq 1 ] || { echo "[owns] released (non-active) claim should be 1"; ok=0; }
+  ( SWARM_DIR="/nonexistent/nope" STATE="" swarm_owns w1 "$h" ); rc=$?
+  [ "$rc" -eq 2 ] || { echo "[owns] missing store should fail OPEN (2), got $rc"; ok=0; }
+  rm -rf "$(dirname "$SWARM_DIR")"
+  [ "$ok" = 1 ] && echo "[owns-selftest] PASS ✓" || { echo "[owns-selftest] FAIL ✗"; return 1; }
+}
+
 # --- self-test: prove concurrency safety + path-disjoint claiming. ------------
 swarm_selftest() {
   export SWARM_DIR; SWARM_DIR="$(mktemp -d)/swarm"; LOCK="$SWARM_DIR/.lock"; STATE="$SWARM_DIR/state.json"; MSG="$SWARM_DIR/messages.jsonl"
@@ -909,6 +946,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     claim)    swarm_try_claim "${2:?worker}" "${3:?item}" "${4:?paths}" ;;
     touch)    swarm_touch "${2:?worker}" "${3:?hash}" "${4:?paths}" ;;
     release)  swarm_release "${2:?worker}" "${3:?hash}" "${4:-done}" ;;
+    owns)     swarm_owns "${2:?worker}" "${3:?hash}" ;;
     post)     swarm_post "${2:?from}" "${3:?type}" "${4:?body}" "${5:-}" "${6:-}" "${7:-}" ;;
     wait)     swarm_wait "${2:?worker}" "${3:?hash}" "${4:?paths}" "${5:-120}" "${6:-2}" ;;
     inbox)    swarm_inbox "${2:?worker}" "${3:-20}" ;;
@@ -927,6 +965,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     policy-selftest) swarm_policy_selftest ;;
     redmain-selftest) swarm_redmain_selftest ;;
     abandon-selftest) swarm_abandon_selftest ;;
+    owns-selftest)  swarm_owns_selftest ;;
     mergiraf-selftest) swarm_mergiraf_selftest ;;
     aggregate-lessons) swarm_aggregate_lessons "${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" ;;
     disjoint-batch) swarm_disjoint_batch "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
@@ -938,6 +977,6 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     green-set)      swarm_green_set "${2:-}" ;;
     green-get)      swarm_green_get ;;
     main-red)       swarm_main_red "${2:-get}" "${3:-}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|scope-stats}" >&2; exit 2 ;;
   esac
 fi
