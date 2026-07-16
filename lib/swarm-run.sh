@@ -449,6 +449,35 @@ _swarm_emit_batch_plan() {
   fi
 }
 
+# _drain_watchdog — P2 throughput floor. While a generation's workers run, watch origin/MAIN: if it has NOT
+# advanced (no merge landed) for SWARM_DRAIN_AFTER while ≥1 worker still holds an active claim, the run is in
+# unproductive churn (the ~4h dead tail in run 260716 landed 1 PR) — trip control.drain so workers stop
+# claiming new work and the generation ends cleanly instead of burning hours. Conservative: the clock PAUSES
+# during legitimate holds (provider-cap reset wait, RED-main standby), and only trips with work in flight.
+# Opt-out with SWARM_AUTODRAIN=0. The parent kills this when the generation's workers finish.
+_drain_watchdog() {
+  local after="${SWARM_DRAIN_AFTER:-5400}" last_adv now head lasthead nactive
+  case "$after" in ''|*[!0-9]*) after=5400 ;; esac
+  lasthead="$(git -C "$REPO" rev-parse "origin/$MAIN" 2>/dev/null || echo none)"; last_adv="$(date +%s)"
+  while sleep "${DRAIN_POLL:-120}"; do
+    [ -f "$SWARM_DIR/control.drain" ] && return 0
+    # legitimate holds are NOT churn — reset the clock so a long cap reset / RED-main standby never auto-drains
+    if [ -f "$SWARM_DIR/provider-capped" ] || [ -f "$SWARM_DIR/main-red" ]; then last_adv="$(date +%s)"; continue; fi
+    git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true
+    head="$(git -C "$REPO" rev-parse "origin/$MAIN" 2>/dev/null || echo none)"
+    if [ "$head" != "$lasthead" ]; then lasthead="$head"; last_adv="$(date +%s)"; continue; fi
+    now="$(date +%s)"
+    nactive="$(jq -r '[.claims[]|select(.status=="active")]|length' "$SWARM_DIR/state.json" 2>/dev/null || echo 0)"
+    case "$nactive" in ''|*[!0-9]*) nactive=0 ;; esac
+    if [ "$((now - last_adv))" -ge "$after" ] && [ "$nactive" -ge 1 ]; then
+      : > "$SWARM_DIR/control.drain"
+      echo "  auto-drain: no merge to $MAIN in $((after/60))m while $nactive worker(s) active — draining (unproductive churn; SWARM_DRAIN_AFTER=$after · SWARM_AUTODRAIN=0 to disable)."
+      swarm_post coordinator needs-attention "auto-drain: no merge in $((after/60))m with $nactive active — stopping the run; re-slice/park the stuck items (SWARM_AUTODRAIN=0 to disable)" "" 2>/dev/null || true
+      return 0
+    fi
+  done
+}
+
 swarm_run() {
   swarm_init; WT_ROOT="${WT_ROOT:-$SWARM_DIR/worktrees}"; mkdir -p "$WT_ROOT"
   # record the TRUE coordinator pid (== its process-group id under setsid) so the start-guard and
@@ -510,7 +539,10 @@ swarm_run() {
     _before="$(grep -cE '^[[:space:]]*- \[ \] ' "$REPO/ROADMAP.md" 2>/dev/null)"; _before="${_before:-0}"
     _WPIDS=""
     for i in $(seq 1 "$allowed"); do run_worker "$i" & _WPIDS="$_WPIDS $!"; done
+    _DWPID=""
+    [ "${SWARM_AUTODRAIN:-1}" != 0 ] && [ "$DRY_RUN" != 1 ] && { _drain_watchdog & _DWPID=$!; }
     wait $_WPIDS 2>/dev/null
+    [ -n "$_DWPID" ] && kill "$_DWPID" 2>/dev/null; _DWPID=""   # stop the throughput-floor watchdog once this generation's workers finish
     # another generation only if there's more work AND this one made progress: stop on drain, in dry mode,
     # or when the generation ticked NOTHING (remainder is parked/unclaimable → re-spawning would churn).
     [ "$DRY_RUN" = 1 ] && break
@@ -518,7 +550,7 @@ swarm_run() {
     _after="$(grep -cE '^[[:space:]]*- \[ \] ' "$REPO/ROADMAP.md" 2>/dev/null)"; _after="${_after:-0}"
     [ "$_after" -ge "$_before" ] 2>/dev/null && { echo "  batch $_gen made no progress — coordinator stopping"; break; }
   done
-  kill "$_RPID" 2>/dev/null
+  kill "$_RPID" 2>/dev/null; [ -n "${_DWPID:-}" ] && kill "$_DWPID" 2>/dev/null
   # all workers have finished (ROADMAP exhausted, or the operator chose finish/drain) → shut the
   # coordinator DOWN cleanly: drop the pidfile + any control files so the dash flips to "no swarm
   # running" immediately and nothing stale blocks the next start.
@@ -530,6 +562,7 @@ _swarm_trap() {
   trap - INT TERM
   printf '\n%sswarm: stopping — workers preserving in-flight WIP on their branches, then terminating…%s\n' "${_GOLD:-}" "${_R:-}" >&2
   kill "${_RPID:-0}" 2>/dev/null                              # reaper
+  [ -n "${_DWPID:-}" ] && kill "$_DWPID" 2>/dev/null          # drain watchdog
   pkill -TERM -f 'scripts/auto-loop.sh' 2>/dev/null || true   # worker loops → cleanup() commits WIP + kills opencode
   sleep 4                                                     # let those cleanup traps finish (the WIP commit)
   pkill -KILL -f 'scripts/auto-loop.sh' 2>/dev/null || true; pkill -KILL -f 'opencode run' 2>/dev/null || true
