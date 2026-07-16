@@ -138,7 +138,7 @@ A self-contained TUI, no tmux required. It reads only the shared store, so you c
 
 | Element | Shows |
 |---|---|
-| status bar | two lines — **run** (id · live workers · peak · pause/drain) and **progress** (live `done/total (%)` from `origin/main` · the done/in-flight/remaining bar · a **⇡ merge-pulse** sparkline with "last N ago" · an **ETA** from the recent merge rate · a `⚠ N serializing` chip when the ROADMAP is collision-heavy) |
+| status bar | two lines — **run** (id · live workers · peak · a `◈ spend ~$X · N tok · overseer %` chip · pause/drain) and **progress** (live `done/total (%)` from `origin/main` · the done/in-flight/remaining bar · a **⇡ merge-pulse** sparkline with "last N ago" · an **ETA** from the recent merge rate · a `⚠ N serializing` chip when the ROADMAP is collision-heavy) |
 | worker box | one per live worker — its feature, the pipeline, the agents strip, wall/budget/lease, and its live loop feed |
 | pipeline | `PLAN · BUILD · GATE · REVIEW · MERGE` with the current stage lit `▸…◂`, inferred live from the worker's log so it advances through all stages |
 | agents strip | all 9 subagents — `✓` once run, `▸active◂` now, dim while pending (`plan·impl·test·gate·rev·ux·std·algn·rslv`) |
@@ -240,6 +240,8 @@ All optional — the defaults are tuned. Set them in the environment or `~/.conf
 | `PLAN_MAX_FILES` | `5` | plan-lint flags an OPEN item whose `Files:` hint names more than this many concrete files as OVERSIZE (BIG-TASK-timeout risk). |
 | `BIGTASK_SLICE_RETRIES` | `1` | after a step overruns the base budget, how many single-slice retries (each at the *base* budget, not escalating) before the item stops and parks/requeues. |
 | `HANG_WARN` | `300` | seconds of zero opencode output (stdout + tool log, nothing building) before an early one-shot warning + bus event, ahead of the hang-restart at `HANG_AFTER` (≈480s). |
+| `DASH_COST` | `1` | show the dash `◈ spend` chip (this-run cost + tokens + overseer share). `0` hides it. |
+| `COST_TTL` | `600` | how often (seconds) the spend chip re-queries the opencode DBs — cached in between, so it's never on the per-frame path (≈10 min). |
 | `SWARM_REPO` | *cwd repo* | the project repo (defaults to the current git root) |
 | `SWARM_DIR` | `~/.config/ace/swarm/<slug>` | the coordination store (state, logs, worktrees, archives) |
 | `SWARM_META_FREE` | *ROADMAP / OBJECTIVES / …* | files never leased per-item (coordinator-ticked / union-merged) |
