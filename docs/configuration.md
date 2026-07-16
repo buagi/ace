@@ -93,7 +93,7 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 
 ### Architecture atlas
 
-The human-facing project map — `docs/atlas.md` (system map · data flow · module map) plus an inline system-map block in the project `README.md`. Refreshed on cadence by the loop and on demand with `ace atlas`. Generated deterministically from the real workspace dependency graph (package.json); never regenerated in a swarm worker (avoids churning parallel PRs).
+The human-facing project map — `docs/atlas.md` (system map · data flow · module map) plus an inline system-map block in the project `README.md`. Refreshed on cadence by the loop and on demand with `ace atlas`. Generated deterministically from the real workspace dependency graph (package.json); never regenerated in a swarm worker (avoids churning parallel PRs). **Full walkthrough — the three views, how it's built, and when it refreshes: [architecture-atlas.md](architecture-atlas.md).**
 
 | Var | Default | What it does |
 |-----|---------|--------------|

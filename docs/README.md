@@ -45,6 +45,7 @@ flowchart LR
 |------|--------------|
 | [swarm.md](swarm.md) | Parallel loops — N workers in path-disjoint worktrees, the live cockpit (`ace swarm dash`), finish+stop, per-run archives, every `SWARM_*` knob. |
 | [observability.md](observability.md) | Watching a run & reading the logs — the live dash, the bus events, the full log/artifact map, and `jq` recipes for "what happened / why". |
+| [architecture-atlas.md](architecture-atlas.md) | The auto-generated architecture diagrams — the three views, where they land (`docs/atlas.md` + README block), how they're built from the real dep graph, and when they refresh. |
 | [conflict-policy.md](conflict-policy.md) | How the swarm handles *predictable* merge conflicts up front (version · changelog · lockfiles · manifests). |
 
 ## Drive it remotely
