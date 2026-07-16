@@ -45,7 +45,8 @@ HEARTBEAT="${HEARTBEAT:-60}"                     # seconds between live "still r
 WATCH_POLL="${WATCH_POLL:-10}"                    # seconds between activity samples (budget-accounting granularity)
 OPENCODE_WALL_MAX="${OPENCODE_WALL_MAX:-10800}"  # HARD wall-clock ceiling (s) per attempt — bounds a stuck step even while slow steps pause the budget clock
 STALL_AFTER="${STALL_AFTER:-900}"                # s of ZERO new output (and no build running) before the rathole supervisor judges the step
-HANG_AFTER="${HANG_AFTER:-900}"                  # s of ZERO opencode log growth (stdout AND internal) → deterministic hang-kill (deadlocked step / stalled parallel subagents). Lowered from 1500: a real fan-out deadlock is silent within minutes.
+HANG_AFTER="${HANG_AFTER:-480}"                  # s of ZERO opencode log growth (stdout AND internal) → deterministic hang-kill (deadlocked step / stalled parallel subagents). 8m: a frozen process (no stdout, no tool log, nothing building) won't recover — don't wait the old 15m. Run 260716 lost ~4.5h to 18× 15m hangs.
+HANG_WARN="${HANG_WARN:-300}"                    # s of the same zero-growth → an EARLY one-shot warning + swarm bus event BEFORE the kill at HANG_AFTER, so a freeze is surfaced in ~5m instead of only when the step is killed.
 RATHOLE_JUDGE="${RATHOLE_JUDGE:-deepseek-v4-flash}"  # cheap model the driver curls (hard-timed + fail-open) for a stuck-vs-progress verdict
 RATHOLE_RETRIES="${RATHOLE_RETRIES:-2}"          # max autonomous fix-and-retry attempts on a CONFIRMED rathole, then hard-stop (no infinite fixing)
 RATHOLE_MAXCHECKS="${RATHOLE_MAXCHECKS:-6}"      # circuit-breaker: max supervisor checks per step before it stops re-checking (wall cap takes over)
@@ -643,7 +644,7 @@ drive(){
     # deterministic step (container build, dependency install, compile, test run) is in its subtree — those
     # shouldn't burn the task budget or trip a false BIG-TASK timeout. OPENCODE_WALL_MAX still bounds a stuck step.
     rm -f .opencode/.timedout .opencode/.oppid .opencode/.capped
-    ( charged=0; credited=0; sincep=0; miss=0; lastsz=0; lastisz=0; stall=0; checks=0; hsz=0; hisz=0; ihang=0; start=$(date +%s); last=$start; lasthead="$(git rev-parse HEAD 2>/dev/null||echo none)"; op=""
+    ( charged=0; credited=0; sincep=0; miss=0; lastsz=0; lastisz=0; stall=0; checks=0; hsz=0; hisz=0; ihang=0; hwarned=0; start=$(date +%s); last=$start; lasthead="$(git rev-parse HEAD 2>/dev/null||echo none)"; op=""
       while :; do
         sleep "${WATCH_POLL:-10}"
         [ -n "$op" ] || op=$(cat .opencode/.oppid 2>/dev/null)
@@ -667,11 +668,18 @@ drive(){
         # deadlock (e.g. hung parallel subagents — the 79-min stall the DeepSeek judge kept ruling
         # 'inconclusive', which then burned the full escalating wall cap). Preserve WIP so the retry RESUMES
         # instead of redoing from scratch, then kill → BIG-TASK retry (capped by OPENCODE_RETRIES).
-        if [ "$sz" != "$hsz" ] || [ "$isz" != "$hisz" ]; then hsz=$sz; hisz=$isz; ihang=0
+        if [ "$sz" != "$hsz" ] || [ "$isz" != "$hisz" ]; then hsz=$sz; hisz=$isz; ihang=0; hwarned=0
         elif ! slow_active "$op"; then ihang=$(( ihang + d )); fi
-        if [ "$ihang" -ge "${HANG_AFTER:-1500}" ]; then
-          printf '\033[0;31m[auto-loop %s]   ⛔ HANG — no opencode output for ~%dm (deadlocked step / stalled subagents). Preserving WIP + restarting the step.\033[0m\n' "$(date +%H:%M:%S)" $(( ${HANG_AFTER:-1500} / 60 ))
-          _ev warn "⛔ HANG ~$(( ${HANG_AFTER:-1500}/60 ))m silent — WIP saved, restarting step"
+        # graduated: surface a freeze EARLY (one-shot warning + swarm bus event) at HANG_WARN, before the kill
+        # at HANG_AFTER — a real freeze is now visible in ~5m instead of only when the step is killed at ~8m.
+        if [ "${hwarned:-0}" = 0 ] && [ "$ihang" -ge "${HANG_WARN:-300}" ] && [ "$ihang" -lt "${HANG_AFTER:-480}" ]; then
+          hwarned=1
+          printf '\033[0;33m[auto-loop %s]   ⚠ no opencode output for ~%dm — watching; will restart the step at %dm if still frozen.\033[0m\n' "$(date +%H:%M:%S)" $(( ihang / 60 )) $(( ${HANG_AFTER:-480} / 60 ))
+          _ev warn "⚠ step silent ~$(( ${HANG_WARN:-300}/60 ))m — will restart at $(( ${HANG_AFTER:-480}/60 ))m if still frozen"
+        fi
+        if [ "$ihang" -ge "${HANG_AFTER:-480}" ]; then
+          printf '\033[0;31m[auto-loop %s]   ⛔ HANG — no opencode output for ~%dm (deadlocked step / stalled subagents). Preserving WIP + restarting the step.\033[0m\n' "$(date +%H:%M:%S)" $(( ${HANG_AFTER:-480} / 60 ))
+          _ev warn "⛔ HANG ~$(( ${HANG_AFTER:-480}/60 ))m silent — WIP saved, restarting step"
           b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"; { [ "$b" != main ] && [ "$b" != master ] && [ -n "$(git status --porcelain 2>/dev/null)" ] && git add -A 2>/dev/null && git commit --no-verify -q -m "WIP: auto-saved before hang-restart (resumes next attempt)" >/dev/null 2>&1; } || true
           : > .opencode/.timedout; kill_tree "$op" TERM; sleep 3; kill_tree "$op" KILL; break
         fi
