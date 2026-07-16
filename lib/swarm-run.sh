@@ -357,23 +357,45 @@ _prune_stale_swarm() {
 # SYNCHRONOUS by design: it runs with NO workers active, so it never races the coordinator's working tree
 # against the workers' ROADMAP ticks. The inner sync_objectives is mtime-guarded, so a re-call once
 # objectives are already covered is a fast no-op — safe to invoke each generation.
+# _land_plan_pr SLUG — land the coordinator-owned chore/plan PR and fast-forward the coordinator's main.
+# The planner opens it but (per "never merge your own PR") leaves it open, and LOOP_SYNC_ONLY exits before
+# the loop's merge step — so the COORDINATOR lands it here, else the decomposed tasks never reach main and
+# workers have nothing to claim. --admin because the unattended swarm is the accepted operating mode for
+# these coordinator-authored plan PRs (same as the OBJECTIVES→ROADMAP sync). Extracted so the re-slice pass
+# reuses the identical path. Fail-open.
+_land_plan_pr() {
+  local slug="$1" ppr
+  ppr="$(gh pr list --repo "$slug" --head chore/plan --state open --json number -q '.[0].number' 2>/dev/null)"
+  if [ -n "$ppr" ]; then
+    echo "  planning: merging plan PR #$ppr → main"
+    gh pr merge "$ppr" --repo "$slug" --squash --admin --delete-branch >/dev/null 2>&1 \
+      || gh pr merge "$ppr" --repo "$slug" --squash --delete-branch >/dev/null 2>&1 || true
+  fi
+  git -C "$REPO" fetch -q --prune origin "$MAIN" 2>/dev/null
+  git -C "$REPO" checkout -q "$MAIN" 2>/dev/null && git -C "$REPO" reset -q --hard "origin/$MAIN" 2>/dev/null || true
+}
+
 _swarm_plan_sync() {
   echo "  planning: syncing OBJECTIVES → ROADMAP on your model (waits on a limit; SWARM_SYNC=0 to skip)…"
   ( cd "$REPO" && LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
       bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 \
     || echo "  planning: sync ended (see coordinator.log) — proceeding with the current ROADMAP"
-  # the planner opens a chore/plan PR but (per "never merge your own PR") leaves it open, and
-  # LOOP_SYNC_ONLY exits before the loop's merge step — so the COORDINATOR lands it here, else the
-  # decomposed tasks never reach main and workers have nothing new to claim.
-  local _slug _ppr; _slug="$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
-  _ppr="$(gh pr list --repo "$_slug" --head chore/plan --state open --json number -q '.[0].number' 2>/dev/null)"
-  if [ -n "$_ppr" ]; then
-    echo "  planning: merging plan PR #$_ppr (decomposed tasks → main)"
-    gh pr merge "$_ppr" --repo "$_slug" --squash --admin --delete-branch >/dev/null 2>&1 \
-      || gh pr merge "$_ppr" --repo "$_slug" --squash --delete-branch >/dev/null 2>&1 || true
+  local _slug; _slug="$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
+  _land_plan_pr "$_slug"
+  # P0.1: with the ROADMAP now on main, LINT the OPEN items against the runtime footprint model
+  # (swarm_plan_lint = swarm_paths_for_item + _overlap). If any COLLIDE (share a file → serialize) or are
+  # OVERSIZE, run ONE targeted re-slice pass and land it BEFORE dispatch — turning #65's warning into an
+  # actual fix. Bounded: at most one re-slice per plan-sync; SWARM_RESLICE=0 disables. Fail-open.
+  local _lint _lrc
+  _lint="$(swarm_plan_lint "$REPO/ROADMAP.md" 2>/dev/null)"; _lrc=$?
+  if [ "$_lrc" -eq 1 ] && [ "${SWARM_RESLICE:-1}" != 0 ]; then
+    echo "  planning: plan-lint found collisions/oversize — re-slicing before dispatch:"
+    printf '%s\n' "$_lint" | sed 's/^/    /'
+    swarm_post coordinator needs-attention "plan-lint: re-slicing colliding/oversize items before dispatch" "" 2>/dev/null || true
+    ( cd "$REPO" && RESLICE_REPORT="$_lint" LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
+        bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 || true
+    _land_plan_pr "$_slug"
   fi
-  git -C "$REPO" fetch -q --prune origin "$MAIN" 2>/dev/null
-  git -C "$REPO" checkout -q "$MAIN" 2>/dev/null && git -C "$REPO" reset -q --hard "origin/$MAIN" 2>/dev/null || true
 }
 
 # _swarm_should_plan GEN — should this generation (re)plan? Gen 1: yes, when sync is enabled and
