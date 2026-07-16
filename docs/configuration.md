@@ -108,9 +108,9 @@ The clock counts active work; slow deterministic steps pause it (see `SLOW_STEPS
 
 | Var | Default | What it does |
 |-----|---------|--------------|
-| `OPENCODE_TIMEOUT` | `2700` | Base per-run budget (s). On overrun the step is treated as a big task and retried with a larger budget, not failed. |
-| `OPENCODE_TIMEOUT_MAX` | `8100` | Ceiling the escalating big-task budget grows to (s). |
-| `OPENCODE_RETRIES` | `2` | Extra big-task attempts before stopping for review. |
+| `OPENCODE_TIMEOUT` | `2700` | Base per-run budget (s). On overrun the step is treated as a big task and retried once as a bounded *slice* at this same budget, not failed. |
+| `BIGTASK_SLICE_RETRIES` | `1` | After a step overruns, how many single-slice retries (each at the base budget, **not** escalating) before it stops and the item parks/requeues. Replaced the old escalating `OPENCODE_RETRIES` / `OPENCODE_TIMEOUT_MAX`. |
+| `HANG_WARN` | `300` | Seconds of zero opencode output (stdout + tool log, nothing building) before an early one-shot warning, ahead of the hang-restart at `HANG_AFTER` (≈480s). |
 | `OPENCODE_WALL_MAX` | `10800` | Hard wall-clock ceiling per attempt (s) — bounds a stuck step even while slow steps pause the budget clock. |
 | `SLOW_STEPS` | build-tool list | Subprocess names whose run time is not charged to the task budget: `podman buildah docker pnpm npm yarn pip … cargo go … tsc turbo vite jest vitest pytest playwright cypress`. |
 | `WATCH_POLL` | `10` | Seconds between activity samples (budget-accounting granularity). |
