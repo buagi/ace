@@ -702,7 +702,7 @@ swarm_startd() {
     rm -f "$SWARM_DIR/coordinator.pid"   # stale (crashed) or reused pid → clear it and start clean
   fi
   swarm_preflight || return 0                # DECISION · SETUP · STATE table + final confirm (headless auto-proceeds); a "no" stops here
-  rm -f "$SWARM_DIR"/control.* 2>/dev/null   # drop leftover control.{pause,drain,kill-wN} so they don't hit a fresh run
+  rm -f "$SWARM_DIR"/control.* "$SWARM_DIR/.cost-chip" 2>/dev/null   # drop leftover control.{pause,drain,kill-wN} + the prior run's cached spend chip so a fresh run doesn't inherit them
   _archive_prev_run                          # rotate the finished run's logs into archive/<datetime> (only now that we're really launching)
   : > "$SWARM_DIR/coordinator.log"   # fresh log per launch so a startup error is visible, not buried
   # setsid → the coordinator leads its OWN process group, so `ace swarm stop` can group-kill the

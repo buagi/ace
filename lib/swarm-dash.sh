@@ -121,6 +121,37 @@ _eta(){ local ts="$1" now="$2" rem="${3:-0}" win="${PULSE_WIN:-1800}" n eta
 # collisions the coordinator recorded in the batch plan (cheap — no re-lint per frame).
 _dash_collisions(){ grep -c '^COLLIDE' "$SWARM_DIR/batch-plan.txt" 2>/dev/null || echo 0; }
 
+# _dash_cost — this-run spend chip ("~$12 · 340M tok · overseer 95%"), refreshed at most every COST_TTL
+# (default 600s = 10m) and cached to $SWARM_DIR/.cost-chip so it's NEVER computed on the hot frame path.
+# Efficient by construction: opencode's `session` table pre-sums cost + tokens per session (≈120 rows), so
+# a single SUM() over it is ~15ms even on a 300MB DB — it never scans the event/part blobs. Scoped to the
+# current run via time_created ≥ run-start (the first bus event's ts, in ms). bun:sqlite (guaranteed with
+# ACE); read-only; timeout-guarded. Absent runtime / no DB / a locked read → empty chip (graceful).
+_DASH_COST_JS='const {Database}=require("bun:sqlite");
+const a=process.argv.slice(1); const start=Number(a.pop()); const dbs=a;
+let cost=0,tok=0,ov=0,ok=0;
+for(const f of dbs){try{
+  const db=new Database(f,{readonly:true});
+  const r=db.query("SELECT COALESCE(SUM(cost),0) c, COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0) t, COALESCE(SUM(CASE WHEN agent=\"orchestrator\" THEN cost ELSE 0 END),0) o FROM session WHERE time_created>=?").get(start);
+  cost+=r.c||0; tok+=r.t||0; ov+=r.o||0; ok++; db.close();
+}catch(e){}}
+if(ok===0)process.exit(1);
+const pct=cost>0?Math.round(ov*100/cost):0;
+const C=cost>=10?Math.round(cost):cost.toFixed(2);
+const T=tok>=1e6?(tok/1e6).toFixed(0)+"M":Math.round(tok/1e3)+"k";
+console.log(`~$${C} · ${T} tok · overseer ${pct}%`);'
+_dash_cost(){
+  [ "${DASH_COST:-1}" = 1 ] || return 0
+  local cache="$SWARM_DIR/.cost-chip" ttl="${COST_TTL:-600}"
+  if [ -f "$cache" ] && [ "$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null||echo 0) ))" -lt "$ttl" ]; then cat "$cache"; return; fi
+  command -v bun >/dev/null 2>&1 || return 0
+  set -- "$SWARM_DIR"/*.opencode.db; [ -e "$1" ] || return 0        # nullglob off → $1 is the literal pattern when nothing matches
+  local start_ms; start_ms=$(( $(jq -r '(.ts // 0)' "$SWARM_DIR/events.jsonl" 2>/dev/null | head -1) * 1000 ))
+  local out; out="$(timeout 8 bun -e "$_DASH_COST_JS" "$@" "$start_ms" 2>/dev/null)" || out=""
+  [ -n "$out" ] && printf '%s' "$out" > "$cache"    # cache only real results → retry (cheaply) until the first data lands
+  printf '%s' "$out"
+}
+
 # infer the coordinator's PRE-worker phase from its log so the dash NAMES what it's doing (never blank).
 # emits: "human label<TAB>step-idx"  (step: 0 preflight · 1 planning · 2 dispatching)
 _coord_phase(){
@@ -176,7 +207,7 @@ dash_header(){ printf ' %s⛧ A C E%s %s· the forge%s  %s—  the loop is %sete
 
 dash_statusbar(){
   local d t; read -r d t < <(_dash_roadmap)
-  local active peak paused draining pct now mts pulse eta ncoll collchip inflabel
+  local active peak paused draining pct now mts pulse eta ncoll collchip inflabel spend spendchip=""
   active="$(_live_workers | grep -c . )"
   # +1 on claim, -1 on ANY terminal event (done/conflict/error/idle) — else an error-released worker's
   # +1 is never decremented and peak over-reports.
@@ -188,11 +219,12 @@ dash_statusbar(){
   pulse="$(_pulse_merges "$mts" "$now")"; eta="$(_eta "$mts" "$now" "$(( t - d ))")"
   ncoll="$(_dash_collisions)"; collchip=""; [ "${ncoll:-0}" -gt 50 ] && collchip="   ${c_gold}⚠ ${ncoll} serializing${c_reset}"
   inflabel=""; [ "$active" -gt 0 ] && inflabel=" ${c_gold}+${active} in-flight${c_reset}"
-  # line 1 — the RUN: identity + live worker count + peak concurrency + pause/drain state
-  printf ' %s●%s run %s%s%s      %s●%s workers %s%s%s      %s●%s peak %s%s%s%s%s\n' \
+  spend="$(_dash_cost)"; [ -n "$spend" ] && spendchip="      ${c_muted}◈ spend ${c_fg}${spend}${c_reset}"
+  # line 1 — the RUN: identity + live worker count + peak concurrency + this-run spend + pause/drain state
+  printf ' %s●%s run %s%s%s      %s●%s workers %s%s%s      %s●%s peak %s%s%s%s%s%s\n' \
     "$c_accent" "$c_muted" "$c_fg" "${RUNID:-—}" "$c_reset" \
     "$c_green" "$c_muted" "$c_green$bold" "$active" "$c_reset" \
-    "$c_accent" "$c_muted" "$c_fg" "${peak:-0}" "$c_reset" "${paused:-}" "${draining:-}"
+    "$c_accent" "$c_muted" "$c_fg" "${peak:-0}" "$c_reset" "$spendchip" "${paused:-}" "${draining:-}"
   # line 2 — PROGRESS: live roadmap done/total (%) + 3-state bar + merge pulse + ETA (+ collisions if serializing)
   printf ' %s●%s roadmap %s%s/%s%s %s%s%%%s %s%s      %s⇡%s %s      %seta%s %s%s\n' \
     "$c_gold" "$c_muted" "$c_fg$bold" "$d" "$t" "$c_reset" "$c_dim" "$pct" "$c_reset" "$(_bar "$d" "$t" "$active")" "$inflabel" \
