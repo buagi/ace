@@ -158,9 +158,10 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace autorun --explain print the resolved delivery policy (merge_gate/auto_merge/deploy_kind/caps) — no run
   ace resume          resume the loop after an interruption: rescues gate-green work an
                         interrupted run left uncommitted, then continues (same as autorun).
-  ace swarm start|stop|dash|split|pause|resume|drain|kill wN|status|tail|sandbox|selftest|wire
+  ace swarm start|stop|dash|split|pause|resume|drain|kill wN|status|stats|preflight|tail|sandbox|selftest|wire
                       PARALLEL loops: N path-disjoint workers, each self-merging, with a live cockpit
                       ('ace swarm dash'). 'ace autorun' also gates it (pick 2-5). 'sandbox' = free DRY demo.
+                      'preflight' previews the DECISION·SETUP·STATE table shown before a live start.
                       'drain' = finish current work + stop. See docs/swarm.md.
   ace loop start|stop|restart|status|logs|stats|update    (stats = per-run timing post-mortem)
                       run the loop as a detached systemd user service (survives terminal-close
@@ -301,9 +302,10 @@ case "${cmd:-menu}" in
                        kill)      ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" kill "${ACE_ARG2:?ace swarm kill wN}" ) ;;
                        status)    ( cd "$_sr" && bash "$_sl/swarm.sh" status ) ;;
                        stats)     ( cd "$_sr" && REPO="$_sr" bash "$_sl/swarm.sh" stats ) ;;
+                       preflight) ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" preflight ) ;;
                        tail|logs) ( cd "$_sr" && bash "$_sl/swarm.sh" tail "${ACE_ARG2:-40}" ) ;;
                        sandbox)   bash "$_sl/swarm-run.sh" sandbox ;;
-                       selftest)  bash "$_sl/swarm.sh" selftest && bash "$_sl/swarm.sh" waittest && bash "$_sl/swarm.sh" redmain-selftest && bash "$_sl/swarm.sh" abandon-selftest ;;
+                       selftest)  bash "$_sl/swarm.sh" selftest && bash "$_sl/swarm.sh" waittest && bash "$_sl/swarm.sh" redmain-selftest && bash "$_sl/swarm.sh" abandon-selftest && bash "$_sl/swarm.sh" owns-selftest && bash "$_sl/swarm.sh" plan-lint-selftest ;;
                        policy)    ( cd "$_sr" && bash "$_sl/swarm.sh" policy ) ;;
                        policy-selftest) bash "$_sl/swarm.sh" policy-selftest ;;
                        wire)      bash "$_sl/swarm-wire.sh" "${ACE_ARG2:-check}" "$_sr" ;;

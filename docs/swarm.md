@@ -80,6 +80,27 @@ ace swarm start fg     # run in the foreground (logs to the terminal, no detach)
 
 `start` is **LIVE** — it spends model credits on the real loop. It reads `SWARM_MAX` for the worker count. Set `ACE_NO_DASH=1` to start without auto-opening the dashboard.
 
+### Pre-run preflight — know before you spend
+
+Before a live `start` launches, ACE prints a **DECISION · SETUP · STATE** table and (in an interactive terminal) asks for one final confirm — so you see exactly what's about to happen before any credits are spent:
+
+```text
+┏━ swarm preflight · you/project ━━━━━━━━━━━━━━━━━━━
+┃ DECISION  workers 2/5 · overseer …opus-4-8 · merge_gate local · auto_merge on · deploy OFF · live 1
+┃ SETUP     repo you/project · branch main · remote you/project · container ✓ · github ✓ · key ✓
+┃ STATE     ROADMAP open 77 · objectives open 39 · main@8faa1be · ~5 parallelizable now
+┃           plan-lint: 960 collision(s) · 0 oversize
+┃           ⚠ heavily file-serialized — early passes will re-slice before real parallelism
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Start this LIVE run now? spends model credits [Y/n] ▸
+```
+
+- **DECISION** = the resolved delivery policy (workers, overseer model, merge gate, auto-merge, deploy, feature cap).
+- **SETUP** = repo / branch / remote and the tool checks (container runtime, GitHub auth, model key).
+- **STATE** = ROADMAP + objectives counts, `main` tip, and the **plan-lint** verdict — how many tasks will collide (serialize) and how many are oversized, so you're warned about a cluttered ROADMAP *before* the run spends time re-slicing it.
+
+**Headless / cron runs never block** — with no TTY (or `ACE_YES=1`) the table is still printed for the record and the run proceeds automatically. Preview it any time without starting a run: `ace swarm preflight`. Disable entirely with `SWARM_PREFLIGHT=0`.
+
 ### `ace swarm sandbox` (try it free)
 
 ```bash
@@ -200,6 +221,8 @@ All optional — the defaults are tuned. Set them in the environment or `~/.conf
 | `SWARM_MAX` | `2` | requested worker count (the `ace autorun` prompt sets this; clamped to `SWARM_CEIL`) |
 | `SWARM_CEIL` | `5` | hard ceiling on workers; a higher `SWARM_MAX` is clamped down and logged (3–5 is the evidence-backed max) |
 | `SWARM_LIVE` | `0` | `1` = spend credits on the real loop (set by `ace swarm start` / `autorun`) |
+| `SWARM_PREFLIGHT` | `1` | show the DECISION·SETUP·STATE table + final confirm before a live start. `0` disables it. |
+| `ACE_YES` | `0` | `1` = skip the preflight confirm prompt (proceed automatically); the table is still printed. |
 | `DRY_RUN` | `1` | `1` = simulated edits, zero credits (sandbox); `0` = real |
 | `SWARM_SYNC` | `1` | run the OBJECTIVES→ROADMAP planning sync at start; `0` to skip |
 | `SWARM_ARCHIVE_KEEP` | `5` | how many past runs' logs to retain under `archive/` |
