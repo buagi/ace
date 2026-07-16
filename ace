@@ -255,7 +255,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "${cmd:-menu}" in
-  menu)              main_menu ;;
+  menu)              alt_screen_on; trap 'alt_screen_off' EXIT INT TERM; main_menu; alt_screen_off; trap - EXIT INT TERM ;;
   status|doctor)     doctor ;;
   install|guided)    guided ;;
   keys)              configure_keys ;;
