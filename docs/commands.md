@@ -58,7 +58,7 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | Command | Does |
 |---------|------|
 | `ace graph [--watch]` | refresh GitNexus + Serena + `docs/architecture.md` (agent code-map) |
-| `ace atlas` | refresh the human Architecture Atlas — `docs/atlas.md` (system map · data flow · module map) + the README system-map block |
+| `ace atlas` | refresh the human Architecture Atlas — `docs/atlas.md` (system map · data flow · module map) + the README system-map block ([how it works](architecture-atlas.md)) |
 | `ace consistency [fix]` | drift/scope guard: `main`↔`origin` · GitNexus · opencode DB · podman; add `fix` to reconcile |
 
 ## Git and safety
