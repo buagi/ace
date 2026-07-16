@@ -34,3 +34,5 @@ jobs:
         run: bash tests/supply-chain.sh
       - name: prompt contracts (agent output-contract regression gate — F3)
         run: bash tests/prompt-contracts.sh
+      - name: swarm selftests (claim store · leasing · fencing · plan-lint · RED-main)
+        run: bash tests/swarm-selftests.sh
