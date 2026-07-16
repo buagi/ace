@@ -636,6 +636,57 @@ _archive_prev_run() {
   rm -f "$SWARM_DIR"/w*.log 2>/dev/null || true
 }
 
+# swarm_preflight — before a LIVE run spends credits, print a DECISION · SETUP · STATE table and, when a
+# TTY is present, ask for ONE final confirm. Headless / detached (no TTY) prints the table for the record
+# and proceeds — it never blocks the autonomous flow (ACE_YES=1 also skips the prompt; SWARM_PREFLIGHT=0
+# disables the whole thing). Returns non-zero ONLY on an interactive "no". Read-only: touches nothing.
+swarm_preflight() {
+  [ "${SWARM_PREFLIGHT:-1}" = 1 ] || return 0
+  local repo="$REPO" prof="$REPO/.opencode/profile.yaml"
+  local P="${_PUR:-}" G="${_GRN:-}" R="${_R:-}" B="${_B:-}" M="${_MUT:-}" Y="${_GOLD:-}"
+  _pf(){ grep -iE "^[[:space:]]*$1[[:space:]]*:" "$prof" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^["'\'']//; s/["'\'']$//'; }
+  # --- gather (all best-effort; a failure just shows a placeholder) ---
+  local slug branch remote lastg rmopen objs npar ncoll nover lint ov mg am
+  slug="$(cd "$repo" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || basename "$repo")"
+  branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  remote="$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#' || echo none)"
+  lastg="$(git -C "$repo" rev-parse --short "origin/$MAIN" 2>/dev/null || git -C "$repo" rev-parse --short "$MAIN" 2>/dev/null || echo '?')"
+  rmopen="$(grep -cE '^[[:space:]]*- \[ \] ' "$repo/ROADMAP.md" 2>/dev/null || echo 0)"
+  objs="$(grep -cE '^[[:space:]]*- \[ \] ' "$repo/OBJECTIVES.md" 2>/dev/null || echo 0)"
+  npar="$(swarm_disjoint_batch "$repo/ROADMAP.md" "${SWARM_CEIL:-5}" 2>/dev/null || echo '?')"
+  lint="$(swarm_plan_lint "$repo/ROADMAP.md" 2>/dev/null)"
+  ncoll="$(printf '%s\n' "$lint" | grep -c '^COLLIDE')"; nover="$(printf '%s\n' "$lint" | grep -c '^OVERSIZE')"
+  ov="${ORCH_MODEL_OVERRIDE:-$(jq -r '.agent.orchestrator.model // .agents.orchestrator.model // empty' "$HOME/.config/opencode/opencode.json" 2>/dev/null)}"; ov="${ov:-configured overseer}"
+  mg="${MERGE_GATE:-$(_pf merge_gate)}"; mg="${mg:-remote}"
+  case "${AUTOMERGE:-$(_pf auto_merge)}" in true|yes|1) am=on ;; *) am=off ;; esac
+  local tcont tgh tkey
+  { command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; } && tcont="✓" || tcont="✗ none"
+  ( cd "$repo" && gh auth status >/dev/null 2>&1 ) && tgh="✓" || tgh="✗ not logged in"
+  [ -n "${DEEPSEEK_API_KEY:-}${OPENROUTER_API_KEY:-}${ANTHROPIC_API_KEY:-}" ] && tkey="✓ (env)" || tkey="from config"
+  # --- render ---
+  local bar='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+  printf '\n%s%s┏━ swarm preflight · %s %s%s\n' "$B" "$P" "$slug" "${bar:0:$(( 30>${#slug}?30-${#slug}:2 ))}" "$R"
+  printf '%s┃%s %sDECISION%s  workers %s%s%s/%s · overseer %s · merge_gate %s · auto_merge %s · deploy %s · live %s%s%s\n' \
+    "$P" "$R" "$B" "$R" "$G" "$MAX" "$R" "${SWARM_CEIL:-5}" "$ov" "$mg" "$am" "$([ "${DEPLOY:-0}" = 1 ] && echo on || echo OFF)" "$G" "$LIVE" "$R"
+  printf '%s┃%s %sSETUP   %s  repo %s · branch %s · remote %s · container %s · github %s · key %s\n' \
+    "$P" "$R" "$B" "$R" "$slug" "$branch" "$remote" "$tcont" "$tgh" "$tkey"
+  printf '%s┃%s %sSTATE   %s  ROADMAP open %s · objectives open %s · main@%s · ~%s parallelizable now\n' \
+    "$P" "$R" "$B" "$R" "$rmopen" "$objs" "$lastg" "$npar"
+  printf '%s┃%s           plan-lint: %s%s collision(s)%s · %s oversize\n' \
+    "$P" "$R" "$([ "${ncoll:-0}" -gt 0 ] && echo "$Y" || echo "$G")" "${ncoll:-0}" "$R" "${nover:-0}"
+  [ "${ncoll:-0}" -gt 50 ] && printf '%s┃%s           %s⚠ heavily file-serialized — early passes will re-slice before real parallelism (RESLICE_MAX/pass)%s\n' "$P" "$R" "$Y" "$R"
+  printf '%s┗%s%s\n' "$P" "$bar" "$R"
+  # --- confirm (interactive only; headless/ACE_YES proceed) ---
+  if [ -t 0 ] && [ -t 1 ] && [ "${ACE_YES:-0}" != 1 ]; then
+    printf '%sStart this LIVE run now?%s %sspends model credits%s %s[Y/n]%s ▸ ' "$B" "$R" "$M" "$R" "$M" "$R"
+    local ans; read -r ans
+    case "${ans:-Y}" in [Nn]*) printf '%saborted — nothing started.%s\n' "$M" "$R"; return 1 ;; esac
+  else
+    echo "  (headless — proceeding without a prompt · ACE_YES to silence)"
+  fi
+  return 0
+}
+
 # detached coordinator: background it, pidfile + log in the store; watch with `ace swarm dash`.
 swarm_startd() {
   swarm_init
@@ -650,6 +701,7 @@ swarm_startd() {
     fi
     rm -f "$SWARM_DIR/coordinator.pid"   # stale (crashed) or reused pid → clear it and start clean
   fi
+  swarm_preflight || return 0                # DECISION · SETUP · STATE table + final confirm (headless auto-proceeds); a "no" stops here
   rm -f "$SWARM_DIR"/control.* 2>/dev/null   # drop leftover control.{pause,drain,kill-wN} so they don't hit a fresh run
   _archive_prev_run                          # rotate the finished run's logs into archive/<datetime> (only now that we're really launching)
   : > "$SWARM_DIR/coordinator.log"   # fresh log per launch so a startup error is visible, not buried
@@ -721,6 +773,7 @@ swarm_dash_split() {
 case "${1:-}" in
   start|run)  swarm_run ;;
   startd)     swarm_startd ;;
+  preflight)  swarm_init; SWARM_PREFLIGHT=1 ACE_YES=1 swarm_preflight ;;   # preview the DECISION·SETUP·STATE table (no run)
   stop)       swarm_stopd ;;
   dash)       swarm_dash ;;             # THE dash: one self-contained TUI — cockpit + per-worker LIVE feeds inline (no tmux)
   split)      swarm_dash_split ;;       # OPTIONAL: real tmux panes (independent scrollback/mouse per worker) — needs tmux
