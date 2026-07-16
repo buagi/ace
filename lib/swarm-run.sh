@@ -389,10 +389,18 @@ _swarm_plan_sync() {
   local _lint _lrc
   _lint="$(swarm_plan_lint "$REPO/ROADMAP.md" 2>/dev/null)"; _lrc=$?
   if [ "$_lrc" -eq 1 ] && [ "${SWARM_RESLICE:-1}" != 0 ]; then
-    echo "  planning: plan-lint found collisions/oversize — re-slicing before dispatch:"
-    printf '%s\n' "$_lint" | sed 's/^/    /'
-    swarm_post coordinator needs-attention "plan-lint: re-slicing colliding/oversize items before dispatch" "" 2>/dev/null || true
-    ( cd "$REPO" && RESLICE_REPORT="$_lint" LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
+    # CAP the report fed to the planner: a cluttered ROADMAP can yield hundreds of colliding pairs, and a
+    # 900-line directive is both an unwieldy Opus prompt and an unrealistic "fix everything at once" ask.
+    # Feed only the worst RESLICE_MAX offenders — plan-lint re-runs each plan-sync, so the tail is fixed over
+    # successive passes (the batch drains → re-plan → re-lint) rather than in one giant pass.
+    local _report _ntot
+    _ntot="$(printf '%s\n' "$_lint" | grep -cE '^(COLLIDE|OVERSIZE)')"
+    _report="$(printf '%s\n' "$_lint" | grep -E '^(COLLIDE|OVERSIZE)' | head -"${RESLICE_MAX:-30}")"
+    [ "$_ntot" -gt "${RESLICE_MAX:-30}" ] && _report="$_report
+…and $((_ntot - ${RESLICE_MAX:-30})) more — this pass fixes the worst; the next plan-sync re-lints the rest."
+    echo "  planning: plan-lint found $_ntot colliding/oversize item(s) — re-slicing the worst $(printf '%s\n' "$_report" | grep -cE '^(COLLIDE|OVERSIZE)') before dispatch"
+    swarm_post coordinator needs-attention "plan-lint: re-slicing $_ntot colliding/oversize item(s) before dispatch (worst ${RESLICE_MAX:-30} this pass)" "" 2>/dev/null || true
+    ( cd "$REPO" && RESLICE_REPORT="$_report" LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
         bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 || true
     _land_plan_pr "$_slug"
   fi
