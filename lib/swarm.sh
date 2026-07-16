@@ -398,6 +398,78 @@ swarm_scope_stats() {
   printf 'impact-graph cache: %s hit / %s miss  (%s)\n' "$h" "$m" "$f"
 }
 
+# swarm_plan_lint [ROADMAP] — P0.1: a deterministic pre-flight on the OPEN roadmap items the swarm
+# will actually try to run, using the SAME footprint model (swarm_paths_for_item + _overlap) the
+# runtime leases with. Two checks, mirroring the two failure modes from run 260716:
+#   COLLIDE  — two OPEN items whose leased footprints overlap will SERIALIZE (only one runs at a
+#              time). This is the hot-file starvation that pinned worker-2 in 260716 (access-control.ts
+#              in 6 items, schema.prisma in 5). The fix is to re-slice into disjoint files or chain
+#              them with `deps:` — reported so the planner can act on the SPECIFIC pairs.
+#   OVERSIZE — an item whose Files: hint names > PLAN_MAX_FILES concrete files is a BIG-TASK-timeout
+#              risk. Coarse by design (won't catch a 3-file rewrite — the BIGTASK_SLICE_RETRIES budget
+#              cap is that backstop); it catches the obviously-too-wide items before they burn a run.
+# Prints a report; exit 0 = clean, 1 = violation(s) found (a caller can trigger a bounded re-slice).
+PLAN_MAX_FILES="${PLAN_MAX_FILES:-5}"
+swarm_plan_lint() {
+  local rm="${1:-ROADMAP.md}"; [ -f "$rm" ] || { echo "swarm: no $rm" >&2; return 2; }
+  local -a items=() paths=()
+  local line it p n i j over=0 coll=0 nf
+  while IFS= read -r line; do
+    it="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*- \[ \] //')"
+    [ -z "$it" ] && continue
+    case "$it" in *'add your first'*) continue ;; esac
+    p="$(swarm_paths_for_item "$it" 2>/dev/null)"
+    items+=("$it"); paths+=("$p")
+  done < <(grep -E '^[[:space:]]*- \[ \] ' "$rm" 2>/dev/null)
+  n=${#items[@]}
+  for ((i=0; i<n; i++)); do
+    # count distinct concrete files named in the item's Files: hint (not the expanded blast radius)
+    nf="$(printf '%s' "${items[$i]}" | grep -oiE 'files?:.*' | grep -oE '[A-Za-z0-9_./-]+\.[A-Za-z0-9]+' | sort -u | grep -c .)"
+    if [ "${nf:-0}" -gt "$PLAN_MAX_FILES" ]; then
+      over=$((over+1)); printf 'OVERSIZE  %s files · %s\n' "$nf" "$(_clip "${items[$i]}" 58)"
+    fi
+  done
+  for ((i=0; i<n; i++)); do for ((j=i+1; j<n; j++)); do
+    if _overlap "${paths[$i]}" "${paths[$j]}"; then
+      coll=$((coll+1)); printf 'COLLIDE   %s  ⨯  %s\n' "$(_clip "${items[$i]}" 32)" "$(_clip "${items[$j]}" 32)"
+    fi
+  done; done
+  printf 'plan-lint: %d open item(s) · %d oversize · %d colliding pair(s)\n' "$n" "$over" "$coll"
+  [ "$over" -eq 0 ] && [ "$coll" -eq 0 ]
+}
+
+# swarm_plan_lint_selftest — hermetic: builds a throwaway ROADMAP and asserts the lint flags a
+# colliding pair + an oversized item, and passes a clean disjoint set. No network, no real repo files.
+swarm_plan_lint_selftest() {
+  local d ok=1 out
+  d="$(mktemp -d)" || return 1
+  ( cd "$d" && git init -q 2>/dev/null
+    cat > ROADMAP.md <<'RM'
+# Roadmap
+## Next
+- [ ] [value] feature A. Files: packages/alpha/a.ts, packages/alpha/a.test.ts
+- [ ] [value] feature B. Files: packages/beta/b.ts, packages/beta/b.test.ts
+- [ ] [value] hot X. Files: packages/shared/hot.ts, apps/x/x.ts
+- [ ] [value] hot Y. Files: packages/shared/hot.ts, apps/y/y.ts
+- [ ] [infra] wide item. Files: a/1.ts, a/2.ts, a/3.ts, a/4.ts, a/5.ts, a/6.ts, a/7.ts
+RM
+    out="$(REPO="$d" swarm_plan_lint ROADMAP.md 2>/dev/null)"; local rc=$?
+    printf '%s\n' "$out" | grep -q 'COLLIDE' || { echo "[plan-lint] expected a COLLIDE (shared/hot.ts) — none"; ok=0; }
+    printf '%s\n' "$out" | grep -q 'OVERSIZE' || { echo "[plan-lint] expected an OVERSIZE (7-file item) — none"; ok=0; }
+    [ "$rc" -eq 1 ] || { echo "[plan-lint] expected exit 1 on violations, got $rc"; ok=0; }
+    cat > clean.md <<'RM'
+# Roadmap
+## Next
+- [ ] feature A. Files: packages/alpha/a.ts
+- [ ] feature B. Files: packages/beta/b.ts
+RM
+    REPO="$d" swarm_plan_lint clean.md >/dev/null 2>&1 || { echo "[plan-lint] clean disjoint set should pass (exit 0)"; ok=0; }
+    [ "$ok" = 1 ] && echo "[plan-lint] PASS ✓" || { echo "[plan-lint] FAIL ✗"; exit 1; }
+  ) || ok=0
+  rm -rf "$d"
+  [ "$ok" = 1 ]
+}
+
 # swarm_touch WORKER HASH ADDPATHS — extend an ACTIVE claim mid-flight when a
 # flow discovers it must edit more files. Succeeds iff ADDPATHS don't overlap
 # ANOTHER worker's active lease (a flow's own lease can always grow). ok/busy.
@@ -859,11 +931,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     aggregate-lessons) swarm_aggregate_lessons "${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" ;;
     disjoint-batch) swarm_disjoint_batch "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
     disjoint-plan)  swarm_disjoint_plan "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
+    plan-lint)      swarm_plan_lint "${2:-ROADMAP.md}" ;;
+    plan-lint-selftest) swarm_plan_lint_selftest ;;
     scope-stats)    swarm_scope_stats ;;
     stats)          swarm_stats ;;
     green-set)      swarm_green_set "${2:-}" ;;
     green-get)      swarm_green_get ;;
     main-red)       swarm_main_red "${2:-get}" "${3:-}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|scope-stats}" >&2; exit 2 ;;
   esac
 fi

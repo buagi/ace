@@ -409,6 +409,16 @@ _swarm_emit_batch_plan() {
   nser="$(printf '%s\n' "$plan" | grep -c '^serialize')"
   nblk="$(printf '%s\n' "$plan" | grep -c '^blocked')"
   echo "  batch plan: $npar parallel · $nser serialized (share a file) · $nblk dep-blocked  (→ $SWARM_DIR/batch-plan.txt)"
+  # P0.1: append the plan-lint verdict (SPECIFIC colliding pairs + OVERSIZE items) to the artifact + surface
+  # the exact items on the bus — actionable where #65's parallel/serial counts are only a symptom. Telemetry
+  # only: does NOT write ROADMAP.md (workers own its ticks) and does NOT merge anything. Fail-open.
+  local _lint _lrc
+  _lint="$(swarm_plan_lint "$REPO/ROADMAP.md" 2>/dev/null)"; _lrc=$?
+  if [ "$_lrc" -eq 1 ]; then
+    { printf '\n-- plan-lint --\n'; printf '%s\n' "$_lint"; } >> "$SWARM_DIR/batch-plan.txt" 2>/dev/null || true
+    local _first; _first="$(printf '%s\n' "$_lint" | grep -E '^(COLLIDE|OVERSIZE)' | head -3 | tr '\n' ';')"
+    [ -n "$_first" ] && swarm_post coordinator needs-attention "plan-lint: ${_first%;}" "" 2>/dev/null || true
+  fi
   # #65: surface the PARALLELISM CEILING loudly (it was invisible until a run post-mortem). When the ROADMAP is
   # heavily file-serialized, extra workers can't help no matter how high SWARM_MAX is — the shape is the ceiling.
   if [ "$npar" -lt 3 ] && [ "$nser" -ge 3 ]; then

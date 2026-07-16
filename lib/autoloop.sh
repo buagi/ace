@@ -40,6 +40,7 @@ OPENCODE_TIMEOUT="${OPENCODE_TIMEOUT:-2700}"     # base per-run budget (s, +50%)
 OPENCODE_TIMEOUT_MAX="${OPENCODE_TIMEOUT_MAX:-8100}"  # ceiling (s, +50%) the escalating big-task budget grows to
 export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS="${OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS:-300000}"  # E4: raise the inner bash cap to 5m for legit-long commands (opencode env, verified present on 1.17.x). The 120s streamText step ceiling (#25509) may STILL fire — so keep the FULL/--container build OUT of the inner agent loop (FAST ci.sh inner; FULL at the merge gate).
 OPENCODE_RETRIES="${OPENCODE_RETRIES:-2}"        # extra big-task attempts (each with a larger budget) before stopping for review
+BIGTASK_SLICE_RETRIES="${BIGTASK_SLICE_RETRIES:-1}"  # P0.2: once a step overruns, it's oversized — do at most this many SLICE attempts (each at the BASE budget, NOT escalating), then stop. Prevents one item eating 45→90→135m and still parking. A slice, by definition, fits the base budget.
 HEARTBEAT="${HEARTBEAT:-60}"                     # seconds between live "still running" elapsed/remaining ticks
 WATCH_POLL="${WATCH_POLL:-10}"                    # seconds between activity samples (budget-accounting granularity)
 OPENCODE_WALL_MAX="${OPENCODE_WALL_MAX:-10800}"  # HARD wall-clock ceiling (s) per attempt — bounds a stuck step even while slow steps pause the budget clock
@@ -316,6 +317,19 @@ next_item(){
 sync_objectives(){
   [ "${PLAN:-1}" = 1 ] || return 0
   [ -n "${SWARM_WORKER:-}" ] && return 0
+  # P0.1: targeted re-slice pass. The swarm coordinator sets RESLICE_REPORT (from `swarm plan-lint`) when OPEN
+  # ROADMAP items COLLIDE (share a file → serialize) or are OVERSIZE (too many files → BIG-TASK timeout). Fix
+  # ONLY those items — do not decompose objectives or add features. Bypasses the OBJECTIVES/mtime guards below
+  # because the target is the existing ROADMAP, not a new goal.
+  if [ -n "${RESLICE_REPORT:-}" ]; then
+    [ -f ROADMAP.md ] || return 0
+    say "re-slicing colliding/oversized ROADMAP items flagged by plan-lint…"
+    drive "re-slice flagged ROADMAP items" "The swarm's plan-lint flagged these OPEN ROADMAP items. COLLIDE = two items share a file so they SERIALIZE (only one runs at a time, halving throughput). OVERSIZE = an item names too many files and will blow the time budget mid-run.
+$RESLICE_REPORT
+Read ROADMAP.md. Fix ONLY the flagged items. For each COLLIDE pair: re-slice them into DISJOINT files, or give the shared/HUB file to exactly ONE item and add 'deps: <that item's title/keyword>' to the other so it runs only after the first merges. For each OVERSIZE item: split it into ORDERED increments (scaffold → stub → fill → wire), each ≤3 files and independently shippable, preserving order with 'deps:'. Keep every item's 'Files:' hint accurate to what it will actually touch. Do NOT add new features, do NOT touch done [x] items, do NOT re-decompose objectives. Branch chore/plan, commit ROADMAP.md, open a PR into main. Planning only." \
+      || say "re-slice pass skipped (planner error) — continuing with the flagged ROADMAP."
+    return 0
+  fi
   [ -f OBJECTIVES.md ] || return 0
   grep -qE '^[[:space:]]*- \[ \] ' OBJECTIVES.md 2>/dev/null || return 0
   # only when OBJECTIVES changed since the last sync (adding a goal bumps its mtime) → no
@@ -757,7 +771,7 @@ $2"
         continue
       fi
       tries=$((tries+1))
-      if [ "$tries" -gt "${OPENCODE_RETRIES:-2}" ]; then
+      if [ "$tries" -gt "${BIGTASK_SLICE_RETRIES:-1}" ]; then
         # PRESERVE PROGRESS: never leave in-flight work uncommitted on a timeout-stop — a later
         # preflight 'git reset --hard origin/main' would wipe it. Auto-save a WIP commit on the
         # feature branch (never main/master), skipping the gate since the work is incomplete.
@@ -765,8 +779,9 @@ $2"
           git add -A 2>/dev/null && git commit --no-verify -m "WIP: auto-saved on timeout-stop ($1) — incomplete, do not merge" >/dev/null 2>&1 \
             && say "preserved in-flight work as a WIP commit on $(branch) before stopping."
         fi
-        say "⏳ step still unfinished after ${OPENCODE_RETRIES:-2} extra attempt(s) at up to ${budget}s — stopping for review (raise OPENCODE_TIMEOUT/_MAX/_RETRIES, or split the task)."; return 1; fi
-      budget=$(( base * (tries + 1) )); [ "$budget" -gt "${OPENCODE_TIMEOUT_MAX:-5400}" ] && budget="${OPENCODE_TIMEOUT_MAX:-5400}"
+        say "⏳ oversized: still unfinished after ${BIGTASK_SLICE_RETRIES:-1} slice attempt(s) at ${base}s each — stopping so the item parks/requeues instead of burning an escalating budget (this step timed out twice at 8100s in run 260716). Re-slice it smaller, or raise BIGTASK_SLICE_RETRIES/OPENCODE_TIMEOUT."; return 1; fi
+      # P0.2: a slice fits the BASE budget by definition — do NOT escalate. The old `base*(tries+1)` grew to 8100s (135m) and just invited another whole-thing attempt, which is exactly what timed out (attempt 2) 8× in run 260716. Keep each slice attempt at base.
+      budget="$base"
       # checkpoint in-flight work so the retry RESUMES from committed state instead of redoing from scratch.
       { b="$(branch)"; [ "$b" != main ] && [ "$b" != master ] && [ -n "$(git status --porcelain 2>/dev/null)" ] \
         && git add -A 2>/dev/null && git commit --no-verify -q -m "WIP: slice checkpoint before BIG-TASK retry" >/dev/null 2>&1 \
@@ -775,7 +790,7 @@ $2"
 
 --- original task ---
 $2"
-      say "⏳ BIG TASK — step ran past ${base}s (attempt $tries/${OPENCODE_RETRIES:-2}). Retrying with a SPLIT directive (ship one slice + queue the rest) and a larger ${budget}s budget."
+      say "⏳ BIG TASK — step ran past ${base}s (slice attempt $tries/${BIGTASK_SLICE_RETRIES:-1}). Retrying at the SAME ${budget}s budget with a SPLIT directive: ship ONLY the first shippable slice from the committed WIP, queue the rest to ROADMAP."
       continue
     fi
     if claude_limit_hit .opencode/last-run.log && handle_claude_limit; then
