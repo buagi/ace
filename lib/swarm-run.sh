@@ -143,7 +143,7 @@ _tick_roadmap() {
 }
 
 run_worker() {
-  local wid="w$1" res item hash paths branch wt base_ref
+  local wid="w$1" res item hash paths branch wt base_ref _keep_branch _prior _resume
   while :; do
     # operator controls from `ace swarm dash` (or `ace swarm pause/drain/kill`):
     [ -f "$SWARM_DIR/control.kill-$wid" ] && { swarm_post "$wid" idle "killed by operator" ; rm -f "$SWARM_DIR/control.kill-$wid"; break; }
@@ -182,15 +182,27 @@ run_worker() {
     # RUNID makes the branch unique per run → it can NEVER collide with a leftover
     # swarm/* branch (which the auto-loop would mistake for a "pending PR to resume"
     # and burn a whole lap resolving — the junk-PR churn from the 10h run).
-    branch="swarm/${RUNID:-r}-$wid-$hash"; wt="$WT_ROOT/$wid-$hash"
+    branch="swarm/${RUNID:-r}-$wid-$hash"; wt="$WT_ROOT/$wid-$hash"; _keep_branch=0; _resume=0
     rm -rf "$wt"
     # Base the worktree on the FRESH remote tip, not stale local main — otherwise a
     # worker opens behind origin/main and its pre-commit changelog hook regenerates
     # from a shorter history, reverting main's entries (near-miss data loss in the run).
     git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true
     base_ref="$MAIN"; git -C "$REPO" rev-parse -q --verify "origin/$MAIN" >/dev/null 2>&1 && base_ref="origin/$MAIN"
+    # #64: resume-on-reclaim — if a PRIOR attempt at THIS item (this run) left committed WIP on its swarm branch
+    # (kept on an incomplete/abandoned outcome below), base this worktree on that WIP instead of fresh main, so the
+    # autoloop builds on it rather than re-implementing from scratch (Opus is ~94% of cost). The merge queue still
+    # rebases onto fresh main at land time, so a slightly-behind WIP base is safe.
+    _prior="$(git -C "$REPO" for-each-ref --format='%(refname:short)' "refs/heads/swarm/${RUNID:-r}-*-$hash" 2>/dev/null | grep -vxF "$branch" | head -1)"
+    if [ -n "$_prior" ] && [ "$(git -C "$REPO" rev-list --count "origin/$MAIN..$_prior" 2>/dev/null || echo 0)" -gt 0 ]; then
+      base_ref="$_prior"; _resume=1
+    fi
     if ! git -C "$REPO" worktree add -q -b "$branch" "$wt" "$base_ref" 2>/dev/null; then
       swarm_post "$wid" error "worktree add failed" "$item"; swarm_release "$wid" "$hash" error; continue
+    fi
+    if [ "$_resume" = 1 ]; then
+      swarm_post "$wid" acquired "resuming prior WIP ($(git -C "$REPO" rev-list --count "origin/$MAIN..$_prior" 2>/dev/null || echo '?') commit(s)) for: $item" "$item"
+      git -C "$REPO" branch -D "$_prior" 2>/dev/null   # superseded by our worktree's branch
     fi
     rm -f "$SWARM_DIR/control.abandon-$wid-$hash" 2>/dev/null   # fresh claim — clear any stale abandon signal
     ( while :; do swarm_beat "$wid" "$hash"; sleep "${SWARM_BEAT:-30}"; done ) & local bpid=$!
@@ -208,6 +220,8 @@ run_worker() {
       # (that would clobber the new owner's active claim — see swarm_release's worker-guard).
       swarm_post "$wid" abandoned "reassigned mid-flight — dropped: $item" "$item"
       rm -f "$SWARM_DIR/control.abandon-$wid-$hash" 2>/dev/null
+      # #64: keep our WIP branch so the NEW owner resumes from it (the autoloop already committed WIP on TERM).
+      [ "$DRY_RUN" != 1 ] && [ "$(git -C "$REPO" rev-list --count "origin/$MAIN..$branch" 2>/dev/null || echo 0)" -gt 0 ] && _keep_branch=1
     else
       swarm_post "$wid" merging "$item" "$item"
       local ok=1
@@ -232,6 +246,8 @@ run_worker() {
         local _oc; _oc="$(_swarm_outcome_class "$SWARM_DIR/$wid.log")"   # item 5: classify WHY it didn't land
         swarm_post "$wid" "$_oc" "$_oc → $([ "$_oc" = conflict ] && echo conflict_resolver || echo requeue): $item" "$item"
         swarm_release "$wid" "$hash" "$_oc"
+        # #64: keep the branch if it has committed WIP so the re-claim resumes from it instead of re-implementing.
+        [ "$DRY_RUN" != 1 ] && [ "$(git -C "$REPO" rev-list --count "origin/$MAIN..$branch" 2>/dev/null || echo 0)" -gt 0 ] && _keep_branch=1
       fi
     fi
     # Preserve this worker's run artefacts BEFORE `worktree remove` deletes .opencode/ — solo runs persist these,
@@ -250,7 +266,7 @@ run_worker() {
       done
     fi
     git -C "$REPO" worktree remove -f "$wt" 2>/dev/null
-    git -C "$REPO" branch -D "$branch" 2>/dev/null
+    [ "${_keep_branch:-0}" = 1 ] || git -C "$REPO" branch -D "$branch" 2>/dev/null   # #64: keep the WIP branch so the next claimant resumes from it
   done
 }
 
