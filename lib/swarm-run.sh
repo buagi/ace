@@ -149,6 +149,17 @@ run_worker() {
     [ -f "$SWARM_DIR/control.kill-$wid" ] && { swarm_post "$wid" idle "killed by operator" ; rm -f "$SWARM_DIR/control.kill-$wid"; break; }
     [ -f "$SWARM_DIR/control.drain" ]     && { swarm_post "$wid" idle "drain — claiming no new work"; break; }
     while [ -f "$SWARM_DIR/control.pause" ]; do sleep 3; [ -f "$SWARM_DIR/control.kill-$wid" ] && break 2; done
+    # #61: a peer detected the shared provider cap — HOLD at the claim boundary (don't start a fresh item that
+    # would just hit the cap too) while the flag is FRESH. A stale flag (all cappers gone / reset) is ignored so
+    # this can never wedge. The capped worker itself keeps waiting inside its autoloop (cheap poll, resumes).
+    if [ -f "$SWARM_DIR/provider-capped" ]; then
+      swarm_post "$wid" standby "provider capped — holding for reset" ""
+      while [ -f "$SWARM_DIR/provider-capped" ]; do
+        [ "$(( $(date +%s) - $(stat -c %Y "$SWARM_DIR/provider-capped" 2>/dev/null || echo 0) ))" -gt "$(( 3 * ${CLAUDE_POLL:-120} ))" ] && { rm -f "$SWARM_DIR/provider-capped" 2>/dev/null; break; }
+        { [ -f "$SWARM_DIR/control.kill-$wid" ] || [ -f "$SWARM_DIR/control.drain" ]; } && break 2
+        sleep "${CLAUDE_POLL:-120}"
+      done
+    fi
     # item 3: RED-main circuit breaker — don't claim new work onto a RED main. The elected FIXER keeps going to
     # repair it; every other worker HOLDS (bounded) for GREEN, then claims fresh work on the recovered main.
     # This is what "others rebase on last-green" reduces to under one shared main: hold, then the merge queue
@@ -400,7 +411,7 @@ swarm_run() {
   while IFS=$'\t' read -r _ h it; do [ -n "$h" ] && { _clean_hash "$h"; echo "  reconcile: requeued '$it'"; }; done < <(swarm_reconcile)
   git -C "$REPO" worktree prune 2>/dev/null || true
   rm -f "$SWARM_DIR/main-red" "$SWARM_DIR/fixer" 2>/dev/null || true   # item 3: never inherit a prior run's RED-main standdown (a genuine RED main re-latches on the first merge)
-  rm -f "$SWARM_DIR"/control.abandon-* "$SWARM_DIR"/*.loop.pid 2>/dev/null || true   # #62: never inherit stale abandon signals / worker pids from a prior run
+  rm -f "$SWARM_DIR"/control.abandon-* "$SWARM_DIR"/*.loop.pid "$SWARM_DIR"/provider-capped 2>/dev/null || true   # #62/#61: never inherit stale abandon signals, worker pids, or a provider-cap hold from a prior run
   local allowed; allowed="$(_allowed)"
   printf '%s🐝 swarm%s %s%s/%s workers%s %s· live=%s dry=%s · %s · self-heal TTL=%ss tries=%s%s\n' \
     "${_B:-}${_PUR:-}" "${_R:-}" "${_GRN:-}" "$allowed" "$MAX" "${_R:-}" "${_MUT:-}" "$LIVE" "$DRY_RUN" "$(basename "$REPO")" "${LEASE_TTL}" "${MAX_TRIES}" "${_R:-}"

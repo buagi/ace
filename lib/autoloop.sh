@@ -628,7 +628,7 @@ drive(){
     # ACTIVE-WORK budget: run opencode in the background and PAUSE the budget clock while a known-slow
     # deterministic step (container build, dependency install, compile, test run) is in its subtree — those
     # shouldn't burn the task budget or trip a false BIG-TASK timeout. OPENCODE_WALL_MAX still bounds a stuck step.
-    rm -f .opencode/.timedout .opencode/.oppid
+    rm -f .opencode/.timedout .opencode/.oppid .opencode/.capped
     ( charged=0; credited=0; sincep=0; miss=0; lastsz=0; lastisz=0; stall=0; checks=0; hsz=0; hisz=0; ihang=0; start=$(date +%s); last=$start; lasthead="$(git rev-parse HEAD 2>/dev/null||echo none)"; op=""
       while :; do
         sleep "${WATCH_POLL:-10}"
@@ -680,6 +680,16 @@ drive(){
             printf '\033[0;36m[auto-loop %s]   · supervisor inconclusive — wall cap stays in charge.\033[0m\n' "$(date +%H:%M:%S)"
           fi
         fi
+        # #61: provider-cap FAST-detect — a 429/usage-limit hang emits cap signals in the log tail with ~ZERO
+        # build/review progress (credited). Kill EARLY (~CAP_DETECT_AFTER, not the full escalating budget) and
+        # route to the cheap wait, instead of mis-reading it as a BIG TASK. Gated on credited<60 so a legit long
+        # build is never touched. In a swarm, raise the shared flag so peers/coordinator hold too (one cap, all wait).
+        if [ "$charged" -ge "${CAP_DETECT_AFTER:-150}" ] && [ "$credited" -lt 60 ] \
+           && tail -n 40 .opencode/last-run.log 2>/dev/null | grep -qiE 'usage limit|rate.?limit|too many requests|429|limit reached|resets? (at|in)|overloaded|529|quota'; then
+          printf '\033[0;33m[auto-loop %s]   ⏸ provider cap (429, no build progress) — pausing for reset instead of burning the budget.\033[0m\n' "$(date +%H:%M:%S)"
+          [ -n "${SWARM_WORKER:-}" ] && [ -n "${SWARM_DIR:-}" ] && : > "$SWARM_DIR/provider-capped" 2>/dev/null
+          : > .opencode/.capped; kill_tree "$op" TERM; sleep 3; kill_tree "$op" KILL; break
+        fi
         if [ "$charged" -ge "$budget" ] || [ "$(( now - start ))" -ge "${OPENCODE_WALL_MAX:-10800}" ]; then \
           : > .opencode/.timedout; kill_tree "$op" TERM; sleep 3; kill_tree "$op" KILL; break; fi
       done ) & kp=$!
@@ -709,7 +719,19 @@ drive(){
     [ "${OPENCODE_SESSION_RESUME:-0}" = 1 ] && { opencode session list 2>/dev/null | grep -oiE 'ses[_-][a-z0-9]{6,}|[0-9a-f-]{20,}' | head -1 > .opencode/.session-id 2>/dev/null; } || true
     classify_failure_mode "$rc" 2>/dev/null || true   # E3: name the stop cause (incl. exit-0-errored #14551) → recovery guidance + metrics
     [ -f .opencode/.rathole ] && rc=124
+    # #61: a provider cap (early-killed .capped, or a cap-timeout) → WAIT for reset (cheap poll) and RESUME the
+    # SAME step — NOT the escalating BIG-TASK retry, which just re-hangs. Commit WIP first so the resume builds
+    # on it. Fires BEFORE the rc=124 BIG-TASK block, which is exactly the mis-classification we're closing.
+    if [ -f .opencode/.capped ] || { [ "$rc" = 124 ] && [ ! -f .opencode/.rathole ] && claude_limit_hit .opencode/last-run.log; }; then
+      rm -f .opencode/.capped
+      { b="$(branch)"; [ "$b" != main ] && [ "$b" != master ] && [ -n "$(git status --porcelain 2>/dev/null)" ] \
+        && git add -A 2>/dev/null && git commit --no-verify -q -m "WIP: provider-cap checkpoint (resumes on reset)" >/dev/null 2>&1; } || true
+      _ev warn "⏸ provider cap — waiting for reset (resumes the same step)" 2>/dev/null || true
+      if handle_claude_limit; then say "provider cap — waited for reset; resuming the SAME step (no budget escalation)."; continue; fi
+      return 1
+    fi
     if [ "$rc" = 0 ]; then WAITED=0; report_context
+      [ -n "${SWARM_DIR:-}" ] && rm -f "$SWARM_DIR/provider-capped" 2>/dev/null   # #61: a successful step means the cap cleared → peers/coordinator may resume
       read -r mc mb 2>/dev/null < .opencode/.step-budget || { mc=0; mb=0; }
       metric "step,$AGENT,$lbl,$(( $(date +%s) - dstart )),${mc:-0},${mb:-0},0"
       return 0; fi
