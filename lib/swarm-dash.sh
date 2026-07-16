@@ -96,6 +96,31 @@ _heartbeat(){ local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏); printf '%s' "${
 _pulse(){ local w=12 span p i=0; span=$(( w*2 - 2 )); p=$(( ${DASH_TICK:-0} % span )); [ "$p" -ge "$w" ] && p=$(( span - p ))
   printf '%s' "$c_dim"; while [ "$i" -lt "$w" ]; do [ "$i" = "$p" ] && printf '%s◆%s' "$c_accent$bold" "$c_dim" || printf '·'; i=$((i+1)); done; printf '%s' "$c_reset"; }
 
+# ── live-progress helpers (merge cadence · ETA · attention) ─────────────────────────────────────
+# _spark "n n n …" → a unicode sparkline scaled to the series max. Array-indexed (no multibyte substring).
+_spark(){ local -a ch=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █); local max=1 v out=""
+  for v in $1; do [ "${v:-0}" -gt "$max" ] 2>/dev/null && max="$v"; done
+  for v in $1; do out+="${ch[$(( ${v:-0}*7/max ))]}"; done; printf '%s' "$out"; }
+# _fmt_ago SECONDS → "45s" / "12m" / "1h05m"
+_fmt_ago(){ local a="${1:-0}"; if [ "$a" -lt 60 ]; then printf '%ds' "$a"; elif [ "$a" -lt 3600 ]; then printf '%dm' "$((a/60))"; else printf '%dh%02dm' "$((a/3600))" "$(((a%3600)/60))"; fi; }
+# merge-ish bus timestamps (sorted) — a tick landed on main: phase 'merging', or a "main advanced"/"merged" msg.
+_merge_ts(){ jq -r 'select((.phase=="merging") or (.msg|test("main advanced|merged|merging on its authority";"i")))|.ts' "$SWARM_DIR/events.jsonl" 2>/dev/null | sort -n; }
+# _pulse_merges "sorted_ts" now → "▁▂▅▇ last 3m" (gold when the last merge is old — a stalling cue).
+_pulse_merges(){ local ts="$1" now="$2" win="${PULSE_WIN:-1800}" nb=14 last ago series agocol
+  [ -z "$ts" ] && { printf '%s···· no merges yet%s' "$c_dim" "$c_reset"; return; }
+  last="$(printf '%s\n' "$ts" | tail -1)"; ago=$(( now - last ))
+  agocol="$c_dim"; [ "$ago" -gt 600 ] && agocol="$c_gold"
+  series="$(printf '%s\n' "$ts" | awk -v now="$now" -v win="$win" -v nb="$nb" '{d=now-$1; if(d>=0&&d<win){b=int((win-d)*nb/win); if(b>=nb)b=nb-1; c[b]++}} END{for(i=0;i<nb;i++)printf "%d ",c[i]+0}')"
+  printf '%s%s%s %slast %s%s' "$c_accent" "$(_spark "$series")" "$c_reset" "$agocol" "$(_fmt_ago "$ago")" "$c_reset"; }
+# _eta "sorted_ts" now remaining → "~1h05m" from the recent merge rate, "—" if no recent merges, "done" if 0 left.
+_eta(){ local ts="$1" now="$2" rem="${3:-0}" win="${PULSE_WIN:-1800}" n eta
+  [ "$rem" -le 0 ] && { printf '%sdone%s' "$c_green" "$c_reset"; return; }
+  n="$(printf '%s\n' "$ts" | awk -v now="$now" -v win="$win" 'now-$1>=0&&now-$1<win{c++} END{print c+0}')"
+  [ "${n:-0}" -lt 1 ] && { printf '%s—%s' "$c_dim" "$c_reset"; return; }
+  eta=$(( rem * win / n )); printf '~%s' "$(_fmt_ago "$eta")"; }
+# collisions the coordinator recorded in the batch plan (cheap — no re-lint per frame).
+_dash_collisions(){ grep -c '^COLLIDE' "$SWARM_DIR/batch-plan.txt" 2>/dev/null || echo 0; }
+
 # infer the coordinator's PRE-worker phase from its log so the dash NAMES what it's doing (never blank).
 # emits: "human label<TAB>step-idx"  (step: 0 preflight · 1 planning · 2 dispatching)
 _coord_phase(){
@@ -151,19 +176,27 @@ dash_header(){ printf ' %s⛧ A C E%s %s· the forge%s  %s—  the loop is %sete
 
 dash_statusbar(){
   local d t; read -r d t < <(_dash_roadmap)
-  local active total peak paused draining
+  local active peak paused draining pct now mts pulse eta ncoll collchip inflabel
   active="$(_live_workers | grep -c . )"
   # +1 on claim, -1 on ANY terminal event (done/conflict/error/idle) — else an error-released worker's
   # +1 is never decremented and peak over-reports.
   peak=$(jq -rc 'select(.phase=="claimed" or .phase=="done" or .phase=="conflict" or .phase=="error" or .phase=="idle")|[.ts,(if .phase=="claimed" then 1 else -1 end)]|@tsv' "$SWARM_DIR/events.jsonl" 2>/dev/null | sort -n | awk '{c+=$2; if(c>m)m=c} END{print m+0}')
   [ -f "$SWARM_DIR/control.pause" ] && paused=" ${c_gold}${bold}⏸ PAUSED${c_reset}"
   [ -f "$SWARM_DIR/control.drain" ] && draining=" ${c_gold}${bold}⌁ FINISHING → STOP${c_reset}"
-  local inflabel=""; [ "$active" -gt 0 ] && inflabel=" ${c_gold}+${active} in-flight${c_reset}"
-  printf ' %s●%s run %s%s%s   %s●%s workers %s%s%s%s   %s●%s roadmap %s%s/%s%s %s%s   %s●%s peak %s%s%s%s%s\n' \
+  pct=0; [ "$t" -gt 0 ] && pct=$(( d * 100 / t ))
+  now="$(date +%s)"; mts="$(_merge_ts)"
+  pulse="$(_pulse_merges "$mts" "$now")"; eta="$(_eta "$mts" "$now" "$(( t - d ))")"
+  ncoll="$(_dash_collisions)"; collchip=""; [ "${ncoll:-0}" -gt 50 ] && collchip="   ${c_gold}⚠ ${ncoll} serializing${c_reset}"
+  inflabel=""; [ "$active" -gt 0 ] && inflabel=" ${c_gold}+${active} in-flight${c_reset}"
+  # line 1 — the RUN: identity + live worker count + peak concurrency + pause/drain state
+  printf ' %s●%s run %s%s%s      %s●%s workers %s%s%s      %s●%s peak %s%s%s%s%s\n' \
     "$c_accent" "$c_muted" "$c_fg" "${RUNID:-—}" "$c_reset" \
-    "$c_green" "$c_muted" "$c_green$bold" "$active" "$c_reset" "" \
-    "$c_gold" "$c_muted" "$c_fg" "$d" "$t" "$c_reset" "$(_bar "$d" "$t" "$active")" "$inflabel" \
+    "$c_green" "$c_muted" "$c_green$bold" "$active" "$c_reset" \
     "$c_accent" "$c_muted" "$c_fg" "${peak:-0}" "$c_reset" "${paused:-}" "${draining:-}"
+  # line 2 — PROGRESS: live roadmap done/total (%) + 3-state bar + merge pulse + ETA (+ collisions if serializing)
+  printf ' %s●%s roadmap %s%s/%s%s %s%s%%%s %s%s      %s⇡%s %s      %seta%s %s%s\n' \
+    "$c_gold" "$c_muted" "$c_fg$bold" "$d" "$t" "$c_reset" "$c_dim" "$pct" "$c_reset" "$(_bar "$d" "$t" "$active")" "$inflabel" \
+    "$c_accent" "$c_reset" "$pulse" "$c_muted" "$c_reset" "$eta" "$collchip"
   printf ' %s%s%s\n' "$c_border" "$(_dashes "$(( $(tput cols 2>/dev/null||echo 100) - 2 ))")" "$c_reset"
 }
 
@@ -245,14 +278,14 @@ dash_workers(){
   [ -z "$rows" ] && { dash_no_workers; return; }
   local n; n="$(printf '%s\n' "$rows" | grep -c .)"
   # size each worker's feed so the WHOLE frame fits the terminal height (never overflow → scroll).
-  # fixed chrome = header1+status2+rule1+coord1+blank1+busrule1+footer2 = 9, plus the bus lines;
-  # each worker box is 4 chrome rows (top+pipeline+meta+bottom) + its feed.
+  # fixed chrome = header1 + status3 (run+progress+rule) + workers-rule1 + coord2 + busrule1 + footer2 = 12,
+  # plus the bus lines; each worker box is 7 chrome rows + its feed. (The PROGRESS line added +1 here.)
   local buslines="${DASH_BL:-${DASH_BUSLINES:-5}}" feed maxbox shown="$n" hidden=0
-  # never overflow a small window: cap boxes to what fits (5 chrome + ≥2 feed = 7 rows each); the rest
+  # never overflow a small window: cap boxes to what fits (7 chrome + ≥2 feed = 9 rows each); the rest
   # get a "+N more — press g for grid" note. This is what keeps ACE inside the terminal.
-  maxbox=$(( (rows_t - 11 - buslines) / 9 )); [ "$maxbox" -lt 1 ] && maxbox=1   # -11 fixed chrome (coord now 2 lines); box = 7 chrome + ≥2 feed = 9
+  maxbox=$(( (rows_t - 12 - buslines) / 9 )); [ "$maxbox" -lt 1 ] && maxbox=1   # -12 fixed chrome; box = 7 chrome + ≥2 feed = 9
   [ "$n" -gt "$maxbox" ] && { shown="$maxbox"; hidden=$(( n - maxbox )); }
-  feed=$(( (rows_t - 11 - buslines) / (shown>0?shown:1) - 7 )); [ "$feed" -lt 2 ] && feed=2   # box = 7 chrome rows (border·pipeline·agents·meta·paths·separator·border)
+  feed=$(( (rows_t - 12 - buslines) / (shown>0?shown:1) - 7 )); [ "$feed" -lt 2 ] && feed=2   # box = 7 chrome rows (border·pipeline·agents·meta·paths·separator·border)
   [ -n "${DASH_FEED_OVR:-}" ] && feed="$DASH_FEED_OVR"; [ "$feed" -gt 24 ] && feed=24
   local w feat phase wall budget act paths shown_i=0
   while IFS=$'\t' read -r w feat phase wall budget act paths; do
@@ -262,10 +295,13 @@ dash_workers(){
     local _inf; _inf="$(_stage_from_log "$w")"; [ -n "$_inf" ] && { idx="${_inf%%$'\t'*}"; agent="${_inf#*$'\t'}"; }
     [ "$agent" = conflict_resolver ] && cf=1
     [ -n "$feat" ] || feat="(item)"
+    # attention: how long since this worker last wrote anything? past HANG_WARN it's a stall cue (gold tag).
+    local _lm _att=""; _lm="$(stat -c %Y "$SWARM_DIR/$w.log" 2>/dev/null || echo 0)"
+    [ "$_lm" -gt 0 ] && { local _age=$(( $(date +%s) - _lm )); [ "$_age" -ge "${HANG_WARN:-300}" ] && _att="   ${c_gold}${bold}⚠ silent $(_fmt_ago "$_age")${c_reset}"; }
     # ── full box ──────────────────────────────────────────────────────────────
     local ttl="⛧ swarm worker ${w#w} · ${feat}"; ttl="$(printf '%s' "$ttl" | cut -c1-$((CW-6)))"
     printf '  %s┌─ %s%s%s %s%s┐%s\n' "$wc" "$wc$bold" "$ttl" "$c_reset$wc" "$(_dashes $(( CW - $(_vw "$ttl") - 1 )))" "$wc" "$c_reset"
-    _bx_row "$wc" "$CW" "$(_pipeline "$idx" "$cf")   ${c_muted}${bold}$([ -n "$agent" ] && printf '⚙ %s' "$agent" || _phase_label "$phase")${c_reset}"
+    _bx_row "$wc" "$CW" "$(_pipeline "$idx" "$cf")   ${c_muted}${bold}$([ -n "$agent" ] && printf '⚙ %s' "$agent" || _phase_label "$phase")${c_reset}${_att}"
     _bx_row "$wc" "$CW" "$(_agents_line "$w" "$agent" "$idx")"
     # WHERE this worker is working: its isolated worktree + branch, the wall/budget, then the file leases it holds
     local _wt _br; _wt="$(ls -d "$SWARM_DIR/worktrees/$w"-* 2>/dev/null | head -1)"; _br="$(git -C "$_wt" symbolic-ref --short HEAD 2>/dev/null)"
@@ -304,7 +340,7 @@ dash_grid(){
   local ncols; ncols=$(( cols_t / 46 )); [ "$ncols" -lt 1 ] && ncols=1; [ "$ncols" -gt "$n" ] && ncols="$n"; [ "$ncols" -gt 4 ] && ncols=4
   local cw; cw=$(( cols_t / ncols - 2 )); [ "$cw" -gt 100 ] && cw=100   # cells scale with the terminal (was capped at 58)
   local nrows; nrows=$(( (n + ncols - 1) / ncols ))
-  local ch; ch=$(( (rows_t - 11) / (nrows>0?nrows:1) )); [ "$ch" -lt 6 ] && ch=6; [ "$ch" -gt 16 ] && ch=16
+  local ch; ch=$(( (rows_t - 12) / (nrows>0?nrows:1) )); [ "$ch" -lt 6 ] && ch=6; [ "$ch" -gt 16 ] && ch=16   # -12: +1 for the PROGRESS status line
   local feedh=$(( ch - 4 ))
   # collect worker records into arrays (compute the log-inferred stage/agent ONCE per worker here,
   # never per cell-line, or we'd spawn ch×n tail|awk pipelines every frame).
