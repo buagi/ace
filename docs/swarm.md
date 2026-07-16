@@ -206,6 +206,8 @@ All optional — the defaults are tuned. Set them in the environment or `~/.conf
 | `SWARM_MAIN` | `main` | the branch workers merge into |
 | `SWARM_REDMAIN_WAIT` | `120` | if `main` goes RED, how many 5-second ticks a non-fixer worker holds for GREEN before exiting cleanly (≈10 min) |
 | `CAP_DETECT_AFTER` | `150` | seconds into a step with a provider usage-cap / `429` signal and no credited progress before the worker declares a cap hang, kills the step, and enters the fleet-wide cheap wait (`provider-capped`) instead of burning budget |
+| `SWARM_AUTODRAIN` | `1` | coordinator throughput floor: if `origin/main` doesn't advance (no merge lands) for `SWARM_DRAIN_AFTER` while ≥1 worker holds an active claim, trip `control.drain` so the run stops instead of churning unproductively. `0` disables. The clock pauses during provider-cap / RED-main holds (those aren't churn). |
+| `SWARM_DRAIN_AFTER` | `5400` | seconds of no merge-to-main (with work in flight) before auto-drain fires (≈90 min — well above a healthy ~40-min merge cadence, so it only catches a genuinely stalled tail). |
 | `SWARM_REPO` | *cwd repo* | the project repo (defaults to the current git root) |
 | `SWARM_DIR` | `~/.config/ace/swarm/<slug>` | the coordination store (state, logs, worktrees, archives) |
 | `SWARM_META_FREE` | *ROADMAP / OBJECTIVES / …* | files never leased per-item (coordinator-ticked / union-merged) |
