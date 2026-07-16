@@ -122,7 +122,7 @@ A self-contained TUI, no tmux required. It reads only the shared store, so you c
 | pipeline | `PLAN · BUILD · GATE · REVIEW · MERGE` with the current stage lit `▸…◂`, inferred live from the worker's log so it advances through all stages |
 | agents strip | all 9 subagents — `✓` once run, `▸active◂` now, dim while pending (`plan·impl·test·gate·rev·ux·std·algn·rslv`) |
 | ⚙ agent | the subagent working right now (reviewer / verifier / implementer …) |
-| BUS | cross-worker milestones (claimed · gate · merged · main-adv · conflict · gate-red · red-main · standby · abandoned · provider-capped · reaped) |
+| BUS | cross-worker milestones (claimed · gate · merged · main-adv · conflict · gate-red · red-main · standby · abandoned · reaped) — a provider cap surfaces as `standby` |
 
 ### Keys
 

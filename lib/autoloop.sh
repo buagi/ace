@@ -36,11 +36,9 @@ DEPLOY_KIND="${DEPLOY_KIND:-$(prof_get deploy_kind)}"; DEPLOY_KIND="${DEPLOY_KIN
 ON_CLAUDE_LIMIT="${ON_CLAUDE_LIMIT:-wait}"        # on a Claude/OpenAI cap: WAIT for reset on your model (default) — never auto-downgrade. wait|cancel|deepseek (deepseek is opt-in)
 CLAUDE_RESET_WAIT="${CLAUDE_RESET_WAIT:-21600}"  # keep polling this long (6h — rides through a sub's reset window) then STOP for review; NEVER auto-downgrades the model
 CLAUDE_POLL="${CLAUDE_POLL:-120}"                # poll interval while waiting — resumes within ~this long of a reset
-OPENCODE_TIMEOUT="${OPENCODE_TIMEOUT:-2700}"     # base per-run budget (s, +50%); on overrun it's a BIG TASK -> retried with a larger budget (not failed)
-OPENCODE_TIMEOUT_MAX="${OPENCODE_TIMEOUT_MAX:-8100}"  # ceiling (s, +50%) the escalating big-task budget grows to
+OPENCODE_TIMEOUT="${OPENCODE_TIMEOUT:-2700}"     # base per-run budget (s, +50%); on overrun it's a BIG TASK -> retried once as a bounded SLICE at this SAME budget (BIGTASK_SLICE_RETRIES), not failed
 export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS="${OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS:-300000}"  # E4: raise the inner bash cap to 5m for legit-long commands (opencode env, verified present on 1.17.x). The 120s streamText step ceiling (#25509) may STILL fire — so keep the FULL/--container build OUT of the inner agent loop (FAST ci.sh inner; FULL at the merge gate).
-OPENCODE_RETRIES="${OPENCODE_RETRIES:-2}"        # extra big-task attempts (each with a larger budget) before stopping for review
-BIGTASK_SLICE_RETRIES="${BIGTASK_SLICE_RETRIES:-1}"  # P0.2: once a step overruns, it's oversized — do at most this many SLICE attempts (each at the BASE budget, NOT escalating), then stop. Prevents one item eating 45→90→135m and still parking. A slice, by definition, fits the base budget.
+BIGTASK_SLICE_RETRIES="${BIGTASK_SLICE_RETRIES:-1}"  # P0.2: once a step overruns, it's oversized — do at most this many SLICE attempts (each at the BASE budget, NOT escalating), then stop. Prevents one item eating 45→90→135m and still parking. A slice, by definition, fits the base budget. (Replaced the old escalating OPENCODE_RETRIES / OPENCODE_TIMEOUT_MAX.)
 HEARTBEAT="${HEARTBEAT:-60}"                     # seconds between live "still running" elapsed/remaining ticks
 WATCH_POLL="${WATCH_POLL:-10}"                    # seconds between activity samples (budget-accounting granularity)
 OPENCODE_WALL_MAX="${OPENCODE_WALL_MAX:-10800}"  # HARD wall-clock ceiling (s) per attempt — bounds a stuck step even while slow steps pause the budget clock
@@ -667,7 +665,7 @@ drive(){
         # tool log — has produced ZERO bytes for HANG_AFTER while nothing slow is building. That is a real
         # deadlock (e.g. hung parallel subagents — the 79-min stall the DeepSeek judge kept ruling
         # 'inconclusive', which then burned the full escalating wall cap). Preserve WIP so the retry RESUMES
-        # instead of redoing from scratch, then kill → BIG-TASK retry (capped by OPENCODE_RETRIES).
+        # instead of redoing from scratch, then kill → BIG-TASK retry (capped by BIGTASK_SLICE_RETRIES).
         if [ "$sz" != "$hsz" ] || [ "$isz" != "$hisz" ]; then hsz=$sz; hisz=$isz; ihang=0; hwarned=0
         elif ! slow_active "$op"; then ihang=$(( ihang + d )); fi
         # graduated: surface a freeze EARLY (one-shot warning + swarm bus event) at HANG_WARN, before the kill
