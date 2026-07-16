@@ -166,6 +166,7 @@ See [configuration.md](configuration.md#headless--signal) for the full env list.
 ## See also
 
 - [getting-started.md](getting-started.md) — install and first run
+- [observability.md](observability.md) — watching a run & reading the logs
 - [autorun.md](autorun.md) — the autonomous loop
 - [profile.md](profile.md) — the project profile the loop reads
 - [configuration.md](configuration.md) — env vars and knobs

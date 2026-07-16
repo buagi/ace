@@ -121,5 +121,6 @@ That's it — `lib/*.sh` changes (loop and swarm behaviour, the resilience fixes
 
 - [commands.md](commands.md) — every `ace` subcommand
 - [autorun.md](autorun.md) — the autonomous loop
+- [observability.md](observability.md) — watching a run & reading the logs
 - [profile.md](profile.md) — the architecture-decision wizard
 - [configuration.md](configuration.md) — env vars and knobs
