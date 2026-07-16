@@ -56,7 +56,7 @@ ace autorun                            # the loop takes over
 `ace status` confirms the rig is green. `ace --help` lists every command. `--dry-run` previews any command without changing anything.
 
 > [!TIP]
-> **Try it in ~2 minutes — $0, no keys, nothing installed.** `ace loop dash --demo` (scripted preview) · `ace swarm sandbox` (live dry-run demo) · or add `--dry-run` to any command. Nothing is built, pushed, or spent.
+> **Try it in ~2 minutes — $0, no keys, nothing installed.** `ace demo` (paced tour of every feature — `DEMO_AUTO=1` to auto-advance) · `ace loop dash --demo` (scripted preview) · `ace swarm sandbox` (live dry-run demo) · or add `--dry-run` to any command. Nothing is built, pushed, or spent. Recording a video? See [docs/demo/RECORDING.md](docs/demo/RECORDING.md).
 
 > [!NOTE]
 > **No Claude subscription required.** The overseer *defaults* to Claude Opus, but ACE runs end-to-end on a cheap DeepSeek API key alone — `ace keys --brain deepseek`. The 9 worker agents are always DeepSeek, so the crew is low-cost by design.
