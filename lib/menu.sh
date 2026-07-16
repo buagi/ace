@@ -42,6 +42,7 @@ providers_menu() {
     local astat ostat
     astat="$(opencode auth list 2>/dev/null | grep -qi anthropic && echo 'authed' || echo 'not authed')"
     ostat="$(opencode auth list 2>/dev/null | grep -qi openai && echo 'authed' || echo 'not authed')"
+    banner   # screen clears the previous (no scroll-back clutter)
     menu "Settings · Providers & keys" \
       "DeepSeek API key::$([ -n "${DEEPSEEK_API_KEY:-}" ] && echo set || echo unset)" \
       "Anthropic — Claude Pro/Max subscription::$astat (login + plugin)" \
@@ -77,6 +78,7 @@ set_agent_model() {  # <agent>
   [ -n "$m" ] && { config_set "MODEL_$a" "$m"; ok "$a → $m"; }
 }
 model_presets_menu() {
+  banner   # screen clears the previous (no scroll-back clutter)
   menu "Models · presets" \
     "All DeepSeek::reset every agent (incl. overseer) to DeepSeek — no subscription" \
     "Overseer on Claude::orchestrator → claude-opus-4-8, rest DeepSeek" \
@@ -105,6 +107,7 @@ agent_models_menu() {
     opts+=("Presets (overseer-Claude · overseer-OpenAI · all-DeepSeek · mixed)::quick set")
     opts+=("Apply → rewrite OpenCode config::write + install plugins + login")
     opts+=("← back::")
+    banner   # screen clears the previous (no scroll-back clutter)
     menu "Settings · Models & agents (which model each runs)" "${opts[@]}"
     n="$MENU_CHOICE"
     if [ "$n" -le "$total" ]; then set_agent_model "$(printf '%s\n' $ACE_AGENTS | sed -n "${n}p")"
@@ -114,6 +117,7 @@ agent_models_menu() {
   done
 }
 model_profile_menu() {
+  banner   # screen clears the previous (no scroll-back clutter)
   menu "Settings · Model profile (DeepSeek effort)" \
     "Max (recommended)::all workers think 'max'" \
     "High::lighter/faster" \
@@ -125,6 +129,7 @@ model_profile_menu() {
 
 settings_menu() {
   while true; do
+    banner   # screen clears the previous (no scroll-back clutter)
     menu "ACE — Settings" \
       "Providers & keys::DeepSeek · Anthropic · OpenAI · Context7" \
       "Models & agents::which model each of the 10 agents runs" \
@@ -164,6 +169,7 @@ appearance_menu() {
 
 # ---------------------------------------------------------------- thematic top-level submenus
 setup_menu() {
+  banner   # screen clears the previous (no scroll-back clutter)
   menu "Setup / install" \
     "Full guided setup::host tools · keys · 10-agent config · git" \
     "Host tools only::fnm/node · uv · bun · jq · opencode · Go" \
@@ -173,6 +179,7 @@ setup_menu() {
   case "$MENU_CHOICE" in 1) guided; pause ;; 2) install_host_tools; pause ;; 3) setup_git_github; pause ;; 4) write_opencode_config; pause ;; 5) : ;; esac
 }
 build_menu() {
+  banner   # screen clears the previous (no scroll-back clutter)
   menu "Project / build" \
     "Scaffold a new project::Node · Python · Go · config-only" \
     "Edit project profile::architecture / delivery (ace profile)" \
@@ -192,6 +199,7 @@ build_menu() {
   esac
 }
 run_menu() {
+  banner   # screen clears the previous (no scroll-back clutter)
   menu "Run the loop" \
     "Autorun (the autonomous loop)::build → CI → merge → next" \
     "Resume after a stop::rescue gate-green work + continue" \
@@ -213,6 +221,7 @@ run_menu() {
   esac
 }
 gitq_menu() {
+  banner   # screen clears the previous (no scroll-back clutter)
   menu "Git & quality" \
     "Apply git-flow::main + conventional commits + guards" \
     "Protect main::GitHub ruleset (PR + CI required)" \
@@ -223,6 +232,7 @@ gitq_menu() {
 }
 deploy_menu() {
   local vh=""; vps_configured || vh="  (configure VPS first — option 1)"
+  banner   # screen clears the previous (no scroll-back clutter)
   menu "Deploy & release" \
     "VPS menu::configure · bootstrap · provision · deploy" \
     "Deploy::pull + rebuild + restart + health-check$vh" \

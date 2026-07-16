@@ -92,6 +92,11 @@ step() { printf '\n%s %s%s%s\n' "${C_VIOLET}${C_BOLD}▰▰▶${C_RESET}" "${C_B
 hr()   { printf '%s\n' "${C_VIOLET2}⛧${C_VIOLET}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_VIOLET2}⛧${C_RESET}"; }
 
 clear_screen() { [ -t 1 ] && printf '\033[2J\033[H' || true; }
+# Alternate screen buffer (like vim/htop/less): the whole interactive menu runs on a throwaway screen, so on
+# exit the terminal is RESTORED to exactly what was there before ACE — nothing left in the scroll-back. Each
+# menu screen still clears via banner; this makes the *exit* clean too. ACE_ALT_SCREEN=0 opts out (keep output).
+alt_screen_on()  { [ -t 1 ] && [ "${ACE_ALT_SCREEN:-1}" != 0 ] && printf '\033[?1049h\033[H' 2>/dev/null || true; }
+alt_screen_off() { [ -t 1 ] && [ "${ACE_ALT_SCREEN:-1}" != 0 ] && printf '\033[?1049l' 2>/dev/null || true; }
 
 # ---- the emblem ----------------------------------------------------------------------------------
 # Ace-of-spades playing card (real ♠ silhouette in half/full blocks, violet→blood gradient) that bleeds:
