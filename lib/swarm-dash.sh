@@ -63,9 +63,20 @@ _pipeline(){ # active_idx conflict?  → "PLAN ✓ · ▸BUILD◂ · GATE · REV
 }
 
 # ── data helpers (all fail-soft on missing/corrupt files) ──────────────────────
-_dash_roadmap(){ local rm="$REPO/ROADMAP.md" d t
-  d=$(grep -cE '^[[:space:]]*- \[[xX]\] ' "$rm" 2>/dev/null || echo 0)
-  t=$(grep -cE '^[[:space:]]*- \[[ xX]\] ' "$rm" 2>/dev/null || echo 0); echo "$d $t"; }
+_dash_roadmap(){ local rm="$REPO/ROADMAP.md" src d t
+  # LIVE done count: workers merge to origin/$MAIN and keep it FETCHED FRESH in the repo's shared ref store
+  # (a worktree fetch updates refs/remotes for the whole repo), so origin/$MAIN's ROADMAP reflects landed
+  # ticks within seconds. The coordinator's on-disk checkout only refreshes at plan-sync — which is why the
+  # done count looked frozen mid-run. Prefer origin/$MAIN; fall back to the on-disk file if it's unavailable.
+  src="$(git -C "$REPO" show "origin/${MAIN:-main}:ROADMAP.md" 2>/dev/null)"
+  if [ -n "$src" ]; then
+    d=$(printf '%s\n' "$src" | grep -cE '^[[:space:]]*- \[[xX]\] ')
+    t=$(printf '%s\n' "$src" | grep -cE '^[[:space:]]*- \[[ xX]\] ')
+  else
+    d=$(grep -cE '^[[:space:]]*- \[[xX]\] ' "$rm" 2>/dev/null || echo 0)
+    t=$(grep -cE '^[[:space:]]*- \[[ xX]\] ' "$rm" 2>/dev/null || echo 0)
+  fi
+  echo "${d:-0} ${t:-0}"; }
 _last_event_for(){ [ -s "$SWARM_DIR/events.jsonl" ] || return 0
   grep -F "\"worker\":\"$1\"" "$SWARM_DIR/events.jsonl" 2>/dev/null | tail -1 | jq -r '.msg // ""' 2>/dev/null | cut -c1-70; }
 # 3-state bar: done (█, solid) · IN-FLIGHT (▓, the items workers are on right now) · remaining (░).
