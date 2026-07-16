@@ -73,8 +73,8 @@ _dash_roadmap(){ local rm="$REPO/ROADMAP.md" src d t
     d=$(printf '%s\n' "$src" | grep -cE '^[[:space:]]*- \[[xX]\] ')
     t=$(printf '%s\n' "$src" | grep -cE '^[[:space:]]*- \[[ xX]\] ')
   else
-    d=$(grep -cE '^[[:space:]]*- \[[xX]\] ' "$rm" 2>/dev/null || echo 0)
-    t=$(grep -cE '^[[:space:]]*- \[[ xX]\] ' "$rm" 2>/dev/null || echo 0)
+    d=$(grep -cE '^[[:space:]]*- \[[xX]\] ' "$rm" 2>/dev/null)     # no `|| echo 0`: grep -c prints 0 + exit 1 on no match → || would double-print "0\n0"
+    t=$(grep -cE '^[[:space:]]*- \[[ xX]\] ' "$rm" 2>/dev/null)   # missing file → empty → the ${d:-0}/${t:-0} default below covers it
   fi
   echo "${d:-0} ${t:-0}"; }
 _last_event_for(){ [ -s "$SWARM_DIR/events.jsonl" ] || return 0
@@ -119,7 +119,10 @@ _eta(){ local ts="$1" now="$2" rem="${3:-0}" win="${PULSE_WIN:-1800}" n eta
   [ "${n:-0}" -lt 1 ] && { printf '%s—%s' "$c_dim" "$c_reset"; return; }
   eta=$(( rem * win / n )); printf '~%s' "$(_fmt_ago "$eta")"; }
 # collisions the coordinator recorded in the batch plan (cheap — no re-lint per frame).
-_dash_collisions(){ grep -c '^COLLIDE' "$SWARM_DIR/batch-plan.txt" 2>/dev/null || echo 0; }
+# NOTE: `grep -c` prints 0 AND exits 1 on zero matches — an `|| echo 0` here double-printed "0\n0",
+# which then blew up the numeric [ -gt ] in the status bar. Capture + normalize instead.
+_dash_collisions(){ local n; n="$(grep -c '^COLLIDE' "$SWARM_DIR/batch-plan.txt" 2>/dev/null)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac; printf '%s' "$n"; }
 
 # _dash_cost — this-run spend chip ("~$12 · 340M tok · overseer 95%"), refreshed at most every COST_TTL
 # (default 600s = 10m) and cached to $SWARM_DIR/.cost-chip so it's NEVER computed on the hot frame path.
@@ -146,7 +149,14 @@ _dash_cost(){
   if [ -f "$cache" ] && [ "$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null||echo 0) ))" -lt "$ttl" ]; then cat "$cache"; return; fi
   command -v bun >/dev/null 2>&1 || return 0
   set -- "$SWARM_DIR"/*.opencode.db; [ -e "$1" ] || return 0        # nullglob off → $1 is the literal pattern when nothing matches
-  local start_ms; start_ms=$(( $(jq -r '(.ts // 0)' "$SWARM_DIR/events.jsonl" 2>/dev/null | head -1) * 1000 ))
+  # run-start = first bus event ts. An EMPTY events.jsonl (fresh run, still planning — no claims yet)
+  # yields an empty string, which must never reach the arithmetic (it was a per-frame syntax error).
+  # Fallback: .runid's mtime (written at launch) — else the chip would show CUMULATIVE cost until the
+  # first claim lands, not this run's.
+  local s start_ms; s="$(jq -r '.ts // empty' "$SWARM_DIR/events.jsonl" 2>/dev/null | head -1)"
+  case "$s" in ''|*[!0-9]*) s=0 ;; esac
+  [ "$s" = 0 ] && { s="$(stat -c %Y "$SWARM_DIR/.runid" 2>/dev/null)"; case "$s" in ''|*[!0-9]*) s=0 ;; esac; }
+  start_ms=$(( s * 1000 ))
   local out; out="$(timeout 8 bun -e "$_DASH_COST_JS" "$@" "$start_ms" 2>/dev/null)" || out=""
   [ -n "$out" ] && printf '%s' "$out" > "$cache"    # cache only real results → retry (cheaply) until the first data lands
   printf '%s' "$out"
@@ -483,7 +493,9 @@ swarm_dash(){
   DASH_TICK=0
   while :; do
     DASH_TICK=$(( DASH_TICK + 1 ))     # advances the heartbeat/pulse every frame
-    printf '%s%s%s' "${ESC}[H" "${ESC}[2J" "$(dash_frame)"
+    # stderr → $SWARM_DIR/dash.err (overwritten per frame): a render bug must never paint raw errors
+    # over the cockpit — check dash.err if something looks off. stdout is the frame, captured as before.
+    printf '%s%s%s' "${ESC}[H" "${ESC}[2J" "$(dash_frame 2>"$SWARM_DIR/dash.err")"
     if [ -n "$_tty" ]; then read -rsn1 -t "${DASH_REFRESH:-2}" key <"$_tty" || key=""
     else read -rsn1 -t "${DASH_REFRESH:-2}" key || key=""; fi
     case "$key" in
