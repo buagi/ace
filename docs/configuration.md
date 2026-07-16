@@ -269,9 +269,20 @@ Visual only — copy stays plain and technical. Stored in `~/.config/ace/config`
 | — | `ACE_FIGFONT` | `future` / `slant` | Font for `ACE_FIGLET=on` (`future` for toilet, `slant` for figlet). |
 | — | `ACE_VISUAL_EXTRAS` | `1` | `0` skips the `ace install` offer to add the optional enhancers. |
 | — | `ACE_FORCE_COLOR` | `0` | `1` forces colour when stdout isn't a TTY (used by `ace snap`). |
+| — | `ACE_ALT_SCREEN` | `1` | The menu (`ace`) opens the terminal's alternate-screen buffer so each screen replaces the previous one and the shell scroll-back is restored clean on exit. `0` keeps the old behaviour (screens scroll into history) — set it when recording a menu walkthrough that should stay in the capture. |
 
 > [!NOTE]
 > Optional enhancers are auto-detected if present: `chafa` (pixel art), `figlet`/`toilet` (wordmark). `ace install` offers to install them (confirm-gated, default no; skipped on immutable hosts — layer with `rpm-ostree install` or a toolbox). ACE uses them only when present.
+
+### Demo tour (`ace demo`)
+
+`ace demo` is a paced, **zero-credit** feature walkthrough built for recording (see [demo/RECORDING.md](demo/RECORDING.md)). Nothing is built, pushed, deployed, or spent — every step is `--dry-run` / `--explain` / `--demo` / the DRY swarm sandbox / read-only status, or a throwaway repo it creates and deletes.
+
+| Env var | Default | What it does |
+|---------|---------|--------------|
+| `DEMO_AUTO` | `0` | `1` auto-advances between steps (hands-free) — record this. `0` waits for ↵ (`q` quits). |
+| `DEMO_SPEED` | `normal` | `slow` / `normal` / `fast` — typing + pause cadence. `slow` suits voice-over. |
+| `DEMO_SECTIONS` | *all* | comma list to trim the tour: `intro,status,scaffold,atlas,graph,policy,loop,swarm,stats,deploy,outro`. |
 
 ## Where config lives
 

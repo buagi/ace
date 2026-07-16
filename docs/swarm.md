@@ -122,7 +122,7 @@ A self-contained TUI, no tmux required. It reads only the shared store, so you c
 | pipeline | `PLAN · BUILD · GATE · REVIEW · MERGE` with the current stage lit `▸…◂`, inferred live from the worker's log so it advances through all stages |
 | agents strip | all 9 subagents — `✓` once run, `▸active◂` now, dim while pending (`plan·impl·test·gate·rev·ux·std·algn·rslv`) |
 | ⚙ agent | the subagent working right now (reviewer / verifier / implementer …) |
-| BUS | cross-worker milestones (claimed · gate · merged · main-adv · conflict · gate-red · red-main · standby · reaped) |
+| BUS | cross-worker milestones (claimed · gate · merged · main-adv · conflict · gate-red · red-main · standby · abandoned · provider-capped · reaped) |
 
 ### Keys
 
@@ -179,6 +179,10 @@ If a worker or the coordinator's planning step hits a Claude/OpenAI usage cap, t
 | **Predictable conflicts handled up front** | path-disjoint leases plus the [conflict policy](conflict-policy.md) resolve version, changelog, lockfile, and manifest collisions before they happen |
 | **Broke-together caught at the gate** | before a worker lands, the merge queue rebases its branch onto the freshest `main` and re-runs `./ci.sh --container` on the combined tree — a green-alone / broken-together integration break surfaces at the gate, not on `main` |
 | **RED-main circuit breaker** | if `main` does go RED, one worker is elected to fix it while the rest stand down and rebase onto the recovered tip once it's GREEN — no dogpiling a break none of them caused (`ace swarm stats` → *main health*; hold tuned by `SWARM_REDMAIN_WAIT`) |
+| **At-most-one-owner** | if a stuck/silent worker's claim is re-assigned, that worker is TERMINATED (its WIP committed first) before another starts — never two workers on one item, no wasted duplicate cycle. Emits an `abandoned` bus event |
+| **Provider-cap → cheap wait** | a Claude/Opus usage-cap `429` is detected mid-step (~`CAP_DETECT_AFTER`s) and the whole fleet HOLDS for the reset (`provider-capped`) instead of each worker burning its escalating budget; the *same* step resumes on reset — wall-clock, not credits |
+| **Resume, don't re-implement** | a re-claimed item builds on the prior attempt's committed WIP branch, so the loop doesn't re-pay the (Opus-heavy) orchestration from scratch |
+| **Parallelism ceiling made visible** | when the ROADMAP is file-serialized, the planner warns (`needs-attention`) that throughput is capped near N workers regardless of `SWARM_MAX` — reshape into disjoint vertical slices (`ace swarm stats` shows the plan) |
 
 > [!NOTE]
 > **Semantic conflicts** — two disjoint-but-interacting merges (green alone, broken together) — are handled in two layers. The **tentative-merge gate** re-runs the full container CI on each branch *after* rebasing it onto the freshest `main`, so an integration break is caught before it lands. If a break still reaches `main`, the **RED-main circuit breaker** elects a single fixer and stands the rest down until `main` is GREEN again (watch it with `ace swarm stats` → *main health*). Starting a real-money project at parallelism `2` and watching the first run is still the prudent default.
@@ -201,6 +205,7 @@ All optional — the defaults are tuned. Set them in the environment or `~/.conf
 | `SWARM_WATCH` | `0` | `1` = surface waiting / blocked / conflict events to Hermes / Telegram |
 | `SWARM_MAIN` | `main` | the branch workers merge into |
 | `SWARM_REDMAIN_WAIT` | `120` | if `main` goes RED, how many 5-second ticks a non-fixer worker holds for GREEN before exiting cleanly (≈10 min) |
+| `CAP_DETECT_AFTER` | `150` | seconds into a step with a provider usage-cap / `429` signal and no credited progress before the worker declares a cap hang, kills the step, and enters the fleet-wide cheap wait (`provider-capped`) instead of burning budget |
 | `SWARM_REPO` | *cwd repo* | the project repo (defaults to the current git root) |
 | `SWARM_DIR` | `~/.config/ace/swarm/<slug>` | the coordination store (state, logs, worktrees, archives) |
 | `SWARM_META_FREE` | *ROADMAP / OBJECTIVES / …* | files never leased per-item (coordinator-ticked / union-merged) |
