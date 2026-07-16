@@ -239,6 +239,7 @@ See [configuration](configuration.md) for the loop-wide knobs (`MERGE_GATE`, `AU
 
 ## See also
 
+- [observability.md](observability.md) — reading the logs: the bus events, the log/artifact map, and `jq` recipes for what happened / why
 - [autorun.md](autorun.md) — the single-flow loop the swarm fans out
 - [agents.md](agents.md) — the 10-agent crew each worker runs
 - [conflict-policy.md](conflict-policy.md) — how predictable merge conflicts are handled
