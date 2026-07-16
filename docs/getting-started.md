@@ -90,6 +90,33 @@ Tested on Fedora Silverblue/Kinoite and Arch.
 | Container engine is required | for the `--container` parity gate |
 | Secrets never go in git | real values live in the VPS `.env` (gitignored); CI builds with dummies |
 
+## Staying current
+
+ACE has three kinds of code, and each updates a different way. Knowing which is which saves you from running an "upgrade" that does nothing — or skipping one you needed.
+
+| Layer | What it is | How a project picks up changes |
+|-------|-----------|-------------------------------|
+| **`lib/*.sh` (the loop & swarm engine)** | `autoloop.sh`, `swarm.sh`, `swarm-run.sh`, `scaffold.sh`, … | **Live-sourced — automatic, free.** A scaffolded project's `scripts/auto-loop.sh` is a thin shim that sources `<ace>/lib/autoloop.sh`; the swarm coordinator runs `<ace>/lib/swarm-run.sh` directly. The next `ace loop` / `ace swarm start` runs the current code. Nothing to install. |
+| **Generated per-project files** | `ci.sh`, `.githooks/*`, `scripts/atlas-refresh.sh`, scaffolds, the profile wiring | **`ace upgrade`** (a.k.a. `adopt`) — idempotent; rewrites the machinery whose *content* changed, guided by version stamps (e.g. the atlas generator's `atlas-gen-version`). Safe to re-run; commit the diff. |
+| **Global agent config** | the 10-agent crew, models, MCP servers in `~/.config/opencode/opencode.json` | **`ace opencode`** — only when the crew/model/MCP definitions change. Restart `opencode` after. |
+
+**Keep the ACE checkout itself current first** (everything above sources from it):
+
+```sh
+git -C /path/to/ace pull        # or the two-remote sync if you maintain buagi/ace
+ace update                      # optional: refresh host tooling (opencode · bun · node · uv)
+```
+
+Then, **per project**:
+
+```sh
+cd my-project
+ace upgrade                     # refresh generated files (atlas gen, ci.sh, hooks) — commit the diff
+# ace opencode                  # ONLY if the agent crew/models/MCP changed
+```
+
+That's it — `lib/*.sh` changes (loop and swarm behaviour, the resilience fixes, new bus events) are already live on the next run; `ace upgrade` catches the generated files; `ace opencode` is rare. When in doubt: `lib` = free/live, `upgrade` = generated, `opencode` = agents.
+
 ## See also
 
 - [commands.md](commands.md) — every `ace` subcommand

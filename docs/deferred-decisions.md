@@ -94,6 +94,8 @@ Remaining backlog, ranked by lever:
 
 > [!NOTE]
 > **Status (2026-07-15): items 1–9 are shipped or already done.** #1 batch/disjoint planning, #2 semantic re-gate (`_tentative_merge_ci_ok`), and #4 single-owner hot files (`assign` policy) landed earlier; #6 + #7 lease-hygiene shipped in PR #56; #5 `ace swarm stats` + truthful outcome telemetry and #3 the RED-main circuit breaker shipped in PR #57; #8 the "main advanced" bus broadcast shipped 2026-07-15; #9 the dead `_merge_real` was already removed in PR #45. **Only #10 (lighter overseer option) remains open.** Rows below are kept as design rationale.
+>
+> **Resilience round (2026-07-16), from a live-run post-mortem.** A separate batch of issues filed off the last two real runs is now closed: **#61** at-most-one-owner (a re-claimed item TERMs the zombie worker, WIP committed first — no duplicate concurrent claims); **#62** provider-cap → fleet-wide cheap wait (`CAP_DETECT_AFTER`, `provider-capped` bus event) so a Claude/Opus `429` no longer burns ~50% of wall-clock in escalating retries; **#64** resume-on-reclaim (a re-claim bases its worktree on the prior attempt's WIP branch rather than re-paying Opus orchestration from scratch); **#65** parallelism-ceiling warning (the planner posts `needs-attention` when the ROADMAP is file-serialized so throughput can't scale past ~N). See `docs/swarm.md` → *Safety*. **Only #10 remains.**
 
 | # | Fix | What it does | Where / knob |
 |---|-----|--------------|--------------|

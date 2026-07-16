@@ -27,6 +27,7 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | `ace git` | git identity + `gh` login + credential helper |
 | `ace status` / `doctor` | health check: tools · keys · `gh` · VPS · profile |
 | `ace arch` | print the architecture overview and what-lives-where |
+| `ace demo` | paced, **zero-credit** feature walkthrough for recording (`DEMO_AUTO=1` hands-free; see [demo/RECORDING.md](demo/RECORDING.md)) |
 | `ace logs` | tail the latest log |
 | `ace update` | update host tooling (`opencode` · `bun` · node · `uv`) |
 | `ace uninstall` | remove ACE-managed config (gated: needs `--confirm` when non-interactive) |
