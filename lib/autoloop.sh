@@ -1040,8 +1040,9 @@ while :; do
   # still gate the merge (merge_if_ready enforces them). If the local half is RED, skip the remote watch and
   # go straight to the fix path. Fail-closed: a green here is necessary but NOT sufficient to merge.
   if [ "${MERGE_GATE:-remote}" = both ]; then
-    if { [ "$(branch)" = main ] || [ "$(branch)" = master ]; } && [ -z "$(gh pr view --json number -q .number 2>/dev/null)" ]; then
-      : # on main with no open PR — nothing to gate; the remote branch below no-ops too
+    if [ -z "$(gh pr list --head "$(branch)" --state open --json number -q '.[0].number' 2>/dev/null)" ]; then
+      : # P1: no OPEN PR for this branch (already merged / closed / on main) — nothing to gate; skip the
+        # expensive local container half (the remote branch below no-ops too). See run 260716 wasted gates.
     elif [ "$(gh pr view --json mergeable -q .mergeable 2>/dev/null)" = CONFLICTING ]; then
       : # conflicting PR — let the remote branch's conflict handler resolve it first
     else
@@ -1071,8 +1072,13 @@ while :; do
       fi
       say "PR for $(branch) CONFLICTS and auto-resolve is off/exhausted — resolve manually or re-plan. Stopping."; break
     fi
-    if { [ "$(branch)" = main ] || [ "$(branch)" = master ]; } && [ -z "$(gh pr view --json number -q .number 2>/dev/null)" ]; then
-      say "on main with no open PR — nothing to gate."; run_ok=0
+    # P1 cheap pre-gate check: the container gate (./ci.sh --container) is the expensive step. Skip it when
+    # there's NO OPEN PR for this branch — already merged out-of-band / closed / not yet opened / on main. Uses
+    # `gh pr list --head --state open` (NOT `gh pr view`, which also returns a MERGED PR), so a branch whose PR
+    # a sibling already landed no longer burns a full container run. This is the ~40-74 wasted GREEN gates from
+    # run 260716 ("nothing to merge (already merged / on main)" AFTER a green gate). merge_if_ready still no-ops.
+    if [ -z "$(gh pr list --head "$(branch)" --state open --json number -q '.[0].number' 2>/dev/null)" ]; then
+      say "no open PR for $(branch) — nothing to merge; skipping the container gate."; run_ok=0
     else
       cstate="$(git rev-parse HEAD 2>/dev/null):$(git status --porcelain 2>/dev/null | sha1sum | cut -c1-12)"
       if [ "$(cat .opencode/.container-green 2>/dev/null)" = "$cstate" ]; then
