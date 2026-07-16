@@ -61,7 +61,7 @@ _wcol(){ [ -n "${_R:-}" ] || return 0     # colour off (piped/dumb/NOCOLOR) → 
   esac; }
 # level → colour for bus/log lines
 _typc(){ case "$1" in done|acquired|ok) printf '%s' "$_GRN";; conflict|error|err|gate-red|red-main) printf '%s' "$_RED";;
-  waiting|blocked|defer|needs-attention|reap|warn|stopped|incomplete|standby) printf '%s' "$_GOLD";; claimed|merging|accent|fixer|main-adv) printf '%s' "$_PUR";; *) printf '%s' "$_FG";; esac; }
+  waiting|blocked|defer|needs-attention|reap|warn|stopped|incomplete|standby|abandoned) printf '%s' "$_GOLD";; claimed|merging|accent|fixer|main-adv) printf '%s' "$_PUR";; *) printf '%s' "$_FG";; esac; }
 _clip(){ printf '%s' "$1" | sed -E 's/^[0-9]+:[[:space:]]*- \[[ xX]\] //; s/\*//g' | cut -c1-"${2:-40}"; }
 _wname(){ case "$1" in w[0-9]*) printf 'worker %s' "${1#w}";; *) printf '%s' "$1";; esac; }  # w1 → "worker 1"; coordinator/reaper unchanged
 
@@ -434,9 +434,12 @@ with_merge_lock() {
 
 swarm_release() {
   local worker="$1" hash="$2" status="${3:-done}"
+  # I1/I2 (#62): only the CURRENT owner may set an outcome. After a reap→re-assign, the item's worker is the
+  # NEW claimant; a straggler releasing "its" hash would clobber the new owner's active claim. Worker="" is a
+  # wildcard for coordinator-side calls that legitimately don't scope to a worker.
   _rel_txn() { local tmp; tmp="$(mktemp)"
-    jq --arg h "$hash" --arg s "$status" \
-       'if .claims[$h] then .claims[$h].status=$s else . end' "$STATE" > "$tmp" && _putstate "$tmp"; }
+    jq --arg h "$hash" --arg s "$status" --arg w "$worker" \
+       'if (.claims[$h] and ($w=="" or (.claims[$h].worker // "")==$w)) then .claims[$h].status=$s else . end' "$STATE" > "$tmp" && _putstate "$tmp"; }
   _with_lock _rel_txn
 }
 
@@ -457,9 +460,14 @@ swarm_beat() {
 swarm_reap() {
   local ttl="${1:-$LEASE_TTL}"
   _reap_txn() {
-    local now h it tries tmp; now="$(_now)"
-    while IFS=$'\t' read -r h it; do
+    local now h w it tries tmp; now="$(_now)"
+    while IFS=$'\t' read -r h w it; do
       [ -z "$h" ] && continue
+      # I2 (#62): the item is being re-assigned/parked, so its prior owner MUST stop — a hung/zombie worker
+      # that keeps running would produce a concurrent duplicate. Signal it to abandon its in-flight step (the
+      # worker's watcher TERMs the autoloop, whose cleanup trap commits WIP first). Harmless if that worker is
+      # already gone. Flag is cleared by the worker on next claim, or by swarm_run's start-reset.
+      [ -n "$w" ] && [ -n "${SWARM_DIR:-}" ] && : > "$SWARM_DIR/control.abandon-$w-$h" 2>/dev/null
       tries="$(jq -r --arg h "$h" '.claims[$h].tries // 1' "$STATE")"
       tmp="$(mktemp)"
       if [ "$tries" -ge "$MAX_TRIES" ]; then
@@ -468,7 +476,7 @@ swarm_reap() {
         jq --arg h "$h" '.claims[$h].status="orphaned"' "$STATE" > "$tmp" && _putstate "$tmp"; echo "REAP	$h	$it"
       fi
     done < <(jq -r --argjson now "$now" --argjson ttl "$ttl" \
-      '.claims|to_entries[]|select(.value.status=="active" and ($now - (.value.hb // .value.ts)) > $ttl)|"\(.key)\t\(.value.item)"' "$STATE" 2>/dev/null)
+      '.claims|to_entries[]|select(.value.status=="active" and ($now - (.value.hb // .value.ts)) > $ttl)|"\(.key)\t\(.value.worker)\t\(.value.item)"' "$STATE" 2>/dev/null)
   }
   _with_lock _reap_txn
 }
@@ -478,12 +486,15 @@ swarm_reap() {
 # reclaimed hashes so the coordinator prunes their worktrees/branches.
 swarm_reconcile() {
   _rec_txn() {
-    local h it tmp
-    while IFS=$'\t' read -r h it; do
+    local h w it tmp
+    while IFS=$'\t' read -r h w it; do
       [ -z "$h" ] && continue
+      # #62: a leftover "active" claim from a crashed/killed prior process — signal its (possibly-surviving)
+      # worker to abandon before we re-assign the item, so a straggler can't double-work it.
+      [ -n "$w" ] && [ -n "${SWARM_DIR:-}" ] && : > "$SWARM_DIR/control.abandon-$w-$h" 2>/dev/null
       tmp="$(mktemp)"; jq --arg h "$h" '.claims[$h].status="orphaned"' "$STATE" > "$tmp" && _putstate "$tmp"
       echo "RECLAIM	$h	$it"
-    done < <(jq -r '.claims|to_entries[]|select(.value.status=="active")|"\(.key)\t\(.value.item)"' "$STATE" 2>/dev/null)
+    done < <(jq -r '.claims|to_entries[]|select(.value.status=="active")|"\(.key)\t\(.value.worker)\t\(.value.item)"' "$STATE" 2>/dev/null)
   }
   _with_lock _rec_txn
 }
@@ -499,7 +510,7 @@ swarm_post() {
          --arg to "$to" --arg tp "$topic" --argjson ts "$(_now)" \
      '{ts:$ts, from:$f, to:$to, type:$t, body:$b, item:$it, topic:$tp}' >> "$MSG"
   # mirror onto the unified event stream (dash + web read this): map bus type → level
-  local lvl=info; case "$type" in done|acquired) lvl=ok;; conflict|error|gate-red|red-main) lvl=err;; waiting|blocked|defer|needs-attention|reap|stopped|incomplete|standby) lvl=warn;; claimed|merging|fixer|main-adv) lvl=accent;; esac
+  local lvl=info; case "$type" in done|acquired) lvl=ok;; conflict|error|gate-red|red-main) lvl=err;; waiting|blocked|defer|needs-attention|reap|stopped|incomplete|standby|abandoned) lvl=warn;; claimed|merging|fixer|main-adv) lvl=accent;; esac
   jq -cn --arg w "$from" --arg t "$type" --arg b "$body" --arg it "$item" --arg l "$lvl" --argjson ts "$(_now)" \
      '{ts:$ts, run:"", worker:$w, feat:$it, hash:"", phase:$t, agent:"coordinator", level:$l, msg:$b}' >> "$SWARM_DIR/events.jsonl" 2>/dev/null || true
   flock -u "$fd"; exec {fd}>&-
@@ -691,6 +702,28 @@ swarm_redmain_selftest(){
   [ "$ok" = 1 ] && echo "[redmain-selftest] PASS ✓" || { echo "[redmain-selftest] FAIL ✗"; return 1; }
 }
 
+# selftest for #62 at-most-one-owner: reap→abandon-signal + status, the swarm_release worker-guard (a stale
+# straggler cannot clobber the new owner's claim), and that the legit owner can still release.
+swarm_abandon_selftest(){
+  export SWARM_DIR; SWARM_DIR="$(mktemp -d)/s"; swarm_init
+  local ok=1 h tmp
+  swarm_try_claim w1 "item-X" "src/x.ts" >/dev/null
+  h="$(printf '%s' "item-X" | cksum | cut -d' ' -f1)"
+  tmp="$(mktemp)"; jq --arg h "$h" '.claims[$h].hb = 1' "$STATE" > "$tmp" && mv "$tmp" "$STATE"   # backdate hb → stale
+  swarm_reap 1 >/dev/null
+  [ -f "$SWARM_DIR/control.abandon-w1-$h" ] || { echo "[abandon] reap did NOT signal w1"; ok=0; }
+  [ "$(jq -r --arg h "$h" '.claims[$h].status' "$STATE")" = orphaned ] || { echo "[abandon] not orphaned"; ok=0; }
+  swarm_try_claim w2 "item-X" "src/x.ts" >/dev/null   # w2 re-claims (orphaned → retryable); now owns X
+  swarm_release w1 "$h" abandoned                       # stale w1 tries to release — MUST be a no-op
+  { [ "$(jq -r --arg h "$h" '.claims[$h].worker' "$STATE")" = w2 ] && [ "$(jq -r --arg h "$h" '.claims[$h].status' "$STATE")" = active ]; } \
+    || { echo "[abandon] release-guard FAIL — w1 clobbered w2's active claim"; ok=0; }
+  swarm_release w2 "$h" done                             # the real owner CAN release
+  [ "$(jq -r --arg h "$h" '.claims[$h].status' "$STATE")" = done ] || { echo "[abandon] owner release FAIL"; ok=0; }
+  echo "[abandon] reap→signal=ok · release-guard=ok · owner-release=ok"
+  rm -rf "$(dirname "$SWARM_DIR")"
+  [ "$ok" = 1 ] && echo "[abandon-selftest] PASS ✓" || { echo "[abandon-selftest] FAIL ✗"; return 1; }
+}
+
 # --- self-test: prove concurrency safety + path-disjoint claiming. ------------
 swarm_selftest() {
   export SWARM_DIR; SWARM_DIR="$(mktemp -d)/swarm"; LOCK="$SWARM_DIR/.lock"; STATE="$SWARM_DIR/state.json"; MSG="$SWARM_DIR/messages.jsonl"
@@ -821,6 +854,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     policy)         swarm_policy_table "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" ;;
     policy-selftest) swarm_policy_selftest ;;
     redmain-selftest) swarm_redmain_selftest ;;
+    abandon-selftest) swarm_abandon_selftest ;;
     mergiraf-selftest) swarm_mergiraf_selftest ;;
     aggregate-lessons) swarm_aggregate_lessons "${2:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" ;;
     disjoint-batch) swarm_disjoint_batch "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;

@@ -301,7 +301,7 @@ case "${cmd:-menu}" in
                        stats)     ( cd "$_sr" && REPO="$_sr" bash "$_sl/swarm.sh" stats ) ;;
                        tail|logs) ( cd "$_sr" && bash "$_sl/swarm.sh" tail "${ACE_ARG2:-40}" ) ;;
                        sandbox)   bash "$_sl/swarm-run.sh" sandbox ;;
-                       selftest)  bash "$_sl/swarm.sh" selftest && bash "$_sl/swarm.sh" waittest && bash "$_sl/swarm.sh" redmain-selftest ;;
+                       selftest)  bash "$_sl/swarm.sh" selftest && bash "$_sl/swarm.sh" waittest && bash "$_sl/swarm.sh" redmain-selftest && bash "$_sl/swarm.sh" abandon-selftest ;;
                        policy)    ( cd "$_sr" && bash "$_sl/swarm.sh" policy ) ;;
                        policy-selftest) bash "$_sl/swarm.sh" policy-selftest ;;
                        wire)      bash "$_sl/swarm-wire.sh" "${ACE_ARG2:-check}" "$_sr" ;;
