@@ -3017,7 +3017,7 @@ EOF
 }
 
 ensure_atlas_refresh() {
-  local ver=2 act=added   # bump `ver` (+ the 'atlas-gen-version:' stamp in the emitted script) when the generator changes, so `ace upgrade` refreshes an outdated copy instead of keeping the buggy one.
+  local ver=3 act=added   # bump `ver` (+ the 'atlas-gen-version:' stamp in the emitted script) when the generator changes, so `ace upgrade` refreshes an outdated copy instead of keeping the buggy one.
   if [ -f scripts/atlas-refresh.sh ]; then
     grep -q "atlas-gen-version: $ver" scripts/atlas-refresh.sh 2>/dev/null && { info "kept scripts/atlas-refresh.sh (v$ver)"; return; }
     act=updated   # present but an older version → rewrite so ace generator fixes propagate
@@ -3026,9 +3026,11 @@ ensure_atlas_refresh() {
   cat > scripts/atlas-refresh.sh <<'ATLAS_GEN_EOF'
 #!/usr/bin/env bash
 # atlas-refresh.sh — regenerate the human Architecture Atlas (docs/atlas.md) + the README system-map block.
-# Deterministic skeleton (project structure / GitNexus) + optional grounded narrative (cartographer, DeepSeek).
+# Deterministic + REAL: a Node/TS monorepo becomes its actual workspace dependency graph (grouped by layer),
+# a layer data-flow, and a module reference table (fan-in/fan-out) — all from package.json, no LLM. Other
+# repos fall back to a top-level-dir import graph. NEVER fabricates a diagram. Optional narrative enriches roles.
 # Runs on main after merge (autoloop, every MAP_EVERY) and on demand (`ace atlas`). NEVER in swarm workers.
-# atlas-gen-version: 2
+# atlas-gen-version: 3
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 0
 
@@ -3055,53 +3057,94 @@ HEAD_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 NOW="$(git show -s --format=%cI HEAD 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
 NAME="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
 
-# ---- 1. deterministic skeleton: two Mermaid blocks (system map, then data flow) -------------------
-# Isolated so HOW the Mermaid is produced never leaks upstream. Prefers a native GitNexus mermaid export
-# (confirm the flag on a real project — atlas plan §G.5); ships a dependency-light dir-graph fallback.
-gitnexus_export_mermaid() {
-  # Option A (preferred, once the CLI flag is confirmed): native GitNexus mermaid export.
-  #   CI=1 timeout -k 10 300 npx -y gitnexus@latest <EXPORT-SUBCOMMAND> --format mermaid 2>/dev/null && return 0
-  # Option B (fallback, always ships): a coarse map from top-level source dirs + cross-dir imports.
-  local dirs; dirs="$(git ls-files 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go|rs|cs|java)$' \
-    | grep -E '/' | sed -E 's#/.*##' | sort -u | grep -vE '^(node_modules|dist|build|vendor|test|tests|\.[^/]*)$' | head -12)"
-  {
-    echo "flowchart TD"
-    if [ -z "$dirs" ]; then printf '  root["%s"]\n' "$NAME"; else
-      while IFS= read -r d; do [ -n "$d" ] && printf '  %s["%s"]\n' "$(printf '%s' "$d" | tr -cd '[:alnum:]')" "$d"; done <<EOD
-$dirs
-EOD
-      while IFS= read -r a; do [ -z "$a" ] && continue
-        while IFS= read -r b; do { [ -z "$b" ] || [ "$a" = "$b" ]; } && continue
-          if git grep -qiE "(import|require|from|use).*\\b$b\\b" -- "$a/" 2>/dev/null; then
-            printf '  %s --> %s\n' "$(printf '%s' "$a" | tr -cd '[:alnum:]')" "$(printf '%s' "$b" | tr -cd '[:alnum:]')"
-          fi
-        done <<EOD
-$dirs
-EOD
-      done <<EOD
-$dirs
-EOD
-    fi
-    echo "%%---FLOW---"
-    echo "flowchart LR"
-    printf '  input(["input"]) --> app["%s"] --> output(["output"])\n' "$NAME"
-  }
+# ---- 1. REAL architecture from the code (deterministic) ------------------------------------------
+_atlas_is_workspace() { [ -f pnpm-workspace.yaml ] || grep -q '"workspaces"' package.json 2>/dev/null; }
+
+# TSV per workspace package: name \t layer(top-dir) \t description \t all-deps. One jq/file (fault-isolated).
+_atlas_ws_tsv() {
+  local pj name layer
+  git ls-files 'package.json' '**/package.json' 2>/dev/null | grep -vE '(^|/)node_modules/' | while IFS= read -r pj; do
+    [ -f "$pj" ] || continue
+    [ "$pj" = package.json ] && continue   # the monorepo-root manifest is not a module
+    name="$(jq -r '.name // empty' "$pj" 2>/dev/null)"; [ -z "$name" ] && continue
+    layer="$(printf '%s' "$pj" | awk -F/ '{print (NF>1?$1:"(root)")}')"
+    jq -r --arg n "$name" --arg l "$layer" '
+      ((.description // "") | gsub("[\t\n\"]";" ") | .[0:70]) as $desc
+      | ((.dependencies // {}) + (.devDependencies // {}) | keys | join(",")) as $deps
+      | [$n,$l,$desc,$deps] | @tsv' "$pj" 2>/dev/null
+  done
 }
 
-RAW="$(gitnexus_export_mermaid)"
-SYS_MAP="${RAW%%%%---FLOW---*}"
-DATA_FLOW="${RAW#*%%---FLOW---}"
+# awk builds: map (subgraph-per-layer + internal edges) · flow (layer aggregation, data direction) · table.
+_atlas_from_tsv() {
+  _atlas_ws_tsv | awk -F'\t' -v which="$1" '
+    function id(x){ gsub(/^@[^/]+\//,"",x); gsub(/[^A-Za-z0-9]/,"_",x); return x }
+    function short(x){ gsub(/^@[^/]+\//,"",x); return x }
+    { name[NR]=$1; layer[NR]=$2; desc[NR]=$3; deps[NR]=$4; inset[$1]=1; NL[$1]=$2; n=NR }
+    END{
+      if (which=="flow"){
+        print "flowchart LR"
+        for(i=1;i<=n;i++){ m=split(deps[i],dd,","); for(j=1;j<=m;j++) if(dd[j] in inset && dd[j]!=name[i]){
+          from=NL[dd[j]]; to=layer[i]; if(from!=to){ e=from SUBSEP to; if(!(e in seen)){ seen[e]=1; ef[++ne]=from; et[ne]=to } } } }
+        for(i=1;i<=n;i++){ lid=id(layer[i]); if(!(lid in seenL)){ seenL[lid]=1; printf "  %s([\"%s\"])\n", lid, layer[i] } }
+        for(k=1;k<=ne;k++) printf "  %s --> %s\n", id(ef[k]), id(et[k])
+      }
+      else if (which=="map"){
+        print "flowchart LR"
+        for(i=1;i<=n;i++){ L=layer[i]; if(!(L in seenL)){ seenL[L]=1; ord[++d]=L } }
+        for(k=1;k<=d;k++){ L=ord[k]; printf "  subgraph %s[\"%s\"]\n", id(L), L
+          for(i=1;i<=n;i++) if(layer[i]==L) printf "    %s[\"%s\"]\n", id(name[i]), short(name[i])
+          print "  end" }
+        for(i=1;i<=n;i++){ m=split(deps[i],dd,","); for(j=1;j<=m;j++) if(dd[j] in inset && dd[j]!=name[i])
+          printf "  %s --> %s\n", id(name[i]), id(dd[j]) }
+      } else {
+        for(i=1;i<=n;i++){ m=split(deps[i],dd,","); il=""
+          for(j=1;j<=m;j++) if(dd[j] in inset && dd[j]!=name[i]){ il=il (il==""?"":", ") short(dd[j])
+            ub[dd[j]]=ub[dd[j]] (ub[dd[j]]==""?"":", ") short(name[i]) }
+          intdeps[i]=il }
+        print "| Module | Layer | Role | Used by | Depends on |"
+        print "|---|---|---|---|---|"
+        for(pass=1;pass<=2;pass++) for(i=1;i<=n;i++){ isapp=(layer[i] ~ /app|service/)
+          if((pass==1)==isapp){ role=desc[i]; if(role=="") role="—"
+            printf "| `%s` | %s | %s | %s | %s |\n", short(name[i]), layer[i], role,
+              (ub[name[i]]==""?"—":ub[name[i]]), (intdeps[i]==""?"—":intdeps[i]) } }
+      }
+    }'
+}
 
-# ---- 2. optional grounded narrative (cartographer, DeepSeek worker) — OFF by default for now ------
-# Skeleton-only until the grounded cartographer agent (read-only, DeepSeek) is proven; set ATLAS_NARRATIVE=1
-# to opt into the inline pass early (ATLAS_AGENT selects the subagent; falls back cleanly if it/opencode absent).
-FEATURE_TABLE="| Feature | Lives in | Key symbols | Purpose |
-|---|---|---|---|
-| _(feature map: narrative pass off — set ATLAS_NARRATIVE=1)_ |  |  |  |"
+# Fallback for non-workspace repos: coarse top-level source-dir import graph (honest, crude).
+_atlas_dir_fallback() {
+  if [ "$1" = table ]; then printf '| Module | Layer | Role | Used by | Depends on |\n|---|---|---|---|---|\n| _(non-workspace repo — richer module roles need ATLAS_NARRATIVE=1)_ |  |  |  |  |\n'; return; fi
+  if [ "$1" = flow ]; then printf 'flowchart LR\n  src(["sources"]) --> %s["%s"]\n' "$(printf '%s' "$NAME"|tr -c '[:alnum:]' '_')" "$NAME"; return; fi
+  local dirs; dirs="$(git ls-files 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go|rs|cs|java)$' \
+    | grep -E '/' | sed -E 's#/.*##' | sort -u | grep -vE '^(node_modules|dist|build|vendor|test|tests|\.[^/]*)$' | head -12)"
+  echo "flowchart LR"
+  if [ -z "$dirs" ]; then printf '  root["%s"]\n' "$NAME"; return; fi
+  while IFS= read -r x; do [ -n "$x" ] && printf '  %s["%s"]\n' "$(printf '%s' "$x"|tr -c '[:alnum:]' '_')" "$x"; done <<EOD
+$dirs
+EOD
+  while IFS= read -r a; do [ -z "$a" ] && continue; while IFS= read -r b; do { [ -z "$b" ]||[ "$a" = "$b" ]; }&&continue
+    git grep -qiE "(import|require|from|use).*\\b$b\\b" -- "$a/" 2>/dev/null && printf '  %s --> %s\n' "$(printf '%s' "$a"|tr -c '[:alnum:]' '_')" "$(printf '%s' "$b"|tr -c '[:alnum:]' '_')"
+  done <<EOD
+$dirs
+EOD
+  done <<EOD
+$dirs
+EOD
+}
+
+_ws=0; _atlas_is_workspace && _ws=1
+if [ "$_ws" = 1 ]; then SYS_MAP="$(_atlas_from_tsv map)"; DATA_FLOW="$(_atlas_from_tsv flow)"; MODULE_TABLE="$(_atlas_from_tsv table)"
+else SYS_MAP="$(_atlas_dir_fallback map)"; DATA_FLOW="$(_atlas_dir_fallback flow)"; MODULE_TABLE="$(_atlas_dir_fallback table)"; fi
+
+# ---- 2. optional grounded narrative (cartographer, DeepSeek) — enriches module ROLES when enabled --
+# OFF by default (zero tokens, deterministic). ATLAS_NARRATIVE=1 asks a read-only worker to fill the Role
+# column from real code; if it returns a table it replaces the deterministic one, else the structure stands.
 if [ "${ATLAS_NARRATIVE:-0}" = 1 ] && command -v opencode >/dev/null 2>&1; then
   NARR="$(CI=1 timeout -k 10 300 opencode run --agent "${ATLAS_AGENT:-cartographer}" \
-    "Regenerate the Architecture Atlas feature map for '$NAME'. Ticked features are in ROADMAP.md. Ground EVERY row in a real GitNexus/Serena lookup; OMIT any row you cannot ground. Output ONLY a markdown table with header 'Feature | Lives in | Key symbols | Purpose', max 20 rows, no prose, no code fences." </dev/null 2>/dev/null || true)"
-  printf '%s' "$NARR" | grep -q '|' && FEATURE_TABLE="$NARR"
+    "For '$NAME', fill the Role column of this module table from REAL code (one grounded phrase each; keep Module/Layer/Used by/Depends on exactly as given; output ONLY the markdown table):
+$MODULE_TABLE" </dev/null 2>/dev/null || true)"
+  printf '%s' "$NARR" | grep -q '| Module ' && MODULE_TABLE="$NARR"
 fi
 
 # ---- 3. assemble docs/atlas.md -------------------------------------------------------------------
@@ -3112,8 +3155,8 @@ cat > docs/atlas.md <<EOF
 > automatically every \`MAP_EVERY\` merged features by the autorun loop.
 > Built from commit \`$HEAD_SHA\` at $NOW.
 >
-> **System map** = the modules and how they connect · **Data flow** = how data moves ·
-> **Feature map** = what each shipped feature is and where it lives.
+> **System map** = the real modules and how they depend on each other · **Data flow** = how data moves
+> across layers · **Module map** = every module, what depends on it, and what it depends on.
 
 ## System map
 
@@ -3127,15 +3170,15 @@ $SYS_MAP
 $DATA_FLOW
 \`\`\`
 
-## Feature map — what lives where
+## Module map
 
-$FEATURE_TABLE
+$MODULE_TABLE
 
 ---
 
 - Mission, values, delivery policy → [ARCHITECTURE.md](../ARCHITECTURE.md)
 - Agent-facing code map (GitNexus / Serena) → [docs/architecture.md](architecture.md)
-- Regenerate: \`ace atlas\`  ·  disable in a run: \`ATLAS=0\`  ·  cadence: \`MAP_EVERY=N\`
+- Regenerate: \`ace atlas\`  ·  disable in a run: \`ATLAS=0\`  ·  cadence: \`MAP_EVERY=N\`  ·  richer roles: \`ATLAS_NARRATIVE=1\`
 EOF
 
 # ---- 4. README managed block (create-if-absent, update ONLY between the sentinels) ----------------
@@ -3148,7 +3191,7 @@ _atlas_readme() {
 $SYS_MAP
 \`\`\`
 
-**Full atlas — data flow + feature map → [\`docs/atlas.md\`](docs/atlas.md)**
+**Full atlas — data flow + module map → [\`docs/atlas.md\`](docs/atlas.md)**
 $end"
   if [ ! -f README.md ]; then
     printf '# %s\n\n%s\n\n_See [ARCHITECTURE.md](ARCHITECTURE.md) for mission & [OBJECTIVES.md](OBJECTIVES.md) for goals._\n' "$NAME" "$block" > README.md
