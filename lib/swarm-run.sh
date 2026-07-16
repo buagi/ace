@@ -409,6 +409,12 @@ _swarm_emit_batch_plan() {
   nser="$(printf '%s\n' "$plan" | grep -c '^serialize')"
   nblk="$(printf '%s\n' "$plan" | grep -c '^blocked')"
   echo "  batch plan: $npar parallel · $nser serialized (share a file) · $nblk dep-blocked  (→ $SWARM_DIR/batch-plan.txt)"
+  # #65: surface the PARALLELISM CEILING loudly (it was invisible until a run post-mortem). When the ROADMAP is
+  # heavily file-serialized, extra workers can't help no matter how high SWARM_MAX is — the shape is the ceiling.
+  if [ "$npar" -lt 3 ] && [ "$nser" -ge 3 ]; then
+    printf '  \033[0;33m⚠ ROADMAP file-serialized: only %s item(s) parallelize while %s share files — throughput is capped near %s worker(s) regardless of SWARM_MAX. Prefer VERTICAL slices in disjoint files; give a shared HUB file to ONE item and `deps:` the rest.\033[0m\n' "$npar" "$nser" "$npar"
+    swarm_post coordinator needs-attention "planner: $npar parallel / $nser serialized — parallelism capped near $npar; prefer disjoint vertical slices" "" 2>/dev/null || true
+  fi
 }
 
 swarm_run() {
