@@ -83,11 +83,16 @@ _do_work() {
   # short human slug for tagging telemetry ([w1·generate], events.jsonl feat=…)
   local feat; feat="$(printf '%s' "$item" | sed -E 's/^[0-9]+:[[:space:]]*- \[[ x]\] //; s/\*//g' | grep -oE '`[^`]+`' | head -1 | tr -d '`')"
   [ -n "$feat" ] || feat="$(printf '%s' "$item" | sed -E 's/^[0-9]+:[[:space:]]*- \[[ x]\] //; s/\*//g' | awk '{print $1, $2, $3}')"
+  # #62: run the autoloop in the BACKGROUND with `exec` so $! is the autoloop's OWN pid — then the abandon
+  # watcher (run_worker) can TERM exactly this process, whose cleanup trap commits WIP + kills opencode + exits.
   ( cd "$wt" && SWARM_WORKER="$wid" SWARM_HASH="$hash" SWARM_DIR="$SWARM_DIR" \
        SWARM_FEATURE="$feat" SWARM_RUNID="${RUNID:-}" \
        SWARM_ITEM="$item" MAX_FEATURES=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
        OPENCODE_DB="$SWARM_DIR/$wid.opencode.db" \
-       bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/$wid.log" 2>&1 || true
+       exec bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/$wid.log" 2>&1 &
+  local _lp=$!; echo "$_lp" > "$SWARM_DIR/$wid.loop.pid" 2>/dev/null
+  wait "$_lp" 2>/dev/null || true
+  rm -f "$SWARM_DIR/$wid.loop.pid" 2>/dev/null
   # E4: each worker gets its OWN OpenCode session DB (OPENCODE_DB, verified present on 1.17.x) so concurrent
   # workers never write the SAME sqlite file (SQLITE_CORRUPT #14970/#14194 would poison E2's resume state).
   # Only the session DB is isolated — auth.json + config/plugins stay in the shared default dir, so no re-auth.
@@ -176,32 +181,47 @@ run_worker() {
     if ! git -C "$REPO" worktree add -q -b "$branch" "$wt" "$base_ref" 2>/dev/null; then
       swarm_post "$wid" error "worktree add failed" "$item"; swarm_release "$wid" "$hash" error; continue
     fi
+    rm -f "$SWARM_DIR/control.abandon-$wid-$hash" 2>/dev/null   # fresh claim — clear any stale abandon signal
     ( while :; do swarm_beat "$wid" "$hash"; sleep "${SWARM_BEAT:-30}"; done ) & local bpid=$!
+    # #62: abandon-watcher — if the coordinator re-assigns this item (reap/reconcile wrote control.abandon-*),
+    # TERM our autoloop so we stop working an item a new owner now holds (its cleanup trap commits WIP first).
+    # Guarantees at-most-one-live-worker-per-item (I1). No-op in DRY (no loop.pid) and when never abandoned.
+    ( while sleep 5; do
+        [ -f "$SWARM_DIR/control.abandon-$wid-$hash" ] || continue
+        alp="$(cat "$SWARM_DIR/$wid.loop.pid" 2>/dev/null)"; [ -n "$alp" ] && kill -TERM "$alp" 2>/dev/null; break
+      done ) & local apid=$!
     _do_work "$wt" "$paths" "$item" "$wid" "$hash"
-    swarm_post "$wid" merging "$item" "$item"
-    local ok=1
-    if [ "$DRY_RUN" = 1 ]; then
-      with_merge_lock _merge_dry "$branch" || ok=0
+    kill "$apid" "$bpid" 2>/dev/null
+    if [ -f "$SWARM_DIR/control.abandon-$wid-$hash" ]; then
+      # re-assigned mid-flight → DROP: the new owner holds the claim now, so do NOT merge and do NOT release
+      # (that would clobber the new owner's active claim — see swarm_release's worker-guard).
+      swarm_post "$wid" abandoned "reassigned mid-flight — dropped: $item" "$item"
+      rm -f "$SWARM_DIR/control.abandon-$wid-$hash" 2>/dev/null
     else
-      # LIVE: the auto-loop opens + local-gates + SELF-MERGES a feat/<slug> PR (NOT this swarm/* worktree
-      # branch), and ticks the item in ROADMAP.md inside that PR. So the robust merged-signal is: the item's
-      # checkbox is now [x] on origin/main. (The old --head "$branch" check queried the never-PR'd swarm/*
-      # branch → always empty → every merged item was mislabelled "conflict" and re-worked.)
-      git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true
-      if git -C "$REPO" show "origin/$MAIN:ROADMAP.md" 2>/dev/null | grep -Fq -- "$item" \
-         && git -C "$REPO" show "origin/$MAIN:ROADMAP.md" 2>/dev/null | grep -F -- "$item" | grep -qE '^[[:space:]]*- \[[xX]\]'
-      then ok=1; else ok=0; fi
-    fi
-    kill "$bpid" 2>/dev/null
-    if [ "$ok" = 1 ]; then
-      swarm_post "$wid" done "$item" "$item"; swarm_release "$wid" "$hash" done
-      # Tick the REAL ROADMAP on main (serialized via the merge lock) so a merged
-      # item is never re-selected — the root of the repeated VERIFY-ONLY no-ops.
-      [ "$DRY_RUN" = 1 ] || with_merge_lock _tick_roadmap "$item"
-    else
-      local _oc; _oc="$(_swarm_outcome_class "$SWARM_DIR/$wid.log")"   # item 5: classify WHY it didn't land
-      swarm_post "$wid" "$_oc" "$_oc → $([ "$_oc" = conflict ] && echo conflict_resolver || echo requeue): $item" "$item"
-      swarm_release "$wid" "$hash" "$_oc"
+      swarm_post "$wid" merging "$item" "$item"
+      local ok=1
+      if [ "$DRY_RUN" = 1 ]; then
+        with_merge_lock _merge_dry "$branch" || ok=0
+      else
+        # LIVE: the auto-loop opens + local-gates + SELF-MERGES a feat/<slug> PR (NOT this swarm/* worktree
+        # branch), and ticks the item in ROADMAP.md inside that PR. So the robust merged-signal is: the item's
+        # checkbox is now [x] on origin/main. (The old --head "$branch" check queried the never-PR'd swarm/*
+        # branch → always empty → every merged item was mislabelled "conflict" and re-worked.)
+        git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true
+        if git -C "$REPO" show "origin/$MAIN:ROADMAP.md" 2>/dev/null | grep -Fq -- "$item" \
+           && git -C "$REPO" show "origin/$MAIN:ROADMAP.md" 2>/dev/null | grep -F -- "$item" | grep -qE '^[[:space:]]*- \[[xX]\]'
+        then ok=1; else ok=0; fi
+      fi
+      if [ "$ok" = 1 ]; then
+        swarm_post "$wid" done "$item" "$item"; swarm_release "$wid" "$hash" done
+        # Tick the REAL ROADMAP on main (serialized via the merge lock) so a merged
+        # item is never re-selected — the root of the repeated VERIFY-ONLY no-ops.
+        [ "$DRY_RUN" = 1 ] || with_merge_lock _tick_roadmap "$item"
+      else
+        local _oc; _oc="$(_swarm_outcome_class "$SWARM_DIR/$wid.log")"   # item 5: classify WHY it didn't land
+        swarm_post "$wid" "$_oc" "$_oc → $([ "$_oc" = conflict ] && echo conflict_resolver || echo requeue): $item" "$item"
+        swarm_release "$wid" "$hash" "$_oc"
+      fi
     fi
     # Preserve this worker's run artefacts BEFORE `worktree remove` deletes .opencode/ — solo runs persist these,
     # but a swarm worker's metrics/post-mortems are worktree-local + gitignored and would vanish. CSVs are
@@ -380,6 +400,7 @@ swarm_run() {
   while IFS=$'\t' read -r _ h it; do [ -n "$h" ] && { _clean_hash "$h"; echo "  reconcile: requeued '$it'"; }; done < <(swarm_reconcile)
   git -C "$REPO" worktree prune 2>/dev/null || true
   rm -f "$SWARM_DIR/main-red" "$SWARM_DIR/fixer" 2>/dev/null || true   # item 3: never inherit a prior run's RED-main standdown (a genuine RED main re-latches on the first merge)
+  rm -f "$SWARM_DIR"/control.abandon-* "$SWARM_DIR"/*.loop.pid 2>/dev/null || true   # #62: never inherit stale abandon signals / worker pids from a prior run
   local allowed; allowed="$(_allowed)"
   printf '%s🐝 swarm%s %s%s/%s workers%s %s· live=%s dry=%s · %s · self-heal TTL=%ss tries=%s%s\n' \
     "${_B:-}${_PUR:-}" "${_R:-}" "${_GRN:-}" "$allowed" "$MAX" "${_R:-}" "${_MUT:-}" "$LIVE" "$DRY_RUN" "$(basename "$REPO")" "${LEASE_TTL}" "${MAX_TRIES}" "${_R:-}"
