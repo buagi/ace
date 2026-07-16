@@ -138,7 +138,7 @@ A self-contained TUI, no tmux required. It reads only the shared store, so you c
 
 | Element | Shows |
 |---|---|
-| status bar | run id · live worker count · roadmap **done / in-flight / remaining** bar · peak concurrency |
+| status bar | two lines — **run** (id · live workers · peak · pause/drain) and **progress** (live `done/total (%)` from `origin/main` · the done/in-flight/remaining bar · a **⇡ merge-pulse** sparkline with "last N ago" · an **ETA** from the recent merge rate · a `⚠ N serializing` chip when the ROADMAP is collision-heavy) |
 | worker box | one per live worker — its feature, the pipeline, the agents strip, wall/budget/lease, and its live loop feed |
 | pipeline | `PLAN · BUILD · GATE · REVIEW · MERGE` with the current stage lit `▸…◂`, inferred live from the worker's log so it advances through all stages |
 | agents strip | all 9 subagents — `✓` once run, `▸active◂` now, dim while pending (`plan·impl·test·gate·rev·ux·std·algn·rslv`) |
