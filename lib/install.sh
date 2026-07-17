@@ -805,6 +805,10 @@ write_global_agents_md() {
   assert a file/symbol/pattern exists or is absent from search output alone — OPEN the file (Serena read /
   gitnexus_context) and cite it. Spec §5 citation grammar: '(cites <path>:L<a>-L<b>)'; can't open it ⇒
   'UNVERIFIED — <what you tried>'. Citations are plan-time snapshots: lines may move; inventing them may not.
+- SPECS ARE FROZEN after the spec-gate passes: never edit a passed spec mid-implementation; scope changes go
+  through a re-spec (re-gated) or a NEW increment — a silently edited spec breaks AC traceability AND the
+  prompt-cache prefix (a stable prefix is what makes retries + multi-increment features cheap on cache-capable
+  providers; a mutating prefix re-bills the whole context every call).
 
 ## Code map & navigation (the graph is your map — use it on EVERY task, first)
 The repo is continuously indexed (GitNexus graph refreshes on every commit AND on idle; Serena is
