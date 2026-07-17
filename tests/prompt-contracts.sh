@@ -94,6 +94,11 @@ grep -q 'RESEARCH SAFETY (SSRF' "$IN"    || bad "AGENTS.md lost the SSRF researc
 grep -q 're-spec flagged feature specs' lib/autoloop.sh || bad "sync_objectives lost the SPECLINT_REPORT re-spec drive"
 grep -q 'swarm_spec_lint' lib/swarm-run.sh || bad "swarm-run lost the pre-dispatch spec gate"
 
+# --- Part H / H6: AC tracing (grammar order · ledger AC ids · verifier merge-time proof) ---
+has orchestrator '(AC-2,AC-E1)'
+has verifier 'ACCEPTANCE PROOF'
+grep -q "placed BEFORE its 'Files:' hint" lib/autoloop.sh || bad "planner lost the Spec/AC-before-Files field ordering"
+
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 10 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0
