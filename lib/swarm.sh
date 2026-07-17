@@ -484,6 +484,164 @@ RM
   [ "$ok" = 1 ]
 }
 
+# swarm_spec_lint <spec.md>... — Part H/H5: deterministic, zero-token completeness gate on a feature spec
+# (the artifact one level up from plan-lint's ROADMAP geometry). Proves STRUCTURE · GRAMMAR · GROUNDING against
+# the fixed template markers (H1) — NOT whether the approach is good (that's the critics/rubric). Emits
+# `SPECGAP <slug> <CHECK> <detail>` per violation + a summary; exit 0 clean / 1 gaps / 2 usage (plan-lint's
+# contract). bash+coreutils only. Reads REPO for CITE_REAL existence checks (defaults to cwd).
+swarm_spec_lint() {
+  [ "$#" -ge 1 ] || { echo "usage: swarm_spec_lint <spec-file>..." >&2; return 2; }
+  local f n=0 gaps=0 slug tier h _t line p
+  _sec(){ awk -v H="## $1." 'index($0,H)==1{f=1;next} /^## /{f=0} f' "$2"; }   # body of section N
+  _gap(){ printf 'SPECGAP %s %s %s\n' "$slug" "$1" "$2"; gaps=$((gaps+1)); }
+  for f in "$@"; do
+    slug="$(basename "$f" .md)"
+    [ -f "$f" ] || { printf 'SPECGAP %s FILE spec file not found\n' "$slug"; gaps=$((gaps+1)); continue; }
+    n=$((n+1))
+    head -1 "$f" | grep -q 'ace-spec-template v1' || _gap VERSION "line 1 missing 'ace-spec-template v1' tag"
+    tier="$(head -2 "$f" | grep -oiE 'tier:[[:space:]]*(FULL|FAST)' | grep -oiE 'FULL|FAST' | head -1 | tr '[:lower:]' '[:upper:]')"
+    [ -n "$tier" ] || { _gap TIER "line 1 must declare 'tier: FULL' or 'FAST'"; tier=FULL; }
+    for h in 1 2 3 4 5 6 7; do grep -qE "^## $h\." "$f" || _gap SECTIONS "missing heading '## $h.'"; done
+    if [ "$tier" = FULL ]; then
+      _t="$(awk '/^### Out/{f=1;next} /^### |^## /{f=0} f && /^[[:space:]]*-[[:space:]]+[^[:space:]<]/{c++} END{print c+0}' "$f")"
+      [ "${_t:-0}" -ge 1 ] || _gap SCOPE_OUT "§3 '### Out' has no bullet (the anti-drift wall is empty)"
+    fi
+    # §4 EARS: well-formed AC lines, unique ids, no free-form bullet
+    _t="$(_sec 4 "$f" | grep -E '^[[:space:]]*- ' | grep -vE '^[[:space:]]*- <!--')"
+    [ -n "$(printf '%s' "$_t" | grep -oE 'AC-E?[0-9]+' | head -1)" ] || _gap EARS "§4 has no AC- lines"
+    printf '%s\n' "$_t" | grep -qE '^[[:space:]]*- ' && printf '%s\n' "$_t" | grep -E '^[[:space:]]*- ' \
+      | grep -qvE 'AC-E?[0-9]+ (WHEN .+ THE SYSTEM SHALL .+|GIVEN .+ WHEN .+ THEN .+)' \
+      && _gap EARS "§4 bullet not in 'AC-<n> WHEN … THE SYSTEM SHALL …' / GWT form"
+    [ -n "$(printf '%s' "$_t" | grep -oE 'AC-E?[0-9]+' | sort | uniq -d | head -1)" ] && _gap EARS "§4 duplicate AC id"
+    local ids4 ids6; ids4="$(printf '%s' "$_t" | grep -oE 'AC-E?[0-9]+' | sort -u)"
+    # §6 increments: carry ACs, cover §4 exactly, name ≤PLAN_MAX_FILES files
+    _t="$(_sec 6 "$f")"
+    printf '%s\n' "$_t" | grep -qE '^[0-9]+\.' && printf '%s\n' "$_t" | grep -E '^[0-9]+\.' | grep -qvE 'ACs?:' \
+      && _gap AC_COVER "§6 increment missing 'ACs:'"
+    ids6="$(printf '%s' "$_t" | grep -oE 'AC-E?[0-9]+' | sort -u)"
+    [ "$ids4" = "$ids6" ] || _gap AC_COVER "§6 AC ids ≠ §4 AC ids (coverage mismatch)"
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      local nf; nf="$(printf '%s' "$line" | grep -oE '[A-Za-z0-9_./-]+\.[A-Za-z0-9]+' | sort -u | grep -c .)"
+      [ "${nf:-0}" -ge 1 ] || _gap INC_SIZE "§6 increment names no file: $(printf '%s' "$line" | cut -c1-36)"
+      [ "${nf:-0}" -gt "${PLAN_MAX_FILES:-5}" ] && _gap INC_SIZE "§6 increment names $nf files (> ${PLAN_MAX_FILES:-5})"
+    done < <(printf '%s\n' "$_t" | grep -E '^[0-9]+\.')
+    # §5 CITED: any bullet naming a concrete file must carry a cite or UNVERIFIED
+    while IFS= read -r line; do
+      printf '%s' "$line" | grep -qE '[A-Za-z0-9_./-]+\.[A-Za-z]{1,6}([[:space:]:]|$)' || continue
+      printf '%s' "$line" | grep -qE '\(cites [A-Za-z0-9_./-]+:L[0-9]+(-L[0-9]+)?\)|UNVERIFIED —' \
+        || _gap CITED "§5 file claim without '(cites path:L..)' or 'UNVERIFIED —': $(printf '%s' "$line" | cut -c1-36)"
+    done < <(_sec 5 "$f" | grep -E '^[[:space:]]*- ' | grep -vE '^[[:space:]]*- <!--')
+    # §5 CITE_REAL: cited paths must exist in the worktree (invented-path guard; line-drift not checked)
+    while IFS= read -r p; do
+      [ -n "$p" ] && [ ! -e "${REPO:-.}/$p" ] && _gap CITE_REAL "§5 cites a path not in the worktree: $p"
+    done < <(_sec 5 "$f" | grep -oE 'cites [A-Za-z0-9_./-]+:' | sed 's/^cites //; s/:$//' | sort -u)
+    # C1-C6 present + content or a reasoned N/A
+    for h in C1 C2 C3 C4 C5 C6; do
+      grep -qE "^## $h\." "$f" || { _gap CBLOCKS "missing conditional block '## $h.'"; continue; }
+      local cb; cb="$(_sec "$h" "$f" | grep -vE '^[[:space:]]*(<!--.*)?$')"
+      [ -n "$cb" ] || { _gap CBLOCKS "§$h is empty (fill it or 'N/A — <reason>')"; continue; }
+      printf '%s\n' "$cb" | grep -qE '^[[:space:]]*N/A[[:space:]]*—[[:space:]]*$' && _gap CBLOCKS "§$h 'N/A —' has no reason"
+    done
+    awk '/^## 1\./{f=1} /^## 7\./{f=0} f' "$f" | grep -qE '(^|[^A-Za-z])(TBD|TODO|FIXME|XXX)([^A-Za-z]|$)' \
+      && _gap NO_TBD "TBD/TODO/FIXME/XXX inside §1-§6 (allowed only in §7)"
+    _sec 2 "$f" | grep -qE '\(source:' || _gap SOURCED "§2 prior-art missing a '(source: …, …)' citation"
+  done
+  printf 'spec-lint: %d spec(s) · %d gap(s)\n' "$n" "$gaps"
+  [ "$gaps" -eq 0 ]
+}
+
+# swarm_spec_lint_selftest — hermetic: a conforming FULL fixture must pass clean; a violating fixture must trip
+# ≥1 gap per seeded class. No network, no repo files (the cited path is created in the temp worktree).
+swarm_spec_lint_selftest() {
+  local d ok=1 out; d="$(mktemp -d)" || return 1
+  ( cd "$d" && mkdir -p .opencode/specs lib
+    : > lib/widget.ts   # so CITE_REAL's existence check passes for the conforming fixture
+    cat > .opencode/specs/good.md <<'SP'
+<!-- ace-spec-template v1 -->
+# Spec: Demo   (slug: good · risk: LOW · tier: FULL)
+
+## 1. Problem
+Users need a save button. Why now: launch.
+
+## 2. Prior art & approach
+- Product A autosaves (source: https://a.example/docs, 2026-07). DECISION: match — standard scope.
+
+## 3. Scope
+### In
+- Add a save action to the widget.
+### Out
+- Do NOT add offline sync.
+
+## 4. Acceptance criteria
+- AC-1 WHEN the user clicks save THE SYSTEM SHALL persist within 200ms.
+- AC-E1 WHEN the input is empty THE SYSTEM SHALL reject with a 400.
+
+## 5. Integration (cited)
+- Files to touch: lib/widget.ts — the save path (cites lib/widget.ts:L1-L5)
+- Blast radius: two panel callers.
+
+## 6. Increments
+1. persist path — files: lib/widget.ts — ACs: AC-1 — deps: —
+2. empty guard — files: lib/widget.ts — ACs: AC-E1 — deps: 1
+
+## 7. Open questions / assumptions
+- None.
+
+## C1. Contract
+N/A — no endpoint.
+## C2. Data model
+N/A — no schema change.
+## C3. UX flow
+Spinner then a success toast.
+## C4. NFRs
+Save p95 < 200ms.
+## C5. Security
+N/A — no auth surface.
+## C6. Risk & rollback
+Feature-flagged; revert the commit.
+SP
+    cat > .opencode/specs/bad.md <<'SP'
+# Spec: Broken   (slug: bad)
+
+## 1. Problem
+TODO figure this out.
+
+## 2. Prior art & approach
+- Some product does it somehow.
+
+## 3. Scope
+### In
+- thing
+### Out
+
+## 4. Acceptance criteria
+- it should basically work fast
+
+## 5. Integration (cited)
+- Files to touch: lib/ghost.ts — the guts (cites lib/ghost.ts:L1-L9)
+- Pattern: src/nope.js — mimic it
+
+## 6. Increments
+1. do everything — files: a.ts
+
+## C1. Contract
+## C5. Security
+N/A —
+SP
+    REPO="$d" swarm_spec_lint .opencode/specs/good.md >/tmp/.sl_good 2>/dev/null; local rgood=$?
+    REPO="$d" swarm_spec_lint .opencode/specs/bad.md  >/tmp/.sl_bad  2>/dev/null; local rbad=$?
+    [ "$rgood" = 0 ] || { echo "[spec-lint] conforming fixture should pass (exit 0) — got $rgood:"; grep SPECGAP /tmp/.sl_good | sed 's/^/    /'; ok=0; }
+    [ "$rbad" = 1 ]  || { echo "[spec-lint] violating fixture should fail (exit 1) — got $rbad"; ok=0; }
+    for c in VERSION TIER SECTIONS SCOPE_OUT EARS AC_COVER CITED CITE_REAL CBLOCKS NO_TBD SOURCED; do
+      grep -q " $c " /tmp/.sl_bad || { echo "[spec-lint] violating fixture missed a $c gap"; ok=0; }
+    done
+    rm -f /tmp/.sl_good /tmp/.sl_bad
+    [ "$ok" = 1 ] && echo "[spec-lint] PASS ✓" || { echo "[spec-lint] FAIL ✗"; exit 1; }
+  ) || ok=0
+  rm -rf "$d"; [ "$ok" = 1 ]
+}
+
 # swarm_touch WORKER HASH ADDPATHS — extend an ACTIVE claim mid-flight when a
 # flow discovers it must edit more files. Succeeds iff ADDPATHS don't overlap
 # ANOTHER worker's active lease (a flow's own lease can always grow). ok/busy.
@@ -986,11 +1144,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     disjoint-plan)  swarm_disjoint_plan "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
     plan-lint)      swarm_plan_lint "${2:-ROADMAP.md}" ;;
     plan-lint-selftest) swarm_plan_lint_selftest ;;
+    spec-lint)      shift; swarm_spec_lint "$@" ;;
+    spec-lint-selftest) swarm_spec_lint_selftest ;;
     scope-stats)    swarm_scope_stats ;;
     stats)          swarm_stats ;;
     green-set)      swarm_green_set "${2:-}" ;;
     green-get)      swarm_green_get ;;
     main-red)       swarm_main_red "${2:-get}" "${3:-}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|scope-stats}" >&2; exit 2 ;;
   esac
 fi
