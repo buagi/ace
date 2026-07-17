@@ -341,6 +341,22 @@ Fix ONLY the flagged gaps in the named '.opencode/specs/<slug>.md' files. Do NOT
       || say "re-spec pass skipped (planner error) — continuing with the flagged specs."
     return 0
   fi
+  # REANALYZE=1: re-assessment mode. Snapshot the current OPEN (uncompleted) ROADMAP items + their specs, then
+  # RE-DERIVE them from scratch with the full research→spec pipeline — do NOT skip "already covered" (the whole
+  # point is to redo them BETTER). The lint gate + cross-model DEBATE run afterwards via spec_gate_solo (the
+  # caller invokes it for REANALYZE before the plan-only exit). Placed BELOW the RESLICE/SPECLINT branches so the
+  # gate's own targeted re-spec call (which sets SPECLINT_REPORT) takes THAT branch, not another full re-derive.
+  # Bypasses the OBJECTIVES/mtime guards.
+  if [ "${REANALYZE:-0}" = 1 ]; then
+    [ -f ROADMAP.md ] || { say "reanalyze: no ROADMAP.md — nothing to re-assess."; return 0; }
+    . "$(dirname "$_SWARM_SH")/reanalyze.sh" 2>/dev/null && reanalyze_snapshot "$PWD" 2>/dev/null || true
+    if ! grep -qE '^[[:space:]]*- \[ \] ' ROADMAP.md 2>/dev/null; then say "reanalyze: no OPEN (uncompleted) ROADMAP items to re-assess."; return 0; fi
+    say "reanalyze: re-deriving the OPEN uncompleted ROADMAP items from scratch (research → spec → slice)…"
+    drive "re-analyze open ROADMAP items" "REANALYSIS PASS. Read ROADMAP.md and OBJECTIVES.md. Your job is to RE-DERIVE — from scratch, with the full pipeline — every OPEN (unchecked '- [ ]') ROADMAP item that is NOT yet implemented, REPLACING its current breakdown with a better one. This is deliberate re-work: do NOT skip an item because it 'already exists' — the POINT is to redo it better. NEVER touch a DONE '- [x]' item, and do NOT implement anything (planning only).
+For each distinct FEATURE the open items belong to: (1) RESEARCH — a SHORT, BOUNDED pass (webfetch how 1-2 leading/comparable products implement this + the industry-standard scope/UX; Context7 for any library API; re-use anything cached in '.opencode/cache/research/<slug>/' before a new fetch; if fetch is blocked, use your own knowledge and SAY SO). (2) RE-SPEC — rewrite '.opencode/specs/<feature-slug>.md' by FILLING '.opencode/spec-template.md' (read it first): every §1-§7 mandatory section; each §C conditional block filled or exactly 'N/A — <reason>'; tier FULL (or FAST only when ≤2 files, no new endpoint/table/dependency, no auth/money surface); §3-Out never empty on FULL; §4 'AC-<n> WHEN <trigger> THE SYSTEM SHALL <behavior>' (or GIVEN/WHEN/THEN), one behavior per line, concrete values; §5 Integration: EVERY claim about this repo carries '(cites <path>:L<a>-L<b>)' from a file you OPENED (Serena/GitNexus lookup THEN read the lines — code-search output alone is NOT evidence) or is marked 'UNVERIFIED — <what you tried>'. (3) RE-DECOMPOSE FROM the spec's §6 Increments — each increment becomes ONE ROADMAP item carrying 'Spec: .opencode/specs/<slug>.md' then 'AC: <its AC ids>' BEFORE its 'Files:' hint (order: Spec: … AC: … Files: … deps: … — the footprint extractor reads only from 'Files:' onward). REPLACE the feature's old open items with the newly-derived set (edit ROADMAP.md in place: remove the superseded open items for that feature, append the new ones under '## Next'). Keep tasks PATH-DISJOINT — no two OPEN items share a file (give a shared/HUB file to ONE item and add 'deps: <that item>' to the rest); every item has an accurate 'Files:' hint (source + test files) covering its true blast radius; prefer VERTICAL slices; DISJOINTNESS SELF-CHECK before committing (list every OPEN 'Files:' pairwise; re-slice or serialize any that collide); target ≥3 OPEN items with pairwise-disjoint 'Files:'. TASK-SIZE: each item ≤~3 files, ≤~150-200 changed lines, one run. Update OBJECTIVES.md statuses. Branch chore/plan, commit ROADMAP.md + OBJECTIVES.md + every .opencode/specs/*.md you wrote/changed (an uncommitted spec is INVISIBLE to swarm worktrees), open a PR into main. Planning only — do NOT implement." \
+      || say "reanalyze pass skipped (planner error) — the baseline snapshot is preserved for comparison."
+    return 0
+  fi
   [ -f OBJECTIVES.md ] || return 0
   grep -qE '^[[:space:]]*- \[ \] ' OBJECTIVES.md 2>/dev/null || return 0
   # only when OBJECTIVES changed since the last sync (adding a goal bumps its mtime) → no
@@ -1102,8 +1118,13 @@ mkdir -p .opencode 2>/dev/null; write_state startup   # heartbeat (pid) so a FOR
 metric "run_start,,$(orch_provider 2>/dev/null) gate=${MERGE_GATE:-remote},0,0,0,0"
 kanban_sync || true   # opt-in (HERMES_KANBAN=1): mirror the initial ROADMAP to a chat-visible kanban board
 agent_state orchestrator   # dashboard: start with the planner lit (ace loop dash)
+[ "${REANALYZE:-0}" = 1 ] && LOOP_SYNC_ONLY=1   # re-assessment is plan-only by design: re-derive the breakdown, stop, let the user inspect (ace reanalyze report) before implementing
 sync_objectives            # decompose any newly-added OBJECTIVES goal into ROADMAP tasks BEFORE working the queue
-[ "${LOOP_SYNC_ONLY:-0}" = 1 ] && { say "plan-only sync done — exiting."; write_run_summary 2>/dev/null || true; exit 0; }
+# REANALYZE gets the FULL planning pipeline on the freshly re-derived specs: deterministic spec-lint gate + the
+# cross-model DEBATE (SPEC_DEBATE=1) + one bounded re-spec — the same gate a normal solo run gets, run HERE before
+# the plan-only exit (which would otherwise skip it). No-op unless specs exist; the debate needs SPEC_DEBATE=1 + keys.
+[ "${REANALYZE:-0}" = 1 ] && spec_gate_solo
+[ "${LOOP_SYNC_ONLY:-0}" = 1 ] && { say "plan-only sync done — exiting.$([ "${REANALYZE:-0}" = 1 ] && printf '  Compare: ace reanalyze report')"; write_run_summary 2>/dev/null || true; exit 0; }
 spec_gate_solo             # Part H: solo gets the same deterministic spec gate (+ optional rubric) the swarm coordinator runs
 while :; do
   # janitor: reconcile drift + reclaim disk — git main↔origin sync, gitnexus stale branch-graph prune

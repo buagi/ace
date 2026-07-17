@@ -224,6 +224,7 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace firecrawl up|down|status   ACE-managed LOCAL research crawler (loopback-only; boosts feature research)
   ace stats [global|N|task] per-subagent × worker (or 'task' = per-ROADMAP-task) token/cost from the opencode session DB ('global'=all projects, N=last-N-days). ACE_TELEMETRY=0 turns OFF all run logging
   ace quality         quality leading-indicators: per-critic false-positive rate + retry rate + escaped-bug (-> .opencode/quality-report.md)
+  ace reanalyze       re-derive the breakdown of your OPEN features with the full research->spec->slice pipeline (plan-only) then 'ace reanalyze report' shows before->after (also: REANALYZE=1 ace autorun)
   ace hermes          wire loop milestones + command-back to Hermes (-> Signal/Telegram/phone)
   ace hermes mcp|webhook  ground the chat agent on this repo (Serena/GitNexus) · GitHub events->chat
   ace brain           file ACE host-lessons + repo lessons into gbrain (if present)
@@ -287,6 +288,7 @@ while [ $# -gt 0 ]; do
     --out)        ACE_OUT="${2:-}"; export ACE_OUT; shift ;;          # snap output path
     --tag)        ACE_RELEASE_TAG="${2:-}"; export ACE_RELEASE_TAG; shift ;;  # ace release --tag vX.Y.Z (cut+push a v* tag → CI release job)
     --host)       ACE_RELEASE_HOST=1; export ACE_RELEASE_HOST ;;  # ace release --host (build on the host, not in a container)
+    --json)       ACE_JSON=1; export ACE_JSON ;;   # machine output for reporters (scorecard/reanalyze) — else the -*) arm would swallow it
     -*) ;;        # ignore unknown flags
     *) if [ -z "$cmd" ]; then cmd="$1"; elif [ -z "${ACE_ARG:-}" ]; then ACE_ARG="$1"; elif [ -z "${ACE_ARG2:-}" ]; then ACE_ARG2="$1"; elif [ -z "${ACE_ARG3:-}" ]; then ACE_ARG3="$1"; fi ;;
   esac
@@ -339,6 +341,17 @@ case "${cmd:-menu}" in
   stats)             _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/telemetry.sh"; ace_stats "${ACE_ARG:-}" "${ACE_ARG2:-}" "${ACE_ARG3:-}" ;;
   quality)           _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/telemetry.sh"; ace_quality ;;
   scorecard|measure) _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/scorecard.sh"; ace_scorecard "${ACE_ARG:-}" "${ACE_ARG2:-}" ;;
+  reanalyze)         _sl="$(dirname "$(readlink -f "$0")")/lib"     # re-assess existing OPEN features: snapshot → re-derive breakdown (plan-only) → before/after compare
+                     case "${ACE_ARG:-}" in
+                       report)   . "$_sl/reanalyze.sh"; ace_reanalyze_report "${ACE_ARG2:-}" ;;
+                       snapshot) . "$_sl/reanalyze.sh"; reanalyze_snapshot "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" ;;
+                       *)        cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" 2>/dev/null || true
+                                 # plan-only, solo, headless: re-derive → lint + cross-model DEBATE (default ON here;
+                                 # fail-open without OPENROUTER_API_KEY + DEBATE_MODEL_B) → re-slice → stop → compare
+                                 export REANALYZE=1 ACE_YES=1 SWARM_MAX=1 SPEC_LINT="${SPEC_LINT:-1}" SPEC_DEBATE="${SPEC_DEBATE:-1}"
+                                 autoloop_run
+                                 . "$_sl/reanalyze.sh"; ace_reanalyze_report ;;
+                     esac ;;
   swarm)             _sr="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; _sl="$(dirname "$(readlink -f "$0")")/lib"
                      case "${ACE_ARG:-}" in
                        start)     if [ "${ACE_ARG2:-}" = fg ]; then ( cd "$_sr" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" start )

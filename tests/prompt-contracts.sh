@@ -87,6 +87,12 @@ grep -q 'debate-metrics.jsonl' lib/debate.sh || bad "debate.sh lost the metrics 
 grep -q 'ace_debate_report' lib/debate.sh || bad "debate.sh lost the report/analysis function"
 [ -f lib/scorecard.sh ] || bad "the run scorecard (lib/scorecard.sh) is missing"
 grep -qE 'scorecard\|measure\)' ace || bad "ace lost the 'scorecard' command"
+# REANALYZE re-assessment mode: the flag branch (plan-only re-derive), the compare lib + command + selftest
+[ -f lib/reanalyze.sh ] || bad "the reanalyze compare (lib/reanalyze.sh) is missing"
+grep -qE 'reanalyze\)' ace || bad "ace lost the 'reanalyze' command"
+grep -q 'REANALYZE' lib/autoloop.sh || bad "autoloop lost the REANALYZE re-assessment branch"
+grep -q 'reanalyze_snapshot' lib/autoloop.sh || bad "autoloop no longer snapshots the reanalyze baseline"
+[ -f tests/reanalyze-selftest.sh ] || bad "the reanalyze selftest is missing"
 # debate EFFECTIVENESS: the labeled sandbox (ground truth) + the P/R/F1 scorer + the CLI
 [ -f tests/debate-effectiveness.sh ] || bad "the debate effectiveness scorer is missing"
 [ -f tests/debate-sandbox/labels.tsv ] || bad "the labeled debate sandbox (ground truth) is missing"
