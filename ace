@@ -320,6 +320,12 @@ case "${cmd:-menu}" in
       *) autoloop_run ;;
     esac ;;
   dash|watch)        dash_auto ;;   # one dashboard for one flow — shows whatever is running (solo loop or swarm)
+  debate)            _sr="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; _sl="$(dirname "$(readlink -f "$0")")/lib"
+                     case "${ACE_ARG:-}" in
+                       spec|review) ( cd "$_sr" && bash "$_sl/debate.sh" "$ACE_ARG" "${ACE_ARG2:-}" "${ACE_ARG3:-}" ) ;;
+                       selftest)    bash "$_sl/debate.sh" selftest ;;
+                       *) echo "usage: ace debate spec <spec-file> [slug]  |  ace debate review [base] [slug]   (cross-model dialogue; needs OPENROUTER_API_KEY + DEBATE_MODEL_B)" ;;
+                     esac ;;
   loop-service)      loop_service_run "${ACE_ARG:-}" ;;   # internal: systemd ExecStart target
   report|triage)     _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/report.sh"
                      if [ "$cmd" = triage ] || [ "${ACE_ARG:-}" = triage ]; then ace_triage
