@@ -17,7 +17,7 @@ set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; cd "$ROOT" || exit 1
 SB="tests/debate-sandbox"; SPECS="$SB/specs"; OUT="tests/snapshots/debate-eval"; LABELS="$SB/labels.tsv"
 HIST="$SB/effectiveness-history.jsonl"
-MODE=score; case "${1:-}" in --capture) MODE=capture ;; --diagnose) MODE=diagnose ;; esac
+MODE=score; case "${1:-}" in --capture) MODE=capture ;; --diagnose) MODE=diagnose ;; --emit-tsv) MODE=emit ;; esac
 _dcfg(){ grep -E "^$1=" "${ACE_CONFIG:-$HOME/.config/ace/config}" 2>/dev/null | tail -1 | cut -d= -f2-; }
 
 [ -f "$LABELS" ] || { echo "debate-effectiveness: no $LABELS — the sandbox is missing. SKIP."; exit 0; }
@@ -42,6 +42,25 @@ if [ "$MODE" = capture ]; then
     printf '%s\n' "$o" > "$OUT/$slug.out" && echo "captured $slug.out"
   done < "$LABELS"
   echo "debate-effectiveness: captured. Review each vs its label, commit $OUT/*.out, then --score."
+  exit 0
+fi
+
+if [ "$MODE" = emit ]; then
+  # per-spec eval-ab rows for the auto-tune A/B: task·trial·pass·kind·cost·wall·mutant. pass=1 iff the debate
+  # classified the spec CORRECTLY (right verdict, and for FLAGGED the right seeded issue); cost = debate duration.
+  printf 'task_id\ttrial\tpass\tkind\tcost\twall\tmutant_survived\n'
+  ls "$OUT"/*.out >/dev/null 2>&1 || exit 0
+  while IFS=$'\t' read -r slug label kw; do
+    [ -n "$slug" ] || continue; case "$slug" in \#*) continue ;; esac
+    o="$OUT/$slug.out"; [ -f "$o" ] || continue
+    v="$(verdict_of "$o")"; pass=0
+    case "$label" in
+      FLAGGED) { [ "$v" = FLAGGED ] && { [ "$kw" = "-" ] || grep -qi -- "$kw" "$o"; }; } && pass=1 ;;
+      SOUND)   [ "$v" = SOUND ] && pass=1 ;;
+    esac
+    cost="$(jq -r --arg s "$slug" 'select(.slug==$s)|.duration_s' .opencode/cache/debate-metrics.jsonl 2>/dev/null | tail -1)"; cost="${cost:-0}"
+    printf '%s\t1\t%s\tdebate\t%s\t%s\t-\n' "$slug" "$pass" "$cost" "$cost"
+  done < "$LABELS"
   exit 0
 fi
 
