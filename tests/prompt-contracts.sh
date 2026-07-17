@@ -90,6 +90,10 @@ grep -q 'RESEARCH TOOL-SHAPE' "$IN"      || bad "AGENTS.md lost the TOOL-SHAPE r
 grep -q 'NEVER firecrawl_crawl' "$IN"    || bad "AGENTS.md lost the crawl prohibition"
 grep -q 'RESEARCH SAFETY (SSRF' "$IN"    || bad "AGENTS.md lost the SSRF research-safety rule"
 
+# --- Part H / H5: spec gate — the re-spec drive must survive ---
+grep -q 're-spec flagged feature specs' lib/autoloop.sh || bad "sync_objectives lost the SPECLINT_REPORT re-spec drive"
+grep -q 'swarm_spec_lint' lib/swarm-run.sh || bad "swarm-run lost the pre-dispatch spec gate"
+
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 10 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0
