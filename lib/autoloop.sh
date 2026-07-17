@@ -105,7 +105,7 @@ say(){ local tag=""; [ -n "${SWARM_WORKER:-}" ] && tag="$(_wtag)"
 # dashboard signal: which agent the bash loop is currently driving (best-effort — the 4 critics run INSIDE
 # opencode and are invisible to this loop, so only orchestrator/implementer/verifier/conflict light up).
 # `ace loop dash` reads .opencode/.agents to colour the grid. Fail-soft; never affects the loop.
-agent_state(){ local x s=""; for x in orchestrator implementer test_engineer verifier reviewer ux_reviewer standards alignment conflict; do [ "$x" = "$1" ] && s="$s $x:${2:-active}" || s="$s $x:idle"; done; printf '%s\n' "${s# }" > .opencode/.agents 2>/dev/null || true; }
+agent_state(){ local x s=""; for x in orchestrator researcher implementer test_engineer verifier reviewer ux_reviewer standards alignment conflict launch; do [ "$x" = "$1" ] && s="$s $x:${2:-active}" || s="$s $x:idle"; done; printf '%s\n' "${s# }" > .opencode/.agents 2>/dev/null || true; }
 # telemetry: one CSV row per completed step -> .opencode/metrics.csv. You can't tune what you can't
 # see; this makes where-the-time-goes (active thinking vs slow builds, per agent) visible after a run.
 metric(){ [ "${ACE_TELEMETRY:-1}" = 1 ] || return 0; local f=.opencode/metrics.csv; mkdir -p .opencode 2>/dev/null

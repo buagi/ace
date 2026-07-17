@@ -52,14 +52,11 @@ loop_dash() {
   RS="${C_RESET:-$'\033[0m'}"; local BD="${C_BOLD:-}"
 
   # ── agents (id|name|role|icon) + their live state ──
-  local -a AGN=(
-    "orchestrator|orchestrator|plans · delegates|✦" "implementer|implementer|builds to spec|▸"
-    "test_engineer|test engineer|adversarial tests|▽" "verifier|verifier|ci.sh gate|▸"
-    "reviewer|reviewer|logic & scope|▸"       "ux_reviewer|ux reviewer|looks & flow|▸"
-    "standards|standards|best practices|▸"    "alignment|alignment|mission audit|▸"
-    "conflict|conflict|merge reconciler|⚔" )
-  declare -A AST; local a
-  for a in orchestrator implementer test_engineer verifier reviewer ux_reviewer standards alignment conflict; do AST[$a]=idle; done
+  # the canonical 11-agent roster (shared with the swarm cockpit via dash-common.sh) — was a hardcoded 9 that
+  # predated the researcher (#11) and the launch-readiness gate; now one source of truth so it can't drift again.
+  local -a AGN=("${DASH_AGENTS[@]}")
+  declare -A AST; local a _e
+  for _e in "${AGN[@]}"; do a="${_e%%|*}"; AST[$a]=idle; done
   AST[orchestrator]=active
 
   local ROWS COLS
@@ -177,7 +174,7 @@ loop_dash() {
     # agent grid: 4 per row × 2 rows, 3 lines each (top border · name · role-in-bottom-border)
     local bw=$(( (W-3)/4 )) gi=0 top=10
     local rowset
-    for rowset in "0 1 2 3" "4 5 6 7"; do
+    for rowset in "0 1 2 3" "4 5 6 7" "8 9 10"; do
       local L1=" " L2=" " L3=" " idx
       for idx in $rowset; do
         IFS='|' read -r id name role icon <<<"${AGN[$idx]}"
