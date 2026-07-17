@@ -14,6 +14,23 @@ _dcen(){ local w="$1" s="$2" v l; v="$(_dvis "$s")"; [ "$v" -ge "$w" ] && { prin
 # won't stop opencode. Kill the whole TREE (opencode first) to actually take it down.
 _dash_killtree(){ local p="$1" s="${2:-TERM}" k; [ -n "$p" ] || return 0; for k in $(pgrep -P "$p" 2>/dev/null); do _dash_killtree "$k" "$s"; done; kill -"$s" "$p" 2>/dev/null; }
 
+# Unified dashboard router (autorun↔swarm one-flow, Phase 2): show whatever is ACTUALLY running, regardless of
+# which dash command the user typed. A live swarm (its coordinator.pid is alive) → the swarm cockpit; otherwise
+# the single-flow loop dash. This is why `ace dash`, `ace loop dash`, and `ace swarm dash` all land in the right
+# place — the two engines stay, the surface is one. SWARM_DIR mirrors swarm.sh's default ($HOME/.config/ace/
+# swarm/<repo-basename>). Falls through to the solo dash on any detection miss (fail-safe: never a blank cockpit).
+dash_auto() {
+  local root sdir cpid
+  root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+  sdir="${SWARM_DIR:-$HOME/.config/ace/swarm/$(basename "$root")}"
+  cpid="$(cat "$sdir/coordinator.pid" 2>/dev/null)"
+  if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+    ( cd "$root" && SWARM_REPO="$root" bash "$ACE_DIR/lib/swarm-run.sh" dash )
+  else
+    loop_dash "$@"
+  fi
+}
+
 loop_dash() {
   local demo=0 test=0
   { [ "${1:-}" = "--demo" ] || [ "${ACE_DEMO:-0}" = 1 ]; } && demo=1
