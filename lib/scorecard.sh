@@ -57,6 +57,7 @@ _sc_features(){
   local totinc=0 s n
   for s in "$SC_OC"/specs/*.md; do [ -f "$s" ] || continue
     n=$(awk '/^## 6\./{f=1;next} /^## /{f=0} f && /^[0-9]+\./{c++} END{print c+0}' "$s"); totinc=$(( totinc + n )); done
+  SC_GAPS="$gaps"; SC_NSPEC="$nspec"
   printf '   specs %s · total spec-gaps %s (AC-coverage %s · oversize-increment %s · EARS %s)\n' "$nspec" "$gaps" "$accov" "$incsz" "$ears"
   [ "$nspec" -gt 0 ] && printf '   increments/feature: %s avg · first-pass clean: %s\n' "$(( totinc / (nspec>0?nspec:1) ))" "$([ "$gaps" = 0 ] && echo 'yes ✓' || echo "no ($gaps gap(s))")"
 }
@@ -72,7 +73,7 @@ _sc_subtasks(){
   nd=$(printf '%s\n' "$red" | _gc '^done'); nc=$(printf '%s\n' "$red" | _gc '^conflict'); ng=$(printf '%s\n' "$red" | _gc '^gate-red')
   ns=$(printf '%s\n' "$red" | _gc '^stopped'); ni=$(printf '%s\n' "$red" | _gc '^incomplete'); tot=$(( nd+nc+ng+ns+ni ))
   if [ "$tot" = 0 ]; then printf '   — no terminal subtask events yet\n'; return; fi
-  local hit=$(( nd*100/tot ))
+  local hit=$(( nd*100/tot )); SC_HIT="$hit"; SC_ITEMS="$tot"; SC_DONE="$nd"
   local aband; aband=$(jq -rc 'select(.phase=="abandoned")|1' "$ev" 2>/dev/null | _gc '1')
   local bp="$SC_SWARM/batch-plan.txt" coll=0 over=0
   [ -f "$bp" ] && { coll=$(_gc '^COLLIDE' "$bp"); over=$(_gc '^OVERSIZE' "$bp"); }
@@ -105,15 +106,102 @@ _sc_results(){
   printf '   %s(critic accept/reject rates need the DB/opencode seam — these are log-grep counts)%s\n' "${C_GREY:-}" "${C_RESET:-}"
 }
 
+# ⑤ DEBATE — the cross-model barter: convergence, accepted vs disputed, effectiveness
+_sc_debate(){
+  printf '\n%s⑤ DEBATE (cross-model barter)%s\n' "${C_BOLD:-}" "${C_RESET:-}"
+  local dm="$SC_OC/cache/debate-metrics.jsonl"
+  [ -f "$dm" ] && command -v jq >/dev/null 2>&1 || { printf '   — no debates this run (SPEC_DEBATE/REVIEW_DEBATE off, or none HIGH-risk)\n'; return; }
+  local agg; agg="$(jq -s 'if length==0 then empty else {n:length,conv:(map(select(.converged))|length),capped:(map(select(.wall_capped))|length),rounds:((map(.rounds)|add)/length*10|round/10),acc:(map(.per_round|(map(.accepted)|add)//0)|add),disp:(map(.per_round|(map(.disputed)|add)//0)|add),issues:(map(.issues_emitted)|add)} end' "$dm" 2>/dev/null)"
+  [ -n "$agg" ] || { printf '   — no debate records\n'; return; }
+  local n conv capped rounds acc disp issues
+  n=$(jq -r '.n' <<<"$agg"); conv=$(jq -r '.conv' <<<"$agg"); capped=$(jq -r '.capped' <<<"$agg"); rounds=$(jq -r '.rounds' <<<"$agg")
+  acc=$(jq -r '.acc' <<<"$agg"); disp=$(jq -r '.disp' <<<"$agg"); issues=$(jq -r '.issues' <<<"$agg")
+  local convpct=0; [ "$n" -gt 0 ] && convpct=$(( conv*100/n )); SC_CONVPCT="$convpct"; SC_NDEBATE="$n"
+  printf '   debates %s · converged %s (%s%%) · wall-capped %s · avg rounds %s\n' "$n" "$conv" "$convpct" "$capped" "$rounds"
+  printf '   accepted %s · disputed %s · issues emitted %s\n' "$acc" "$disp" "$issues"
+  local hist="$_SC_LIB/../tests/debate-sandbox/effectiveness-history.jsonl"
+  [ -f "$hist" ] && { SC_F1="$(jq -rs '.[-1].f1 // "—"' "$hist" 2>/dev/null)"; printf '   effectiveness (last score): F1 %s\n' "$SC_F1"; }
+  [ "$n" -gt 0 ] && [ "$convpct" -lt 50 ] && printf '   %s⚠ low convergence — debaters not agreeing; check DEBATE_MAX / models (ace debate report)%s\n' "${C_YELLOW:-}" "${C_RESET:-}"
+}
+
+# ⑥ LOGGING COMPLETENESS — are the expected artifacts present + non-empty?
+_sc_logging(){
+  printf '\n%s⑥ LOGGING COMPLETENESS%s\n' "${C_BOLD:-}" "${C_RESET:-}"
+  local present=0 total=0
+  _chk(){ total=$((total+1)); if [ -s "$1" ]; then present=$((present+1)); printf '   ✓ %s\n' "$2"; elif [ -e "$1" ]; then printf '   ~ %s (empty)\n' "$2"; else printf '   ✗ %s (missing)\n' "$2"; fi; }
+  _chk "$SC_OC/metrics.csv" "metrics.csv"; _chk "$SC_OC/run-summary.txt" "run-summary.txt"; _chk "$SC_OC/token-report.md" "token-report.md"
+  total=$((total+1)); if ls "$SC_OC"/specs/*.md >/dev/null 2>&1; then present=$((present+1)); printf '   ✓ specs/ (%s)\n' "$(ls "$SC_OC"/specs/*.md | wc -l | tr -d ' ')"; else printf '   ✗ specs/ (missing)\n'; fi
+  if [ -f "$SC_SWARM/events.jsonl" ]; then
+    _chk "$SC_SWARM/events.jsonl" "events.jsonl"; _chk "$SC_SWARM/coordinator.log" "coordinator.log"; _chk "$SC_SWARM/batch-plan.txt" "batch-plan.txt"
+    total=$((total+1)); if ls "$SC_SWARM"/w*.log >/dev/null 2>&1; then present=$((present+1)); printf '   ✓ worker logs (%s)\n' "$(ls "$SC_SWARM"/w*.log | wc -l | tr -d ' ')"; else printf '   ✗ worker logs (missing)\n'; fi
+  fi
+  [ -f "$SC_OC/cache/debate-metrics.jsonl" ] && _chk "$SC_OC/cache/debate-metrics.jsonl" "debate-metrics.jsonl"
+  local pct=0; [ "$total" -gt 0 ] && pct=$(( present*100/total )); SC_LOGPCT="$pct"
+  printf '   completeness: %s/%s (%s%%)\n' "$present" "$total" "$pct"
+}
+
+# ⑦ ANOMALIES — unexpected results surfaced during the run
+_sc_anomalies(){
+  printf '\n%s⑦ ANOMALIES (unexpected)%s\n' "${C_BOLD:-}" "${C_RESET:-}"
+  local found=0 ev="$SC_SWARM/events.jsonl" lg
+  if [ -f "$ev" ] && command -v jq >/dev/null 2>&1; then
+    local na rm ab
+    na=$(jq -rc 'select(.phase=="needs-attention")|1' "$ev" 2>/dev/null | _gc '1')
+    rm=$(jq -rc 'select(.phase=="red-main" or .phase=="gate-red")|1' "$ev" 2>/dev/null | _gc '1')
+    ab=$(jq -rc 'select(.phase=="abandoned" or .phase=="reap")|1' "$ev" 2>/dev/null | _gc '1')
+    [ "$na" -gt 0 ] && { printf '   needs-attention: %s (ace swarm tail)\n' "$na"; found=$((found+na)); }
+    [ "$rm" -gt 0 ] && { printf '   RED-main / gate-red: %s\n' "$rm"; found=$((found+rm)); }
+    [ "$ab" -gt 0 ] && { printf '   abandoned / reap: %s\n' "$ab"; found=$((found+ab)); }
+  fi
+  local hang=0 rat=0 cap=0
+  for lg in "$SC_OC/last-run.log" "$SC_SWARM/coordinator.log" "$SC_SWARM"/w*.log; do [ -f "$lg" ] && { hang=$(( hang + $(_gc -F '⛔ HANG' "$lg") )); rat=$(( rat + $(_gc -iF 'rathole' "$lg") )); cap=$(( cap + $(_gc -iF 'usage limit' "$lg") )); }; done
+  [ "$hang" -gt 0 ] && { printf '   HANG kills: %s\n' "$hang"; found=$((found+hang)); }
+  [ "$rat" -gt 0 ] && { printf '   rathole signals: %s\n' "$rat"; found=$((found+rat)); }
+  [ "$cap" -gt 0 ] && { printf '   provider usage-limit pauses: %s\n' "$cap"; found=$((found+cap)); }
+  SC_ANOM="$found"; [ "$found" = 0 ] && printf '   — none detected ✓\n'
+}
+
+# ⑧ EDGE CASES — did a fallback / rare path activate?
+_sc_edge(){
+  printf '\n%s⑧ EDGE CASES (did a fallback path fire?)%s\n' "${C_BOLD:-}" "${C_RESET:-}"
+  local any=0 lg fo=0 un=0
+  for lg in "$SC_OC/last-run.log" "$SC_SWARM/coordinator.log" "$SC_SWARM"/w*.log; do [ -f "$lg" ] && { fo=$(( fo + $(_gc -F 'fail-open' "$lg") )); un=$(( un + $(_gc -F 'UNRESOLVABLE' "$lg") )); }; done
+  [ "$fo" -gt 0 ] && { printf '   • fail-open fired %s× — a gate degraded gracefully; confirm it was intended\n' "$fo"; any=1; }
+  [ "$un" -gt 0 ] && { printf '   • UNRESOLVABLE conflict %s× — needs a human\n' "$un"; any=1; }
+  local feat=''; [ -f "$SC_OC/run-summary.txt" ] && feat="$(grep -oE 'features=[0-9]+' "$SC_OC/run-summary.txt" | tail -1 | cut -d= -f2)"; SC_FEAT="${feat:-—}"
+  [ "${feat:-1}" = 0 ] && { printf '   • 0 features shipped this run — planning-only or stuck?\n'; any=1; }
+  local dm="$SC_OC/cache/debate-metrics.jsonl"
+  [ -f "$dm" ] && command -v jq >/dev/null 2>&1 && { local z; z=$(jq -s 'if length>=3 and ((map(.issues_emitted)|add)==0) then 1 else 0 end' "$dm" 2>/dev/null); [ "$z" = 1 ] && { printf '   • debate flagged 0 issues across ALL HIGH-risk specs — over-agreeable? (ace debate diagnose)\n'; any=1; }; }
+  [ "$any" = 0 ] && printf '   — no edge paths activated ✓\n'
+}
+
 ace_scorecard(){
-  local json=0 a
+  local json=0 a; SC_GAPS=- SC_HIT=- SC_CONVPCT=- SC_LOGPCT=- SC_ANOM=0 SC_FEAT=- SC_NDEBATE=0 SC_F1=- SC_NSPEC=-
   for a in "$@"; do case "$a" in --json) json=1 ;; --repo=*) SC_REPO="${a#*=}" ;; --swarm-dir=*) SC_SWARM="${a#*=}" ;; esac; done
   _sc_resolve
+  if [ "$json" = 1 ]; then
+    { _sc_research; _sc_features; _sc_subtasks; _sc_results; _sc_debate; _sc_logging; _sc_anomalies; _sc_edge; } >/dev/null 2>&1
+    command -v jq >/dev/null 2>&1 || { echo '{"error":"jq required for --json"}'; return 1; }
+    jq -nc --arg repo "$(basename "$SC_REPO")" --arg feat "${SC_FEAT:-—}" --arg gaps "${SC_GAPS:-—}" \
+       --arg hit "${SC_HIT:-—}" --arg conv "${SC_CONVPCT:-—}" --arg f1 "${SC_F1:-—}" \
+       --argjson anom "${SC_ANOM:-0}" --arg logpct "${SC_LOGPCT:-—}" --argjson ndeb "${SC_NDEBATE:-0}" \
+       '{repo:$repo,features:$feat,spec_gaps:$gaps,hit_rate_pct:$hit,debates:$ndeb,debate_converged_pct:$conv,debate_f1:$f1,anomalies:$anom,logging_pct:$logpct}'
+    return 0
+  fi
   printf '%s══ ace scorecard · %s ══%s\n' "${C_BOLD:-}" "$(basename "$SC_REPO")" "${C_RESET:-}"
   printf '   project %s · swarm %s\n' "$SC_OC" "$([ -f "$SC_SWARM/events.jsonl" ] && echo "$SC_SWARM" || echo '(none — solo)')"
-  _sc_research; _sc_features; _sc_subtasks; _sc_results
-  # ⑤–⑧ + --json + VERDICT land in the next change
-  [ "$json" = 1 ] && echo && echo '{"note":"--json output lands with sections 5-8 (next PR)"}'
+  _sc_research; _sc_features; _sc_subtasks; _sc_results; _sc_debate; _sc_logging; _sc_anomalies; _sc_edge
+  # top-line verdict
+  printf '\n%s══ VERDICT ══%s\n' "${C_BOLD:-}" "${C_RESET:-}"
+  printf '   features %s · subtask hit-rate %s%% · spec-gaps %s · debate conv %s%% (F1 %s) · anomalies %s · logging %s%%\n' \
+    "${SC_FEAT}" "${SC_HIT}" "${SC_GAPS}" "${SC_CONVPCT}" "${SC_F1}" "${SC_ANOM}" "${SC_LOGPCT}"
+  local health='healthy ✓' issues=''
+  [ "${SC_HIT:-100}" != - ] && [ "${SC_HIT:-100}" -lt 60 ] 2>/dev/null && issues="$issues low-hit-rate;"
+  [ "${SC_GAPS:-0}" != - ] && [ "${SC_GAPS:-0}" -gt 0 ] 2>/dev/null && issues="$issues spec-gaps;"
+  [ "${SC_ANOM:-0}" -gt 0 ] 2>/dev/null && issues="$issues anomalies;"
+  [ "${SC_LOGPCT:-100}" != - ] && [ "${SC_LOGPCT:-100}" -lt 80 ] 2>/dev/null && issues="$issues incomplete-logging;"
+  [ -n "$issues" ] && health="needs attention:$issues"
+  printf '   %s%s%s\n' "$([ -z "$issues" ] && echo "${C_GREEN:-}" || echo "${C_YELLOW:-}")" "$health" "${C_RESET:-}"
   return 0
 }
 

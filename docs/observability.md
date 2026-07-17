@@ -86,6 +86,10 @@ For a single loop these are in the repo root; for a swarm, each worker writes it
 
 ---
 
+## 3b. One-shot rollup — `ace scorecard`
+
+Rather than reading the files below by hand, **`ace scorecard`** aggregates a finished run across 8 levels — research (used/grounded) · feature-breakdown (spec gaps) · subtask hit-rate + manageability · result quality · debate barter · logging completeness · anomalies · edge cases — into one report + a top-line VERDICT (`ace scorecard --json` for machine use). It's read-only and fail-soft (a missing artifact shows "—"). Use it first; drill into the raw files below when a number looks off.
+
 ## 4. Reading them — quick recipes
 
 Point these at your project's store. Set it once:
