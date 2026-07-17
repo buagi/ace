@@ -17,7 +17,7 @@ set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; cd "$ROOT" || exit 1
 SB="tests/debate-sandbox"; SPECS="$SB/specs"; OUT="tests/snapshots/debate-eval"; LABELS="$SB/labels.tsv"
 HIST="$SB/effectiveness-history.jsonl"
-MODE=score; [ "${1:-}" = --capture ] && MODE=capture
+MODE=score; case "${1:-}" in --capture) MODE=capture ;; --diagnose) MODE=diagnose ;; esac
 _dcfg(){ grep -E "^$1=" "${ACE_CONFIG:-$HOME/.config/ace/config}" 2>/dev/null | tail -1 | cut -d= -f2-; }
 
 [ -f "$LABELS" ] || { echo "debate-effectiveness: no $LABELS — the sandbox is missing. SKIP."; exit 0; }
@@ -42,6 +42,38 @@ if [ "$MODE" = capture ]; then
     printf '%s\n' "$o" > "$OUT/$slug.out" && echo "captured $slug.out"
   done < "$LABELS"
   echo "debate-effectiveness: captured. Review each vs its label, commit $OUT/*.out, then --score."
+  exit 0
+fi
+
+if [ "$MODE" = diagnose ]; then
+  # manual improvement: surface the FAILURES (false positives = over-flag/hallucination; false negatives =
+  # missed the seeded issue) with what to read, and a heuristic tuning hint. The human tunes the debater prompt
+  # (lib/install.sh) or a knob, re-runs --score, and watches `ace debate trend`.
+  ls "$OUT"/*.out >/dev/null 2>&1 || { echo "debate-diagnose: no recorded debates in $OUT — run --capture first. SKIP."; exit 0; }
+  local_fps=(); local_fns=(); sec=0
+  while IFS=$'\t' read -r slug label kw; do
+    [ -n "$slug" ] || continue; case "$slug" in \#*) continue ;; esac
+    o="$OUT/$slug.out"; [ -f "$o" ] || continue
+    v="$(verdict_of "$o")"; tr=".opencode/cache/spec-debate-$slug.md"
+    case "$label" in
+      SOUND)   [ "$v" = FLAGGED ] && local_fps+=("$slug|$o|$tr") ;;
+      FLAGGED) if [ "$v" != FLAGGED ] || { [ "$kw" != "-" ] && ! grep -qi -- "$kw" "$o"; }; then
+                 local_fns+=("$slug|$kw|$o|$tr"); case "$kw" in authz|signature|session|secret|injection|idempot*) sec=$((sec+1)) ;; esac; fi ;;
+    esac
+  done < "$LABELS"
+  echo "── debate diagnosis · manual improvement ──"; echo
+  if [ "${#local_fps[@]}" -eq 0 ] && [ "${#local_fns[@]}" -eq 0 ]; then echo "  No failures on the current labeled set — nothing to tune. (Grow the sandbox to keep raising the bar.)"; exit 0; fi
+  if [ "${#local_fps[@]}" -gt 0 ]; then
+    echo "  FALSE POSITIVES — the debate flagged a CLEAN spec (over-flag / hallucination):"
+    for e in "${local_fps[@]}"; do IFS='|' read -r s o t <<<"$e"; printf '    · %-18s read %s%s\n' "$s" "$o" "$([ -f "$t" ] && echo "  · transcript $t")"; done
+    echo "    → tuning: tighten the CHALLENGER — 'a nitpick is [minor], never inflate'; enforce a citation per point; a point becomes a gap only if the defender concedes it."; echo
+  fi
+  if [ "${#local_fns[@]}" -gt 0 ]; then
+    echo "  FALSE NEGATIVES — the debate MISSED the seeded issue:"
+    for e in "${local_fns[@]}"; do IFS='|' read -r s k o t <<<"$e"; printf '    · %-18s missed %-12s read %s%s\n' "$s" "$k" "$o" "$([ -f "$t" ] && echo "  · transcript $t")"; done
+    [ "$sec" -ge 2 ] && echo "    → tuning: ≥2 SECURITY misses — strengthen the security lens in the debater prompt (lib/install.sh: add authz/BOLA · webhook-signature · session-rotation · idempotency to the CHALLENGER checklist)."
+    echo "    → then: edit the debater prompt / a knob → re-run 'ace debate score' → check 'ace debate trend'."
+  fi
   exit 0
 fi
 
