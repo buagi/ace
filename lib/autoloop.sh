@@ -957,6 +957,24 @@ merge_if_ready(){
     [ "$m" = CONFLICTING ] && { say "PR #$pr CONFLICTS with main"; return 3; }
     say "PR #$pr not mergeable ($m: required reviews / unknown) — not merging"; return 1
   fi
+  # REVIEW_DEBATE (default OFF): a final cross-model adversarial pass over the branch diff, run BEFORE the merge
+  # lock so a multi-minute debate never stalls sibling workers. Agreed [blocker]/[major] findings HOLD the merge
+  # for a fix (surfaced + on the bus); [minor] and any failure are advisory. FAIL-OPEN (no key / dead debate /
+  # no engine ⇒ proceed). Skipped for ACE's own plan/fix branches (chore/*) — those aren't features to critique.
+  if [ "${REVIEW_DEBATE:-0}" = 1 ] && [ -f "${_SWARM_SH%swarm.sh}debate.sh" ]; then
+    case "$(branch)" in chore/*|main|master) : ;; *)
+      local _rev _blk
+      _rev="$(bash "${_SWARM_SH%swarm.sh}debate.sh" review main 2>/dev/null)" || true
+      _blk="$(printf '%s\n' "$_rev" | grep -icE 'DEBATEISSUE[[:space:]]+(blocker|major)' || true)"; _blk="${_blk:-0}"
+      if [ "$_blk" -gt 0 ] 2>/dev/null; then
+        printf '%s\n' "$_rev" | grep -iE 'DEBATEISSUE' | sed 's/^/    /'
+        say "REVIEW_DEBATE: $_blk agreed blocker/major finding(s) on PR #$pr — HOLDING the merge (see .opencode/cache/review-debate-*.md; REVIEW_DEBATE=0 to disable)."
+        _swarm post "${SWARM_WORKER:-solo}" needs-attention "review-debate: $_blk agreed blocker/major on PR #$pr — held for a fix" "" 2>/dev/null || true
+        return 1
+      fi
+      [ -n "$_rev" ] && say "REVIEW_DEBATE: cross-model pass found no agreed blocker/major on PR #$pr — proceeding to merge."
+    ;; esac
+  fi
   # ── SWARM merge queue: serialize the merge + rebase onto the FRESHEST main first ────────────────────
   # Concurrent flows self-merge feat/<slug> PRs against a MOVING main with no rebase, so siblings touching
   # shared lines collide at merge (the genuine merge-conflict source). Hold a shared lock across the whole
