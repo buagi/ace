@@ -62,5 +62,6 @@ flowchart LR
 | [commands.md](commands.md) | Every `ace` subcommand. |
 | [configuration.md](configuration.md) | Every env knob and where config lives — the settings reference. |
 | [testing.md](testing.md) | The 3-tier test strategy (per-PR gates · nightly goldens · on-demand evals) + the pre-release readiness checklist. |
+| [trial-runs.md](trial-runs.md) | A metered 3-run runbook to verify the spec pipeline + cross-model debate on real features (metric · pass line · where to read it), then fix/optimise. |
 | [scenarios.md](scenarios.md) | Runbooks for the jobs you'll actually run. |
 | [deferred-decisions.md](deferred-decisions.md) | *(maintainer)* Known trade-offs intentionally not built yet, and their triggers. |
