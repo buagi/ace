@@ -68,6 +68,21 @@ has launch_readiness_reviewer "NO-GO"; has launch_readiness_reviewer "UNVERIFIED
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 
+# --- Part H / H2: research-first pipeline clauses (spec template · AC tracing · code-search grounding) ---
+has orchestrator 'spec-template.md'
+has orchestrator 'AC-ids'
+has implementer  '.opencode/specs/<slug>.md'
+has implementer  'Definition-of-Done'
+grep -q 'CODE SEARCH LIES ON BIG FILES' "$IN" || bad "AGENTS.md heredoc lost the code-search grounding rule"
+grep -q 'ace-spec-template v1' "$IN"          || bad "spec template heredoc/version tag missing from install.sh"
+for h in '## 1. Problem' '## 3. Scope' '## 4. Acceptance criteria' '## 5. Integration (cited)' \
+         '## 6. Increments' '## 7. Open questions'; do
+  grep -qF "$h" "$IN" || bad "spec template lost mandatory heading: $h"
+done
+# autoloop drives (not in the JSON extract — assert on the file directly)
+grep -q 'FILLING THE TEMPLATE' lib/autoloop.sh || bad "sync_objectives drive lost the template clause"
+grep -q 'every .opencode/specs/\*.md' lib/autoloop.sh || bad "planner commit clause lost the spec-commit rule"
+
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 10 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0

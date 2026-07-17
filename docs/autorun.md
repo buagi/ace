@@ -27,6 +27,14 @@ flowchart TD
 | **Merge** | On green, `merge_if_ready` squash-merges, deletes the branch, and pulls `main`. |
 | **Roll** | Refresh the code-map (and the human [Architecture Atlas](configuration.md#architecture-atlas) every `MAP_EVERY` merges), deploy + healthcheck (when enabled), then take the next item. |
 
+## Feature specs — the research-first artifact
+
+For a `[value]` feature the planner writes **one canonical feature spec** to `.opencode/specs/<slug>.md` by filling **`.opencode/spec-template.md`** (regenerated on every `ace install`/`ace upgrade`; pin local additions in `spec-template.local.md`). The template has seven mandatory sections — Problem · Prior art & approach · Scope (in/out) · Acceptance criteria (EARS, stable `AC-<n>` ids) · Integration (every codebase claim **cited** `(cites path:L..-L..)` from a file that was *opened*, never code-search) · Increments · Open questions — plus conditional blocks (contract, data model, UX, NFR, security, rollback) that are either filled or marked `N/A — <reason>`.
+
+**Two tiers, one file.** The **feature spec** is the single canonical document. A **task/increment "spec" is a *slice* of it** — §3 Scope + that increment's `AC:` ids + the relevant conditional blocks — assembled at dispatch, **never a second file**. Each §6 increment becomes one ROADMAP item carrying `Spec:` + `AC:`; `<slug>.progress.md` remains the resume ledger.
+
+**The quality bar is the regeneration test:** a fresh worker given *only* `.opencode/specs/<slug>.md` must be able to rebuild the feature behaviorally identical. (If the template file is absent, the prompts fall back to an inline outline.)
+
 ## The merge gate
 
 What counts as a green gate depends on the [profile](profile.md)'s `merge_gate` (env `MERGE_GATE` overrides):
