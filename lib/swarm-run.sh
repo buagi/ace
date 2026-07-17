@@ -464,7 +464,7 @@ _swarm_emit_batch_plan() {
 # during legitimate holds (provider-cap reset wait, RED-main standby), and only trips with work in flight.
 # Opt-out with SWARM_AUTODRAIN=0. The parent kills this when the generation's workers finish.
 _drain_watchdog() {
-  local after="${SWARM_DRAIN_AFTER:-5400}" last_adv now head lasthead nactive
+  local after="${SWARM_DRAIN_AFTER:-9000}" last_adv now head lasthead nactive
   case "$after" in ''|*[!0-9]*) after=5400 ;; esac
   lasthead="$(git -C "$REPO" rev-parse "origin/$MAIN" 2>/dev/null || echo none)"; last_adv="$(date +%s)"
   while sleep "${DRAIN_POLL:-120}"; do
