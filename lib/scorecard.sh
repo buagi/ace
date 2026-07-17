@@ -178,6 +178,7 @@ _sc_edge(){
 ace_scorecard(){
   local json=0 a; SC_GAPS=- SC_HIT=- SC_CONVPCT=- SC_LOGPCT=- SC_ANOM=0 SC_FEAT=- SC_NDEBATE=0 SC_F1=- SC_NSPEC=-
   for a in "$@"; do case "$a" in --json) json=1 ;; --repo=*) SC_REPO="${a#*=}" ;; --swarm-dir=*) SC_SWARM="${a#*=}" ;; esac; done
+  [ "${ACE_JSON:-0}" = 1 ] && json=1   # the ace parser routes --json here via ACE_JSON (its -*) arm would otherwise swallow it)
   _sc_resolve
   if [ "$json" = 1 ]; then
     { _sc_research; _sc_features; _sc_subtasks; _sc_results; _sc_debate; _sc_logging; _sc_anomalies; _sc_edge; } >/dev/null 2>&1

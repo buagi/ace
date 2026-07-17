@@ -80,6 +80,7 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 | Var | Default | What it does |
 |-----|---------|--------------|
 | `PLAN` | `1` | When the roadmap empties, plan the next OBJECTIVE into tasks. `0` stops instead. |
+| `REANALYZE` | `0` | `1` = **re-assessment mode**: snapshot the current OPEN (uncompleted) ROADMAP items + specs, then re-derive their breakdown from scratch with the full planning pipeline — research → re-spec → spec-lint gate → cross-model debate (when `SPEC_DEBATE=1`) → bounded re-spec → re-slice — NOT skipping "already covered" (the point is to redo them better). **Implies plan-only** (nothing is implemented) and forces the solo path. Inspect `ace reanalyze report` and, if the new breakdown is better, run a normal loop to build it. The `ace reanalyze` command is the wrapper (defaults `SPEC_DEBATE=1`); the raw flag leaves `SPEC_DEBATE` to you. |
 | `MAX_FIX` | `5` | CI auto-fix attempts per red before stopping. |
 | `MAX_FEATURES` | `3` | Features to ship this run. `0` = unlimited. |
 | `RESOLVE_CONFLICTS` | `1` | Auto-resolve a conflicting PR (preserving both intents) vs stop. |

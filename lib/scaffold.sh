@@ -2886,10 +2886,17 @@ autoloop_run() {
   fi
   _loop_tool_preflight || return 1   # don't spawn the orchestrator if its stack tools are missing (fail-fast)
   [ -f scripts/auto-loop.sh ] || { info "bootstrapping scripts/auto-loop.sh + ROADMAP.md"; gen_autoloop "$root"; }
-  box "How it works" \
-    "watch the PR's CI -> on failure feed the log to opencode -> it fixes + pushes ->" \
-    "re-watch -> when ALL checks green + mergeable, squash-merge -> pull main ->" \
-    "implement the next ROADMAP item. Caps stop runaway."
+  if [ "${REANALYZE:-0}" = 1 ]; then
+    box "How it works — REANALYZE (plan-only, no implement)" \
+      "snapshot your OPEN features -> re-derive each from scratch: research ->" \
+      "re-spec (template + EARS + cited) -> spec-lint gate$([ "${SPEC_DEBATE:-0}" = 1 ] && echo ' + cross-model DEBATE') -> re-slice ->" \
+      "STOP. Inspect: ace reanalyze report. Then run a normal loop to build it."
+  else
+    box "How it works" \
+      "watch the PR's CI -> on failure feed the log to opencode -> it fixes + pushes ->" \
+      "re-watch -> when ALL checks green + mergeable, squash-merge -> pull main ->" \
+      "implement the next ROADMAP item. Caps stop runaway."
+  fi
   local sm dp vf lf mf si ig fa hn fxf fixn _yn par
   fxf="${ACE_FIXME:-$HOME/.config/ace/ace-fixme.log}"; fixn=0   # guard: '<missing-file' errors even with 2>/dev/null
   [ -f "$fxf" ] && fixn="$(wc -l <"$fxf" 2>/dev/null || echo 0)"
@@ -2923,6 +2930,7 @@ autoloop_run() {
     confirm "Start the loop now?" Y || { info "Not started. Run: FIX_ACE=$fa AUTOMERGE=$sm DEPLOY=$dp VERIFY=$vf LOCAL_CI_FALLBACK=$lf HERMES_NOTIFY=$hn MAX_FEATURES=$mf SELF_IMPROVE=$si IMPROVE_GOAL=$(printf %q "$ig") bash scripts/auto-loop.sh"; return; }
   fi
   par="${par//[!0-9]/}"; [ -z "$par" ] && par=1; [ "$par" -lt 1 ] && par=1; [ "$par" -gt 8 ] && par=8   # cap parallelism at 8
+  [ "${REANALYZE:-0}" = 1 ] && { par=1; info "REANALYZE=1 → solo plan-only re-assessment (re-derive breakdown, no implement); inspect: ace reanalyze report"; }   # re-assessment always takes the solo plan-only path
   config_set SWARM_MAX "$par" 2>/dev/null || true   # remember the choice → next run defaults to it
   export AUTOMERGE="$sm" DEPLOY="$dp" VERIFY="$vf" LOCAL_CI_FALLBACK="$lf" HERMES_NOTIFY="$hn" HERMES_TO="${HERMES_TO:-$(config_get HERMES_TO 2>/dev/null || echo telegram)}" HERMES_SUBJECT="${HERMES_SUBJECT:-}" MAX_FEATURES="$mf" SELF_IMPROVE="$si" IMPROVE_GOAL="$ig" FIX_ACE="$fa"
   export MERGE_APPROVAL="${MERGE_APPROVAL:-}" APPROVAL_TIMEOUT="${APPROVAL_TIMEOUT:-3600}"   # MERGE_APPROVAL=hermes ⇒ ask in chat before each merge (ace approve)
