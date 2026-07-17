@@ -26,7 +26,10 @@ cp "$ROOT/tests/debate-sandbox/specs/vague-acs.md" "$d/.opencode/specs/vague.md"
 printf 'COLLIDE  A ⨯ B\nOVERSIZE 6 files · C\n' > "$d/sw/batch-plan.txt"
 # a worker log with verifier + critic verdicts
 printf 'PASS\nAPPROVE\nCHANGES_REQUESTED [blocker] x.ts:1 · [major] y.ts:2 · [minor] z.ts:3\nresearcher: drafting spec\n' > "$d/sw/w1.log"
-printf 'ci_fixes=2\n' > "$d/.opencode/run-summary.txt"
+printf 'features=1 ci_fixes=2\n' > "$d/.opencode/run-summary.txt"
+: > "$d/.opencode/metrics.csv"
+mkdir -p "$d/.opencode/cache"
+printf '{"slug":"a","converged":true,"wall_capped":false,"rounds":3,"issues_emitted":1,"per_round":[{"accepted":2,"disputed":1}]}\n{"slug":"b","converged":false,"wall_capped":true,"rounds":4,"issues_emitted":1,"per_round":[{"accepted":1,"disputed":2}]}\n' > "$d/.opencode/cache/debate-metrics.jsonl"
 
 # score it
 export C_BOLD='' C_RESET='' C_YELLOW='' C_GREY=''
@@ -39,6 +42,18 @@ printf '%s' "$out" | grep -q '1 collision'                || bad "collision coun
 printf '%s' "$out" | grep -q 'PASS 1'                     || bad "verifier PASS count wrong"
 printf '%s' "$out" | grep -qE '\[blocker\] 1'             || bad "blocker tally wrong"
 printf '%s' "$out" | grep -q 'CI-fix retries 2'          || bad "ci-fix retries not read from run-summary"
+printf '%s' "$out" | grep -q '⑤ DEBATE'                  || bad "debate section missing"
+printf '%s' "$out" | grep -q 'converged 1 (50%)'         || bad "debate convergence wrong"
+printf '%s' "$out" | grep -q '⑥ LOGGING'                 || bad "logging section missing"
+printf '%s' "$out" | grep -qE 'completeness: [0-9]+/[0-9]+' || bad "logging completeness missing"
+printf '%s' "$out" | grep -q '⑦ ANOMALIES'               || bad "anomalies section missing"
+printf '%s' "$out" | grep -q 'needs-attention: 1'        || bad "anomaly count wrong"
+printf '%s' "$out" | grep -q '⑧ EDGE CASES'              || bad "edge section missing"
+printf '%s' "$out" | grep -q '══ VERDICT ══'             || bad "verdict missing"
+
+# --json parses + carries the headline metrics
+js="$(SC_REPO="$d" SC_SWARM="$d/sw" bash -c 'source "'"$ROOT"'/lib/scorecard.sh"; ace_scorecard --json' 2>&1)"
+printf '%s' "$js" | jq -e '.hit_rate_pct=="50" and .debates==2 and (.anomalies>=1)' >/dev/null 2>&1 || { bad "--json wrong/invalid"; printf '%s\n' "$js"; }
 
 # fail-soft: no swarm dir at all → subtasks degrades, no crash
 out2="$(SC_REPO="$d" SC_SWARM="/nonexistent" bash -c 'source "'"$ROOT"'/lib/scorecard.sh"; ace_scorecard' 2>&1)" || bad "scorecard crashed on missing swarm dir"

@@ -92,7 +92,9 @@ SPEC_DEBATE=1 REVIEW_DEBATE=1 SWARM_MAX=3 ace autorun --yes    # (or: ace swarm 
 
 ## Analyse → fix → optimise
 
-After the 3 runs, with `.opencode/cache/debate-metrics.jsonl` + the transcripts + `ace stats`/`ace quality`:
+**Start with `ace scorecard`** — one read-only rollup of the run across all 8 levels (research · feature-breakdown · subtask hit-rate/manageability · result quality · debate barter · logging completeness · anomalies · edge cases) + a top-line VERDICT (`--json` for machine use). It's the fastest way to see the whole picture; then drill into the specifics below.
+
+After the 3 runs, with `ace scorecard` + `.opencode/cache/debate-metrics.jsonl` + the transcripts + `ace stats`/`ace quality`:
 
 1. **`ace debate report`** — convergence rate, avg rounds, accepted/disputed, duration, wall-capped. Low convergence or frequent wall-caps ⇒ the challenger model or the round caps need tuning.
 2. **Quality** — did the debate catch issues the deterministic lint + rubric missed? Cross-reference `DEBATEISSUE` lines against escaped bugs (`ace quality`). If it only restates lint findings, it isn't earning its cost.
