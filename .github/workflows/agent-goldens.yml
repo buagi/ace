@@ -28,6 +28,8 @@ jobs:
         run: |
           bash tests/spec-debate-goldens.sh --calibrate
           bash tests/spec-debate-goldens.sh --calibrate   # flake guard
+      - name: debate effectiveness (precision/recall/F1 vs the labeled sandbox; logs the over-time trend)
+        run: bash tests/debate-effectiveness.sh   # --score on committed seed .out (offline); --capture is staged below
       # --- Live capture (uncomment once opencode + provider keys are provisioned as repo secrets) ---
       # Refreshes tests/snapshots/agents/*.txt from real critic runs, then re-checks + reports spend.
       # - name: capture real critic verdicts + track spend
@@ -42,4 +44,6 @@ jobs:
       #     bash tests/spec-rubric-goldens.sh --calibrate        # re-calibrate on the freshly captured outputs
       #     DEBATE_MODEL_B=openrouter/<slug> bash tests/spec-debate-goldens.sh --capture   # live cross-model debate
       #     bash tests/spec-debate-goldens.sh --calibrate        # re-calibrate on the freshly captured debates
+      #     DEBATE_MODEL_B=openrouter/<slug> bash tests/debate-effectiveness.sh --capture  # live debate over the labeled sandbox
+      #     bash tests/debate-effectiveness.sh                   # re-score P/R/F1 + append the trend row
       #     ace stats 1                                          # the harness's own token/cost (telemetry)
