@@ -353,6 +353,52 @@ Fix ONLY the flagged gaps in the named '.opencode/specs/<slug>.md' files. Do NOT
   mkdir -p .opencode 2>/dev/null; touch .opencode/.objectives-synced 2>/dev/null || true
 }
 
+# Part H — SOLO parity with swarm-run's _swarm_plan_sync spec gate. After planning, deterministically lint every
+# spec a ROADMAP item points at (zero-token); optionally rubric the lint-GREEN ones (SPEC_RUBRIC=1, default OFF);
+# on gaps run ONE bounded re-spec pass by REUSING the SPECLINT_REPORT branch of sync_objectives above, then
+# re-lint. SPEC_LINT=0 disables. FAIL-OPEN: residual gaps warn and the loop proceeds. No-op for a swarm worker
+# (the coordinator owns the gate) or when there are no specs. Calls swarm.sh's CLI (no sourcing — same
+# decoupling as _swarm), so the same gate code backs the solo and swarm paths.
+spec_gate_solo(){
+  [ "${SPEC_LINT:-1}" = 1 ] || return 0
+  [ -z "${SWARM_WORKER:-}" ] || return 0
+  [ -f "$_SWARM_SH" ] && [ -f ROADMAP.md ] || return 0
+  local specs slint sp rub
+  _solo_specs(){ grep -oE 'Spec:[[:space:]]*[^ )]+\.md' ROADMAP.md 2>/dev/null | sed -E 's/^Spec:[[:space:]]*//' \
+                  | sort -u | while IFS= read -r s; do [ -f "$s" ] && printf '%s\n' "$s"; done; }
+  specs="$(_solo_specs)"; [ -n "$specs" ] || return 0
+  slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $specs 2>/dev/null)"
+  if [ "${SPEC_RUBRIC:-0}" = 1 ]; then      # optional LLM rubric on lint-GREEN specs only (default OFF, fail-open)
+    for sp in $specs; do
+      printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue
+      rub="$(REPO="$PWD" bash "$_SWARM_SH" spec-rubric "$sp" 2>/dev/null)" || true
+      [ -n "$rub" ] && slint="$(printf '%s\n%s' "$slint" "$rub")"
+    done
+  fi
+  printf '%s\n' "$slint" | grep -q '^SPECGAP' || return 0
+  say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') spec gap(s) — one bounded re-spec pass before working the queue."
+  SPECLINT_REPORT="$(printf '%s\n' "$slint" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" sync_objectives
+  slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $(_solo_specs) 2>/dev/null)"
+  printf '%s\n' "$slint" | grep -q '^SPECGAP' \
+    && say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') gap(s) remain after re-spec — proceeding (fail-open)."
+  return 0
+}
+
+# Part H — SOLO parity with the swarm's _do_work: write the frozen per-increment spec SLICE the implementer
+# reads first (.opencode/cache/spec-slice.<slug>.md) for an item carrying Spec:+AC:. SPEC_SLICE=0 disables.
+# FAIL-OPEN. Same swarm.sh CLI — the identical slice backs both paths, so a solo run's implementer gets the
+# same tight, cache-stable context a swarm worker does.
+spec_slice_for(){
+  [ "${SPEC_SLICE:-1}" = 1 ] || return 0
+  [ -f "$_SWARM_SH" ] || return 0
+  local it="$1" sp ac out
+  sp="$(printf '%s' "$it" | grep -oE 'Spec:[[:space:]]*[^ )]+\.md' | sed -E 's/^Spec:[[:space:]]*//')"
+  [ -n "$sp" ] && [ -f "$sp" ] || return 0
+  ac="$(printf '%s' "$it" | grep -oE 'AC:[[:space:]]*[A-Za-z0-9,-]+' | sed -E 's/^AC:[[:space:]]*//')"
+  out=".opencode/cache/spec-slice.$(basename "$sp" .md).md"; mkdir -p .opencode/cache 2>/dev/null
+  bash "$_SWARM_SH" spec-slice "$sp" "$ac" > "$out" 2>/dev/null || rm -f "$out"
+}
+
 # Cache current runtime LTS/EOL facts so the standards_keeper reads a local file instead of webfetch-ing
 # endoflife.date on EVERY review. Detects the stack cheaply, fetches the matching products, TTL-guarded.
 refresh_version_cache(){
@@ -1031,6 +1077,7 @@ kanban_sync || true   # opt-in (HERMES_KANBAN=1): mirror the initial ROADMAP to 
 agent_state orchestrator   # dashboard: start with the planner lit (ace loop dash)
 sync_objectives            # decompose any newly-added OBJECTIVES goal into ROADMAP tasks BEFORE working the queue
 [ "${LOOP_SYNC_ONLY:-0}" = 1 ] && { say "plan-only sync done — exiting."; write_run_summary 2>/dev/null || true; exit 0; }
+spec_gate_solo             # Part H: solo gets the same deterministic spec gate (+ optional rubric) the swarm coordinator runs
 while :; do
   # janitor: reconcile drift + reclaim disk — git main↔origin sync, gitnexus stale branch-graph prune
   # + re-analyze, opencode DB bound, podman dangling prune, lessons.md compaction. Throttled to every
@@ -1260,6 +1307,7 @@ while :; do
       continue
     fi
     agent_state implementer
+    spec_slice_for "$item"   # Part H: assemble the frozen per-increment slice the implementer reads first (solo parity with the swarm)
     drive "implement: $item" "Implement the next roadmap item: \"$item\". Plan -> branch feat/<slug> -> implement to the Definition of Done with tests -> open a PR into main. In the SAME PR: check the item off in ROADMAP.md AND update its parent objective's progress in OBJECTIVES.md (tick sub-goals; bump status; mark the objective done when fully complete). NEVER merge your own PR." || { say "implement step failed (opencode error / model not found?) — stopping for review."; break; }
     plans=0; features=$((features+1)); continue
   else
