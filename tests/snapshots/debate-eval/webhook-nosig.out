@@ -1,0 +1,2 @@
+DEBATEISSUE blocker · no-signature-verify · verify the Stripe signature on the raw body before any DB write · §5 handler reads the JSON body with no signature step
+DEBATEISSUE major · no-dedup · dedupe by event id (at-least-once delivery) · §4 has no duplicate-event AC

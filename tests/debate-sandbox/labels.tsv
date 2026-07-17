@@ -1,0 +1,6 @@
+authz-missing	FLAGGED	authz
+webhook-nosig	FLAGGED	signature
+vague-acs	FLAGGED	acceptance
+strong-authz	SOUND	-
+strong-webhook	SOUND	-
+strong-ratelimit	SOUND	-

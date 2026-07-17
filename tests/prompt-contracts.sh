@@ -85,6 +85,10 @@ grep -q 'debate.sh" review' lib/autoloop.sh || bad "REVIEW_DEBATE gate does not 
 grep -q 'DEBATE_ONLY' lib/debate.sh || bad "debate.sh lost the DEBATE_ONLY trial scoping"
 grep -q 'debate-metrics.jsonl' lib/debate.sh || bad "debate.sh lost the metrics logging"
 grep -q 'ace_debate_report' lib/debate.sh || bad "debate.sh lost the report/analysis function"
+# debate EFFECTIVENESS: the labeled sandbox (ground truth) + the P/R/F1 scorer + the CLI
+[ -f tests/debate-effectiveness.sh ] || bad "the debate effectiveness scorer is missing"
+[ -f tests/debate-sandbox/labels.tsv ] || bad "the labeled debate sandbox (ground truth) is missing"
+grep -q 'score)' ace || bad "ace debate lost the 'score' command"
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 

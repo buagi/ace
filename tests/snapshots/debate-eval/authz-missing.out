@@ -1,0 +1,1 @@
+DEBATEISSUE blocker · object-level-authz · add a per-object ownership check (BOLA/IDOR) so a user can't read another user's order; return 404 cross-tenant · §C5 only checks authentication, not authz
