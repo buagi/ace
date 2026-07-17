@@ -78,6 +78,9 @@ grep -q '__OPENROUTER_PROVIDER__' lib/install.sh || bad "install.sh lost the ope
 grep -q 'SPEC_DEBATE' lib/swarm-run.sh || bad "coordinator spec gate lost the SPEC_DEBATE branch"
 grep -q 'SPEC_DEBATE' lib/autoloop.sh || bad "solo spec gate lost the SPEC_DEBATE branch"
 grep -q 'debate.sh" spec' lib/swarm-run.sh || bad "coordinator spec gate does not invoke the debate engine"
+# REVIEW_DEBATE pre-merge gate — a cross-model pass over the branch diff before merge, fail-open, default OFF
+grep -q 'REVIEW_DEBATE' lib/autoloop.sh || bad "merge_if_ready lost the REVIEW_DEBATE pre-merge gate"
+grep -q 'debate.sh" review' lib/autoloop.sh || bad "REVIEW_DEBATE gate does not invoke the debate engine in review mode"
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 
