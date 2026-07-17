@@ -326,6 +326,7 @@ case "${cmd:-menu}" in
                        report)      ( cd "$_sr" && bash "$_sl/debate.sh" report "${ACE_ARG2:-}" ) ;;
                        score)       ( cd "$ACE_DIR" && bash tests/debate-effectiveness.sh "${ACE_ARG2:-}" ) ;;   # effectiveness (P/R/F1) vs the labeled sandbox
                        trend)       ( cd "$ACE_DIR" && bash "$_sl/debate.sh" trend "${ACE_ARG2:-}" ) ;;   # effectiveness over time + conclusion
+                       testproject) bash "$_sl/debate.sh" testproject "${ACE_ARG2:-}" ;;   # materialize the runnable labeled sandbox
                        selftest)    bash "$_sl/debate.sh" selftest ;;
                        *) echo "usage: ace debate spec <spec-file> [slug]  |  ace debate review [base] [slug]  |  ace debate report  |  ace debate score [--capture]  |  ace debate trend   (cross-model dialogue; needs OPENROUTER_API_KEY + DEBATE_MODEL_B)" ;;
                      esac ;;
