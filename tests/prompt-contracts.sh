@@ -92,6 +92,7 @@ grep -q 'score)' ace || bad "ace debate lost the 'score' command"
 grep -q 'ace_debate_trend' lib/debate.sh || bad "debate.sh lost the effectiveness trend/conclusion function"
 grep -q 'ace_debate_testproject' lib/debate.sh || bad "debate.sh lost the runnable-sandbox materializer"
 grep -q 'MODE=diagnose' tests/debate-effectiveness.sh || bad "the effectiveness harness lost the --diagnose (manual improvement) mode"
+[ -f tests/debate-autotune.sh ] || bad "the debate auto-tune loop is missing"
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 

@@ -81,6 +81,11 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | `ace quality` | quality leading-indicators: per-critic false-positive rate + retry rate + escaped-bug → `.opencode/quality-report.md` |
 | `ace debate spec <file>` / `review [base]` | run a **cross-model debate** on demand — two different LLMs (defender = your overseer, challenger = `DEBATE_MODEL_B` via OpenRouter) pressure-test a spec or the branch diff; transcript → `.opencode/cache/*-debate-*.md`, metrics → `debate-metrics.jsonl`. Needs `OPENROUTER_API_KEY`. |
 | `ace debate report` | analyze `.opencode/cache/debate-metrics.jsonl` — a per-debate table (rounds · converged · issues · duration) + aggregates (convergence rate · avg rounds · accepted/disputed totals). |
+| `ace debate score [--capture]` | **effectiveness** vs the labeled sandbox: precision · recall · F1 · accuracy (did it flag the seeded-flawed specs, pass the clean ones?), appends a trend point. `--capture` runs the live debate first. |
+| `ace debate trend` | effectiveness **over time** + a conclusion (IMPROVING / REGRESSING / FLAT) from the history log. |
+| `ace debate diagnose` | **manual improvement**: the false positives + false negatives from the last score, with transcripts + tuning hints. |
+| `ace debate autotune <KNOB=value>` | **automatic improvement** (opt-in): A/B a config knob on the sandbox, keep it only if F1↑ and cost not↑. `--propose-prompt` suggests a debater-prompt change for a human PR (never auto-applied). |
+| `ace debate testproject [dir]` | materialize the labeled sandbox into a runnable throwaway project (watch the debate fire in a real autorun). |
 
 > [!NOTE]
 > `ace stats` (token/cost telemetry) is distinct from `ace loop stats` (per-run timing post-mortem, listed under [Remote control](#remote-control)).

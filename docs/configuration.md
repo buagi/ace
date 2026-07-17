@@ -320,6 +320,7 @@ Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<
 | `DEBATE_TIMEOUT` | `600` | Per-turn wall-clock cap (s). |
 | `DEBATE_WALL_MAX` | `1800` | Total debate wall-clock backstop (s). A non-converging pair can't stall the synchronous planning gate past this — it stops and synthesizes what it has. |
 | `DEBATE_ONLY` | *(unset)* | **Trial scoping.** A comma-list of slugs to limit the debate to (e.g. `checkout,authz,webhook`) — the simple, editable way to try it on a few features. Unset ⇒ every eligible artifact. Set in `~/.config/ace/config`. |
+| `DEBATE_F1_MIN` | `750` | Effectiveness go/no-go (per-mille; 0.750). `ace debate score` prints GO iff F1 ≥ this on the labeled sandbox. |
 
 ### Cross-model debate
 

@@ -101,3 +101,22 @@ After the 3 runs, with `.opencode/cache/debate-metrics.jsonl` + the transcripts 
 5. **File findings** — anything that misbehaved (a hallucinated-but-accepted issue, a stall, a mis-scoped debate) → a ROADMAP item; fix, then re-run the affected step.
 
 > Keep each run's `.opencode/cache/` archived so Run 1↔2↔3 are comparable, and so the debate metrics aggregate cleanly in `ace debate report`.
+
+---
+
+## Measuring & improving the debate over time
+
+The runs above measure *activity* (`ace debate report`). To know whether the debate is actually **effective** — and getting **better** as you tune it — score it against **ground truth**: the labeled sandbox at `tests/debate-sandbox/` (authored HIGH-risk specs, some seeded-flawed, some clean; answers in `labels.tsv`).
+
+```bash
+ace debate score --capture   # run the live debate over the labeled specs (needs OPENROUTER_API_KEY + DEBATE_MODEL_B)
+ace debate score             # precision · recall · F1 · accuracy + append a trend point (offline on recorded outputs)
+ace debate trend             # F1 over time + a conclusion: IMPROVING / REGRESSING / FLAT
+```
+
+**The improvement loop — manual first, then automatic:**
+
+1. **Manual (periodically):** `ace debate diagnose` shows the **false positives** (over-flagged a clean spec = hallucination) and **false negatives** (missed a seeded flaw), with the transcripts + a tuning hint. Edit the debater prompt (`lib/install.sh`) or a knob → `ace debate score` → `ace debate trend`. Repeat until F1 plateaus.
+2. **Automatic (opt-in, once trusted):** `ace debate autotune DEBATE_MAX=3` (or `DEBATE_MODEL_B=…`) A/B's the candidate knob on the sandbox and **keeps it only if F1 improves without cost rising** (the decision is the paired `eval-ab` on the labeled set). Debater **prompt** changes are never auto-applied — `ace debate autotune --propose-prompt` emits a suggested diff + a ROADMAP item for a normal human PR (prompts are load-bearing, gated by `prompt-contracts`).
+
+**Draw the conclusion:** the debate is worth keeping/enabling when `ace debate score` is **GO** (F1 ≥ `DEBATE_F1_MIN`) *and* `ace debate trend` shows F1 flat-or-rising at acceptable cost. Grow the sandbox (`ace debate testproject` to watch live; add labeled `specs/*.md` + `labels.tsv` rows) so the metric stays honest as the debate improves.
