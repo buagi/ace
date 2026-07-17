@@ -20,7 +20,7 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 
 | Command | Does |
 |---------|------|
-| `ace install` / `guided` | host tools + key + 10-agent config + GitHub login |
+| `ace install` / `guided` | host tools + key + 11-agent config + GitHub login |
 | `ace keys` | set/validate DeepSeek + Context7 key, pick model profile + overseer brain |
 | `ace opencode` | (re)write the OpenCode config |
 | `ace settings` | thematic submenus: providers/keys · which model each agent runs · model profile · appearance (theme/animation/art) · toolchain |
@@ -102,7 +102,8 @@ Run the loop as a detached systemd **user service** that survives terminal-close
 |---------|------|
 | `ace loop start\|stop\|restart\|status\|logs\|update` | control the loop service |
 | `ace loop stats` | per-run timing post-mortem — time-by-phase + slowest steps (`.opencode/run-summary.txt` + `metrics.csv`) |
-| `ace loop dash [--demo]` | live full-screen dashboard: wordmark · status bar · 10 agent boxes (recolor per state) · scrolling log. Watches a running loop; `--demo` plays a scripted preview |
+| `ace dash` / `ace watch` | ONE dashboard for either flow — auto-detects a running swarm (its cockpit) vs the single-flow loop (the solo dash). Same view whichever you type (`ace loop dash` / `ace swarm dash` route here too) |
+| `ace loop dash [--demo]` | live full-screen dashboard: wordmark · status bar (with the live phase tag: research · spec-gate · implementing · …) · 11 agent boxes (recolor per state) · scrolling log. Watches a running loop; `--demo` plays a scripted preview |
 | `ace hermes` | wire loop milestones + command-back to Hermes (→ Telegram/Signal/phone) |
 | `ace hermes mcp\|webhook` | ground the chat agent on this repo (Serena/GitNexus) · route GitHub CI/PR events → chat |
 | `ace approve [tok] yes\|no` | answer a pending loop merge-approval request (paired with `MERGE_APPROVAL=hermes`) |

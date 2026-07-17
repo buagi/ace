@@ -37,7 +37,7 @@ flowchart LR
 | [autorun.md](autorun.md) | The autonomous loop — lifecycle, per-run metrics, the read-only ACE self-triage. |
 | [the-gate.md](the-gate.md) | The tiered `ci.sh` gate — what blocks a commit. |
 | [deploy.md](deploy.md) | Shipping to the VPS — cadence, the `DEPLOY_GATE` milestone gate, manual deploy, where to check what's live. |
-| [agents.md](agents.md) | The 10-agent crew, risk-gated review, and the alignment critic. |
+| [agents.md](agents.md) | The 11-agent crew, risk-gated review, and the alignment critic. |
 
 ## Run it in parallel
 
@@ -61,5 +61,6 @@ flowchart LR
 |------|--------------|
 | [commands.md](commands.md) | Every `ace` subcommand. |
 | [configuration.md](configuration.md) | Every env knob and where config lives — the settings reference. |
+| [testing.md](testing.md) | The 3-tier test strategy (per-PR gates · nightly goldens · on-demand evals) + the pre-release readiness checklist. |
 | [scenarios.md](scenarios.md) | Runbooks for the jobs you'll actually run. |
 | [deferred-decisions.md](deferred-decisions.md) | *(maintainer)* Known trade-offs intentionally not built yet, and their triggers. |

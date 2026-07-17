@@ -17,7 +17,7 @@ Concrete command sequences for the jobs you'll actually run. Run `ace` from insi
 ## 1. New project → autonomous, from a clean machine
 
 1. Clone ACE and put it on your PATH: `git clone <this-repo> ace && cd ace && ln -s "$PWD/ace" ~/.local/bin/ace`
-2. Install host tools, keys, the 10-agent config, gh login, and Serena: `ace install`
+2. Install host tools, keys, the 11-agent config, gh login, and Serena: `ace install`
 3. Scaffold a new Node / Python / Go / Config project with full machinery: `ace scaffold`
 4. Write your goals: `cd <project> && $EDITOR OBJECTIVES.md`
 5. Start the hands-off loop: `ace autorun`
@@ -40,7 +40,7 @@ See [go-stack.md](go-stack.md) for the Go toolchain and release details.
 
 ## 4. Choose the overseer brain (cost vs quality)
 
-The 8 workers always stay on DeepSeek; only the overseer changes.
+The 10 workers always stay on DeepSeek; only the overseer changes.
 
 1. Pick the brain: `ace keys` — `opus` (default) · `sonnet` (long runs) · `gpt` (OpenAI) · `deepseek` (no subscription).
 2. Rewrite the config, then restart opencode so it loads at launch: `ace opencode`

@@ -2,9 +2,9 @@
 
 # ACE — Agentic Coding Environment
 
-**A one-command rig that installs a self-driving build loop.** You set the objectives; a 10-agent crew plans, builds, tests, reviews, merges, and deploys — unattended — grounded by MCP servers so it doesn't hallucinate your codebase.
+**A one-command rig that installs a self-driving build loop.** You set the objectives; a 11-agent crew plans, builds, tests, reviews, merges, and deploys — unattended — grounded by MCP servers so it doesn't hallucinate your codebase.
 
-`OpenCode` + `DeepSeek V4` · 10-agent crew · self-healing CI · limit-resilient autonomous PR runner
+`OpenCode` + `DeepSeek V4` · 11-agent crew · self-healing CI · limit-resilient autonomous PR runner
 Runs on **Fedora Silverblue / Arch** · Node · Python · **Go** · everything user-local, no root
 
 <img src="https://img.shields.io/badge/version-v0.0.2--alpha-8b0000?style=flat-square&labelColor=0b0b0b">
@@ -59,7 +59,7 @@ ace autorun                            # the loop takes over
 > **Try it in ~2 minutes — $0, no keys, nothing installed.** `ace demo` (paced tour of every feature — `DEMO_AUTO=1` to auto-advance) · `ace loop dash --demo` (scripted preview) · `ace swarm sandbox` (live dry-run demo) · or add `--dry-run` to any command. Nothing is built, pushed, or spent. Recording a video? See [docs/demo/RECORDING.md](docs/demo/RECORDING.md).
 
 > [!NOTE]
-> **No Claude subscription required.** The overseer *defaults* to Claude Opus, but ACE runs end-to-end on a cheap DeepSeek API key alone — `ace keys --brain deepseek`. The 9 worker agents are always DeepSeek, so the crew is low-cost by design.
+> **No Claude subscription required.** The overseer *defaults* to Claude Opus, but ACE runs end-to-end on a cheap DeepSeek API key alone — `ace keys --brain deepseek`. The 10 worker agents are always DeepSeek, so the crew is low-cost by design.
 
 ## What it is
 
@@ -113,7 +113,7 @@ The `standards_keeper` also checks the live web (`endoflife.date`, official rele
 flowchart TD
   OBJ[OBJECTIVES.md<br/>north-star goals — you edit] -->|roadmap empty?| PL[planner decomposes<br/>the top objective]
   PL --> RM[ROADMAP.md<br/>task queue — loop fills & ticks]
-  RM --> B[opencode builds the next item<br/>10-agent loop, fresh session]
+  RM --> B[opencode builds the next item<br/>11-agent loop, fresh session]
   B --> CI{CI}
   CI -->|red| FIX[pull failed log →<br/>fix root cause → push] --> CI
   CI -->|green| MG[merge when mergeable →<br/>squash · delete branch · pull main]
@@ -123,7 +123,7 @@ flowchart TD
 | Stage | What happens |
 |-------|--------------|
 | **Plan** | When the roadmap is empty, the planner breaks the top `OBJECTIVES.md` goal into `ROADMAP.md` tasks. |
-| **Build** | A fresh opencode session builds the next item through the 10-agent loop. |
+| **Build** | A fresh opencode session builds the next item through the 11-agent loop. |
 | **Gate** | `./ci.sh` must pass; a red CI is self-fixed from the failed-job log (root cause, no band-aids). |
 | **Merge** | When all checks are green and the PR is mergeable: squash-merge, delete the branch, pull `main`. |
 | **Deploy** | Refresh the code map, then deploy + health-check (CI job, or `DEPLOY=1`), then take the next item — until `MAX_FEATURES`. |

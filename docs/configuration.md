@@ -37,7 +37,7 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 
 ### Providers & per-agent models (`ace settings`)
 
-`ace settings → Models & agents` sets which model each of the 10 agents runs, independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 8 workers default to DeepSeek.
+`ace settings → Models & agents` sets which model each of the 11 agents runs, independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 10 subagents default to DeepSeek — **the coders (implementer · test_engineer) run `deepseek-v4-pro`; `-flash` is used only for cheap/mechanical roles** (the rathole judge, opencode's `small_model`, and — under the `balanced`/`mixed` presets — the light checks verifier/standards/alignment). To put a coder on flash: `MODEL_implementer=deepseek/deepseek-v4-flash` (cheaper, weaker — measure with Experiment C before adopting).
 
 `ace settings → Providers & keys`:
 
@@ -318,7 +318,7 @@ Global — machine-wide, loaded by opencode at launch:
 
 | Path | Holds |
 |------|-------|
-| `~/.config/opencode/opencode.json` | 10 agents · DeepSeek workers · MCP · compaction (~80%). |
+| `~/.config/opencode/opencode.json` | 11 agents · DeepSeek workers · MCP · compaction (~80%). |
 | `~/.config/opencode/AGENTS.md` | Grounding · navigation · Definition-of-Done · git · handover. |
 | `~/.config/ace/secrets.env` | `DEEPSEEK_API_KEY` / `CONTEXT7_API_KEY` (chmod 600). |
 | `~/.config/ace/vps.env` | Host · user · key · port · dir · os. |
