@@ -268,6 +268,7 @@ Exit 0 = GREEN. Never commit/push on RED.
 EOF
   ensure_graph_refresh
   ensure_atlas_refresh
+  command -v gen_spec_template >/dev/null 2>&1 && gen_spec_template   # Part H/H1: the feature-spec template rides the project refresh train
 }
 
 # ---------------------------------------------------------------- Node stack
@@ -3303,6 +3304,7 @@ upgrade_repo() {
   ensure_graph_refresh
   ensure_atlas_refresh
   [ -x scripts/atlas-refresh.sh ] && env ATLAS_FORCE=1 bash scripts/atlas-refresh.sh >/dev/null 2>&1 || true   # back-fill: generate docs/atlas.md + the README block now (idempotent; §G.10 phase 6)
+  command -v gen_spec_template >/dev/null 2>&1 && gen_spec_template   # Part H/H1: refresh the feature-spec template on upgrade
   ensure_env_merge
   gen_autoloop "$root"
   # WIRE THE LOCAL CI GATE — the loop relies on it, and adopt used to skip it entirely (gate-less repo).

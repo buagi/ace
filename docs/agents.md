@@ -19,6 +19,8 @@ The orchestrator runs on your chosen overseer brain and writes no code — it pl
 | `conflict_resolver` | on a merge conflict | Resolves a PR's conflicts by preserving both sides' intent; escalates UNRESOLVABLE. |
 | `launch_readiness_reviewer` | once, before a live promotion | Operational-readiness gate. Verifies a tested restore, rollback, secrets separation, and spend caps → GO / NO-GO. |
 
+**One spec, shared by the crew.** For a `[value]` feature the planner writes a single canonical spec to `.opencode/specs/<slug>.md` (filling `.opencode/spec-template.md`). It's the load-bearing artifact: the **implementer** reads it by path (§3-Out bounds scope, its increment's `AC:` ids are the Definition-of-Done, §C1 contract shapes are law), and the **test_engineer**, **reviewer**, and **verifier** read the same file — so acceptance criteria and cited integration points are one shared vocabulary, not re-derived per agent. A per-task "spec" is a *slice* of that one file (scope + the increment's ACs), never a second document. See [autorun.md → Feature specs](autorun.md#feature-specs--the-research-first-artifact).
+
 > [!NOTE]
 > `launch_readiness_reviewer` is the one agent that does not run per feature. It runs a single time before a change is promoted to the live VPS.
 
