@@ -329,6 +329,18 @@ Read ROADMAP.md. Fix ONLY the flagged items. For each COLLIDE pair: re-slice the
       || say "re-slice pass skipped (planner error) — continuing with the flagged ROADMAP."
     return 0
   fi
+  # H5: targeted re-spec pass. The coordinator sets SPECLINT_REPORT (from `swarm spec-lint`) when a feature
+  # spec has completeness gaps. Fix ONLY the flagged gaps in the named specs — do not rewrite clean sections or
+  # touch other specs. Bypasses the OBJECTIVES/mtime guards (the target is existing specs, not a new goal).
+  if [ -n "${SPECLINT_REPORT:-}" ]; then
+    [ -f ROADMAP.md ] || return 0
+    say "re-spec: fixing spec-lint gaps in the flagged feature specs…"
+    drive "re-spec flagged feature specs" "The swarm's spec-lint flagged these gaps (SPECGAP <slug> <CHECK> <detail> — see .opencode/spec-template.md for what each section requires):
+$SPECLINT_REPORT
+Fix ONLY the flagged gaps in the named '.opencode/specs/<slug>.md' files. Do NOT rewrite clean sections, do NOT change scope/approach decisions, do NOT touch other specs. CITED/CITE_REAL gaps: OPEN the file via Serena/GitNexus and cite the REAL lines '(cites <path>:L<a>-L<b>)', or mark 'UNVERIFIED — <what you tried>' honestly — never invent a path. EARS/AC_COVER gaps: make every §4 line 'AC-<n> WHEN … THE SYSTEM SHALL …' (or GIVEN/WHEN/THEN) with a unique id, and ensure §6 increments' AC ids partition §4 exactly. Re-read cached research in '.opencode/cache/research/<slug>/' before any new fetch. If an AC id changed, update that ROADMAP item's 'AC:' field to match — otherwise DO NOT touch ROADMAP.md. Branch chore/plan, commit the changed spec files (+ ROADMAP.md only if AC ids moved), open a PR into main. Planning only." \
+      || say "re-spec pass skipped (planner error) — continuing with the flagged specs."
+    return 0
+  fi
   [ -f OBJECTIVES.md ] || return 0
   grep -qE '^[[:space:]]*- \[ \] ' OBJECTIVES.md 2>/dev/null || return 0
   # only when OBJECTIVES changed since the last sync (adding a goal bumps its mtime) → no

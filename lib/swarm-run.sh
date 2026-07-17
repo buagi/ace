@@ -404,6 +404,30 @@ _swarm_plan_sync() {
         bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 || true
     _land_plan_pr "$_slug"
   fi
+  # Part H/H5: spec gate — same shape as the plan-lint re-slice above. Lint every spec a ROADMAP item points at
+  # ('Spec: <path>'); gaps → ONE bounded re-spec pass (SPECLINT_REPORT) + land it, then re-lint. Fail-open: any
+  # residual gaps surface as needs-attention and dispatch proceeds. SPEC_LINT=0 disables; items without a Spec:
+  # (incl. all [infra]) pass untouched.
+  if [ "${SPEC_LINT:-1}" = 1 ]; then
+    local _specf _slint _sgn
+    _specf() { grep -oE 'Spec:[[:space:]]*[^ )]+\.md' "$REPO/ROADMAP.md" 2>/dev/null | sed -E 's/^Spec:[[:space:]]*//' | sort -u \
+                 | while IFS= read -r _s; do [ -n "$_s" ] && [ -f "$REPO/$_s" ] && printf '%s\n' "$REPO/$_s"; done; }
+    if [ -n "$(_specf)" ]; then
+      _slint="$(cd "$REPO" && REPO="$REPO" swarm_spec_lint $(_specf) 2>/dev/null)"
+      if printf '%s\n' "$_slint" | grep -q '^SPECGAP' && [ "${SWARM_RESLICE:-1}" != 0 ]; then
+        _sgn="$(printf '%s\n' "$_slint" | grep -c '^SPECGAP')"
+        echo "  planning: spec-lint found $_sgn spec gap(s) — re-spec before dispatch"
+        swarm_post coordinator needs-attention "spec-lint: $_sgn spec gap(s) — re-spec before dispatch" "" 2>/dev/null || true
+        ( cd "$REPO" && SPECLINT_REPORT="$(printf '%s\n' "$_slint" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" \
+            LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 || true
+        _land_plan_pr "$_slug"
+        _slint="$(cd "$REPO" && REPO="$REPO" swarm_spec_lint $(_specf) 2>/dev/null)"
+        printf '%s\n' "$_slint" | grep -q '^SPECGAP' \
+          && swarm_post coordinator needs-attention "spec-lint: $(printf '%s\n' "$_slint" | grep -c '^SPECGAP') gap(s) remain after re-spec — dispatching (fail-open)" "" 2>/dev/null || true
+      fi
+      { printf '\n-- spec-lint --\n'; printf '%s\n' "$_slint"; } >> "$SWARM_DIR/batch-plan.txt" 2>/dev/null || true
+    fi
+  fi
 }
 
 # _swarm_should_plan GEN — should this generation (re)plan? Gen 1: yes, when sync is enabled and
@@ -674,6 +698,12 @@ swarm_preflight() {
     "$P" "$R" "$B" "$R" "$rmopen" "$objs" "$lastg" "$npar"
   printf '%s┃%s           plan-lint: %s%s collision(s)%s · %s oversize\n' \
     "$P" "$R" "$([ "${ncoll:-0}" -gt 0 ] && echo "$Y" || echo "$G")" "${ncoll:-0}" "$R" "${nover:-0}"
+  local _spgaps _nspec; _nspec="$(grep -oE 'Spec:[[:space:]]*[^ )]+\.md' "$repo/ROADMAP.md" 2>/dev/null | sort -u | grep -c . || echo 0)"
+  if [ "${SPEC_LINT:-1}" = 1 ] && [ "${_nspec:-0}" -gt 0 ]; then
+    _spgaps="$(cd "$repo" && grep -oE 'Spec:[[:space:]]*[^ )]+\.md' ROADMAP.md 2>/dev/null | sed -E 's/^Spec:[[:space:]]*//' | sort -u | while IFS= read -r s; do [ -f "$s" ] && echo "$s"; done | xargs -r env REPO="$repo" bash "$HERE/swarm.sh" spec-lint 2>/dev/null | grep -c '^SPECGAP' || echo 0)"
+    printf '%s┃%s           spec-gate: %s%s spec gap(s)%s across %s spec(s) (SPEC_LINT=0 to disable)\n' \
+      "$P" "$R" "$([ "${_spgaps:-0}" -gt 0 ] && echo "$Y" || echo "$G")" "${_spgaps:-0}" "$R" "${_nspec}"
+  fi
   [ "${ncoll:-0}" -gt 50 ] && printf '%s┃%s           %s⚠ heavily file-serialized — early passes will re-slice before real parallelism (RESLICE_MAX/pass)%s\n' "$P" "$R" "$Y" "$R"
   printf '%s┗%s%s\n' "$P" "$bar" "$R"
   # --- confirm (interactive only; headless/ACE_YES proceed) ---
