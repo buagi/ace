@@ -81,6 +81,10 @@ grep -q 'debate.sh" spec' lib/swarm-run.sh || bad "coordinator spec gate does no
 # REVIEW_DEBATE pre-merge gate — a cross-model pass over the branch diff before merge, fail-open, default OFF
 grep -q 'REVIEW_DEBATE' lib/autoloop.sh || bad "merge_if_ready lost the REVIEW_DEBATE pre-merge gate"
 grep -q 'debate.sh" review' lib/autoloop.sh || bad "REVIEW_DEBATE gate does not invoke the debate engine in review mode"
+# debate trial: DEBATE_ONLY scoping + excessive metrics log + the report
+grep -q 'DEBATE_ONLY' lib/debate.sh || bad "debate.sh lost the DEBATE_ONLY trial scoping"
+grep -q 'debate-metrics.jsonl' lib/debate.sh || bad "debate.sh lost the metrics logging"
+grep -q 'ace_debate_report' lib/debate.sh || bad "debate.sh lost the report/analysis function"
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 

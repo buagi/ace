@@ -45,6 +45,27 @@ _debate_flags(){
   printf '%s\t%s' "$conv" "$needs"
 }
 
+# count the comma-separated ids on a "<LABEL>:" line of a turn (0 for 'none'/empty) — for the metrics log.
+_debate_ids_count(){
+  local line; line="$(printf '%s' "$1" | grep -iE "^$2:" | tail -1 | sed -E 's/^[^:]*:[[:space:]]*//')"
+  printf '%s' "$line" | grep -qiE '^[[:space:]]*(none)?[[:space:]]*$' && { echo 0; return; }
+  printf '%s' "$line" | tr ',' '\n' | grep -cE '[A-Za-z0-9]' || true
+}
+
+# excessive per-debate metrics → one JSONL record (fail-open; jq-gated; never blocks the debate).
+_debate_log_metric(){
+  command -v jq >/dev/null 2>&1 || return 0
+  local mode="$1" slug="$2" A="$3" B="$4" rounds="$5" conv="$6" start="$7" issues="$8" trf="$9" tsv="${10}"
+  local dur=$(( $(date +%s) - start )) capped=0
+  grep -q 'wall-cap' "$trf" 2>/dev/null && capped=1
+  local rj; rj="$(printf '%s' "$tsv" | jq -R -s 'split("\n")|map(select(length>0)|split("\t")|{round:(.[0]|tonumber),challenger_chars:(.[1]|tonumber),defender_chars:(.[2]|tonumber),accepted:(.[3]|tonumber),disputed:(.[4]|tonumber),converged:(.[5]|tonumber),needs_more:(.[6]|tonumber),challenger_secs:(.[7]|tonumber),defender_secs:(.[8]|tonumber)})' 2>/dev/null || echo '[]')"
+  jq -nc --arg ts "$(date -u +%FT%TZ)" --arg mode "$mode" --arg slug "$slug" --arg a "$A" --arg b "$B" \
+     --argjson rounds "${rounds:-0}" --argjson conv "${conv:-0}" --argjson dur "$dur" \
+     --argjson issues "${issues:-0}" --argjson capped "$capped" --arg trf "$trf" --argjson rj "${rj:-[]}" \
+     '{ts:$ts,mode:$mode,slug:$slug,model_a:$a,model_b:$b,rounds:$rounds,converged:($conv==1),wall_capped:($capped==1),duration_s:$dur,issues_emitted:$issues,transcript:$trf,per_round:$rj}' \
+     >> "$(dirname "$trf")/debate-metrics.jsonl" 2>/dev/null || true
+}
+
 ace_debate(){
   local mode="${1:-}" artifact="${2:-}" slug="${3:-}"
   case "$mode" in spec|review) ;; *) echo "usage: debate.sh spec <file> [slug] | review [base] [slug]" >&2; return 2 ;; esac
@@ -66,12 +87,18 @@ ace_debate(){
     [ -n "$slug" ] || slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-')"; [ -n "$slug" ] || slug=diff
   fi
 
+  # DEBATE_ONLY (trial scoping): a comma-list of slugs to limit the debate to — the simple, easily-editable way
+  # to try it on just a few features. Empty ⇒ every eligible artifact. Set in ~/.config/ace/config (or env):
+  #   DEBATE_ONLY=checkout,authz,webhook,orders,ledger
+  local _only; _only="${DEBATE_ONLY:-$(_dcfg DEBATE_ONLY)}"
+  [ -z "$_only" ] || case ",$_only," in *",$slug,"*) : ;; *) return 0 ;; esac
+
   local dir=".opencode/cache" trf="$dir/${mode}-debate-${slug}.md"; mkdir -p "$dir" 2>/dev/null
   printf '# %s debate · %s\n\n- defender (A): %s\n- challenger (B): %s\n- rounds: min %s · max %s · hard %s\n' \
     "$mode" "$slug" "$A" "$B" "${DEBATE_MIN:-2}" "${DEBATE_MAX:-4}" "${DEBATE_HARD_MAX:-10}" > "$trf"
 
   local transcript="" round=0 min="${DEBATE_MIN:-2}" max="${DEBATE_MAX:-4}" hard="${DEBATE_HARD_MAX:-10}"
-  local _start; _start="$(date +%s)"   # total wall-clock backstop: this gate runs SYNCHRONOUSLY in planning
+  local _start _rtsv="" _t0 _cs=0 _ds=0 conv=0 needs=0; _start="$(date +%s)"   # wall-clock backstop + per-round timing/metrics (hoisted so they exist even if turn 1 dies)
   while :; do
     round=$((round+1))
     local cprompt cout
@@ -80,7 +107,7 @@ ace_debate(){
 $art_text
 === DIALOGUE SO FAR ===
 ${transcript:-<none — this is the opening critique>}"
-    cout="$(_debate_turn "$B" "$cprompt")"; [ -n "$cout" ] || break     # dead turn ⇒ fail-open end
+    _t0="$(date +%s)"; cout="$(_debate_turn "$B" "$cprompt")"; _cs=$(( $(date +%s) - _t0 )); [ -n "$cout" ] || break   # dead turn ⇒ fail-open end
     transcript="$transcript
 
 ── ROUND $round · CHALLENGER (B) ──
@@ -93,14 +120,17 @@ $cout"
 $art_text
 === DIALOGUE SO FAR ===
 $transcript"
-    dout="$(_debate_turn "$A" "$dprompt")"; [ -n "$dout" ] || break
+    _t0="$(date +%s)"; dout="$(_debate_turn "$A" "$dprompt")"; _ds=$(( $(date +%s) - _t0 )); [ -n "$dout" ] || break
     transcript="$transcript
 
 ── ROUND $round · DEFENDER (A) ──
 $dout"
     printf '\n── ROUND %s · DEFENDER (A: %s) ──\n%s\n' "$round" "$A" "$dout" >> "$trf"
 
-    local conv needs; IFS=$'\t' read -r conv needs < <(_debate_flags "$cout" "$dout")
+    IFS=$'\t' read -r conv needs < <(_debate_flags "$cout" "$dout")
+    # per-round metrics row (tab-separated): round · challenger_chars · defender_chars · accepted · disputed · conv · needs · c_secs · d_secs
+    _rtsv="${_rtsv}${round}	${#cout}	${#dout}	$(_debate_ids_count "$dout" ACCEPTED)	$(_debate_ids_count "$dout" DISPUTED)	${conv}	${needs}	${_cs}	${_ds}
+"
     [ "$round" -ge "$min" ] && [ "$conv" = 1 ] && break               # both converged (after the min real exchange)
     if [ "$round" -ge "$max" ]; then { [ "$needs" = 1 ] && [ "$round" -lt "$hard" ]; } || break; fi
     [ "$round" -ge "$hard" ] && break
@@ -118,7 +148,10 @@ If the artifact is sound (nothing was accepted), output exactly: SOUND
 $transcript")"
   printf '\n── SYNTHESIS (agreed issues) ──\n%s\n' "${sout:-<none>}" >> "$trf"
 
-  local issues; issues="$(printf '%s\n' "$sout" | grep -iE '^DEBATEISSUE')"
+  local issues _ic; issues="$(printf '%s\n' "$sout" | grep -iE '^DEBATEISSUE')"
+  _ic="$(printf '%s\n' "$sout" | grep -icE '^DEBATEISSUE' || true)"; _ic="${_ic:-0}"
+  # excessive metrics for later analysis — logged for EVERY debate (SOUND or FLAGGED), fail-open.
+  _debate_log_metric "$mode" "$slug" "$A" "$B" "$round" "$conv" "$_start" "$_ic" "$trf" "$_rtsv" 2>/dev/null || true
   [ -n "$issues" ] || return 0
   if [ "$mode" = spec ]; then
     printf '%s\n' "$issues" | sed -E "s|^DEBATEISSUE[[:space:]]*|SPECGAP $slug DEBATE:|"
@@ -126,6 +159,28 @@ $transcript")"
     printf '%s\n' "$issues"
   fi
   return 0
+}
+
+# ace_debate_report — analyze the metrics log: a per-debate table + aggregates. The per_round detail lives in
+# the JSONL for deeper analysis; the transcript (.md) has the full argument.
+ace_debate_report(){
+  local f="${1:-.opencode/cache/debate-metrics.jsonl}"
+  [ -f "$f" ] || { echo "debate: no metrics yet at $f — run a debate (trial enabled) first."; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo "debate: jq required for the report." >&2; return 1; }
+  echo "── debate trial report · $f ──"; echo
+  printf '  %-26s %-6s %-6s %-9s %-6s %-7s %s\n' SLUG MODE ROUNDS CONVERGED ISSUES DUR_s WALL_CAP
+  jq -r '[.slug,.mode,(.rounds|tostring),(if .converged then "yes" else "no" end),(.issues_emitted|tostring),(.duration_s|tostring),(if .wall_capped then "capped" else "-" end)]|@tsv' "$f" \
+    | awk -F'\t' '{printf "  %-26s %-6s %-6s %-9s %-6s %-7s %s\n",$1,$2,$3,$4,$5,$6,$7}'
+  echo
+  jq -s 'if length==0 then {} else {debates:length,
+     converged:(map(select(.converged))|length),
+     wall_capped:(map(select(.wall_capped))|length),
+     avg_rounds:((map(.rounds)|add)/length*10|round/10),
+     total_issues:(map(.issues_emitted)|add),
+     avg_duration_s:((map(.duration_s)|add)/length|floor),
+     total_accepted:(map(.per_round|map(.accepted)|add // 0)|add),
+     total_disputed:(map(.per_round|map(.disputed)|add // 0)|add)} end' "$f" 2>/dev/null \
+    | jq -r 'to_entries[]|"  \(.key): \(.value)"' 2>/dev/null || true
 }
 
 # no-network selftest: the guard + fail-open contract (never makes a call in these paths).
@@ -148,7 +203,8 @@ ace_debate_selftest(){
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   case "${1:-}" in
     spec|review) ace_debate "$@" ;;
+    report)      shift; ace_debate_report "$@" ;;
     selftest)    ace_debate_selftest ;;
-    *)           echo "usage: debate.sh {spec <file> [slug] | review [base] [slug] | selftest}" >&2; exit 2 ;;
+    *)           echo "usage: debate.sh {spec <file> [slug] | review [base] [slug] | report [jsonl] | selftest}" >&2; exit 2 ;;
   esac
 fi
