@@ -410,7 +410,12 @@ profile_values() {  # echoes "EFF_MAIN EFF_VERIFIER VERIFIER_MODEL"  (default = 
 }
 
 # ---------------------------------------------------------------- per-agent models + provider auth
-ACE_AGENTS="orchestrator implementer test_engineer verifier reviewer ux_reviewer standards_keeper alignment_reviewer conflict_resolver launch_readiness_reviewer"
+# Agents whose model is user-configurable via MODEL_<agent> (the per-agent picker, presets, _used_providers,
+# and the config re-stamp all iterate this). Includes `researcher` — it runs on its config model, so
+# MODEL_researcher is meaningful. EXCLUDES `debater`: it is always invoked with an explicit --model override
+# (DEBATE_MODEL_A/B), so a MODEL_debater knob would be a no-op; its provider block is handled by the debate
+# condition in write_opencode_config.
+ACE_AGENTS="orchestrator implementer test_engineer verifier reviewer ux_reviewer standards_keeper alignment_reviewer conflict_resolver launch_readiness_reviewer researcher"
 
 # effort tier per agent (checkers use the verifier tier)
 _agent_eff() { case "$1" in verifier|standards_keeper|alignment_reviewer) printf '%s' "${EFF_VERIFY:-max}" ;; *) printf '%s' "${EFF_MAIN:-max}" ;; esac; }
