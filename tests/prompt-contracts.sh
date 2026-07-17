@@ -89,6 +89,7 @@ grep -q 'ace_debate_report' lib/debate.sh || bad "debate.sh lost the report/anal
 [ -f tests/debate-effectiveness.sh ] || bad "the debate effectiveness scorer is missing"
 [ -f tests/debate-sandbox/labels.tsv ] || bad "the labeled debate sandbox (ground truth) is missing"
 grep -q 'score)' ace || bad "ace debate lost the 'score' command"
+grep -q 'ace_debate_trend' lib/debate.sh || bad "debate.sh lost the effectiveness trend/conclusion function"
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 
