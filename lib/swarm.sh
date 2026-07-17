@@ -434,8 +434,20 @@ swarm_plan_lint() {
       coll=$((coll+1)); printf 'COLLIDE   %s  ⨯  %s\n' "$(_clip "${items[$i]}" 32)" "$(_clip "${items[$j]}" 32)"
     fi
   done; done
-  printf 'plan-lint: %d open item(s) · %d oversize · %d colliding pair(s)\n' "$n" "$over" "$coll"
-  [ "$over" -eq 0 ] && [ "$coll" -eq 0 ]
+  # HOT-FILE CLUSTERS: a concrete file named by ≥HOTFILE_MIN OPEN items is a serialization bottleneck the
+  # pairwise COLLIDE view understates. Report it (deterministically, from the Files: hints) so the re-slice
+  # CHAINS that whole cluster onto ONE ordered track (deps a→b→c) — one owner, no cross-worker contention.
+  local hot=0 f; declare -A _fc=()
+  for ((i=0; i<n; i++)); do
+    for f in $(printf '%s' "${items[$i]}" | grep -oiE 'files?:.*' | grep -oE '[A-Za-z0-9_./-]+\.[A-Za-z0-9]+' | grep -E '/' | sort -u); do
+      _fc["$f"]=$(( ${_fc["$f"]:-0} + 1 ))
+    done
+  done
+  for f in "${!_fc[@]}"; do
+    [ "${_fc[$f]}" -ge "${HOTFILE_MIN:-3}" ] && { hot=$((hot+1)); printf 'HOTFILE   %s · %s items\n' "$f" "${_fc[$f]}"; }
+  done
+  printf 'plan-lint: %d open item(s) · %d oversize · %d colliding pair(s) · %d hot-file cluster(s)\n' "$n" "$over" "$coll" "$hot"
+  [ "$over" -eq 0 ] && [ "$coll" -eq 0 ] && [ "$hot" -eq 0 ]
 }
 
 # swarm_plan_lint_selftest — hermetic: builds a throwaway ROADMAP and asserts the lint flags a
@@ -451,11 +463,13 @@ swarm_plan_lint_selftest() {
 - [ ] [value] feature B. Files: packages/beta/b.ts, packages/beta/b.test.ts
 - [ ] [value] hot X. Files: packages/shared/hot.ts, apps/x/x.ts
 - [ ] [value] hot Y. Files: packages/shared/hot.ts, apps/y/y.ts
+- [ ] [value] hot Z. Files: packages/shared/hot.ts, apps/z/z.ts
 - [ ] [infra] wide item. Files: a/1.ts, a/2.ts, a/3.ts, a/4.ts, a/5.ts, a/6.ts, a/7.ts
 RM
     out="$(REPO="$d" swarm_plan_lint ROADMAP.md 2>/dev/null)"; local rc=$?
     printf '%s\n' "$out" | grep -q 'COLLIDE' || { echo "[plan-lint] expected a COLLIDE (shared/hot.ts) — none"; ok=0; }
     printf '%s\n' "$out" | grep -q 'OVERSIZE' || { echo "[plan-lint] expected an OVERSIZE (7-file item) — none"; ok=0; }
+    printf '%s\n' "$out" | grep -q 'HOTFILE.*shared/hot.ts' || { echo "[plan-lint] expected a HOTFILE (shared/hot.ts in 3 items) — none"; ok=0; }
     [ "$rc" -eq 1 ] || { echo "[plan-lint] expected exit 1 on violations, got $rc"; ok=0; }
     cat > clean.md <<'RM'
 # Roadmap
