@@ -699,6 +699,9 @@ SP
     printf '%s\n' "$out" | grep -q 'POST /save' || { echo "[spec-slice] missing §C1 (not N/A)"; ok=0; }
     printf '%s\n' "$out" | grep -q '## C5' && { echo "[spec-slice] included §C5 which is N/A"; ok=0; }
     [ "$(printf '%s\n' "$out" | wc -l)" -le 120 ] || { echo "[spec-slice] not capped at 120 lines"; ok=0; }
+    # AC-H7.1: the slice is DETERMINISTIC — a frozen spec ⇒ byte-identical bytes across dispatches, so the
+    # worker-prompt prefix is cache-stable across a feature's increments/retries. Re-assemble and cmp.
+    [ "$out" = "$(swarm_spec_slice s.md 'AC-1,AC-E1')" ] || { echo "[spec-slice] non-deterministic output (breaks prompt-cache prefix)"; ok=0; }
     [ "$ok" = 1 ] && echo "[spec-slice] PASS ✓" || { echo "[spec-slice] FAIL ✗"; exit 1; }
   ) || ok=0
   rm -rf "$d"; [ "$ok" = 1 ]

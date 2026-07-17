@@ -298,6 +298,20 @@ The planner researches `[value]` features (how comparable products build them + 
 | `FIRECRAWL_API_KEY` | *(unset)* | only if your instance enforces auth; not needed for a plain loopback self-host. |
 | `ACE_RESEARCH_MAX_FETCHES` | `6` | shared search+scrape page budget per feature (keeps research bounded). |
 
+### Feature-spec pipeline (Part H)
+
+Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<slug>.md`, filling `.opencode/spec-template.md`), gated by a deterministic bash lint **before** any LLM call, then sliced per increment at dispatch. The knobs — all safe defaults, all fail-open:
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `SPEC_LINT` | `1` | Deterministic pre-dispatch spec gate (`swarm_spec_lint`, 11 checks). `0` disables. No-op on legacy ROADMAP items with no `Spec:` field. |
+| `SPECFIX_MAX` | `2` | Max bounded re-spec rounds a flagged spec gets before the loop proceeds anyway (fail-open). |
+| `SPEC_SLICE` | `1` | Assemble a focused, capped context slice per increment (`.opencode/cache/spec-slice.<slug>.md` — §3 Scope + only that increment's ACs + non-N/A contracts) the implementer reads first. `0` disables. |
+| `SPEC_RUBRIC` | `0` | **Off by default.** An optional one-call LLM rubric that judges a lint-green spec on 7 criteria (only for HIGH-RISK `[value]` features). Enable per project only after calibrating against the goldens. |
+| `SPEC_RUBRIC_MODEL` | *(overseer)* | Which model the rubric runs on. A documented seam only — defaults to the overseer plumbing; stays put until the "prompts before models" boundary lifts (deferred #10). |
+
+**Token economics — prompt-cache prefix discipline.** Prompt caching is *provider-side* (Anthropic / DeepSeek), keyed on a **stable prefix**. ACE can't turn it on — it only avoids breaking it. The worker prompt is assembled **stable-first, volatile-last**: system prompt (AGENTS.md-governed) → profile facts → the **frozen spec slice** → item text → run-specific state (attempt counters, bus notes). A byte-identical prefix across a feature's dispatches (the spec is frozen after the gate passes, so the slice is byte-identical — see the H7 determinism selftest) is what makes retries and multi-increment features cheap; a mutating prefix (a timestamp or attempt number above the slice) silently re-bills the whole context every call. This is why a gate-passed spec is **never** edited mid-implementation — scope changes go through a re-spec (re-gated) or a new increment.
+
 ## Where config lives
 
 Global — machine-wide, loaded by opencode at launch:

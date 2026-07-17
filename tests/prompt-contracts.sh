@@ -111,6 +111,9 @@ jq -e '.agent.researcher.permission.edit == "deny" and .agent.researcher.permiss
   <<<"$JSON" >/dev/null 2>&1 || bad "researcher lost its read-only denies (edit/write/task must all be deny)"
 has orchestrator 'RESEARCH DELEGATION'
 
+# --- Part H / H7: spec freeze + prompt-cache prefix discipline ---
+grep -q 'SPECS ARE FROZEN after the spec-gate' "$IN" || bad "AGENTS.md lost the spec-freeze / prompt-cache prefix rule (H7)"
+
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 11 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0
