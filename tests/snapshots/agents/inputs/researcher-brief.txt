@@ -1,0 +1,3 @@
+Feature brief: add a `--json` flag to `ace status` that prints one machine-readable JSON object (ready flag, open-roadmap count, current branch) so chat/CI integrations stop parsing human text.
+
+Produce ONLY the completed spec per .opencode/spec-template.md (FULL tier). Ground every §5 integration claim in files you OPEN via Serena/gitnexus and cite them '(cites <path>:L<a>-L<b>)'; cite ONLY files that exist in this repo. This repo IS the target — the status entrypoint is `ace` and telemetry lives in `lib/telemetry.sh`.

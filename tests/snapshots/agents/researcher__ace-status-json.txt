@@ -1,0 +1,43 @@
+<!-- ace-spec-template v1 -->
+# Spec: ace status --json   (slug: ace-status-json · risk: LOW · tier: FULL)
+
+## 1. Problem
+Operators scripting ACE need machine-readable status. Why now: chat/CI integrations parse human text today and break on cosmetic changes.
+
+## 2. Prior art & approach
+- `gh` exposes `--json` on most read commands (source: https://cli.github.com/manual/gh_help_formatting, 2026-07). DECISION: match — a `--json` flag emitting a stable object is the standard scope.
+
+## 3. Scope
+### In
+- Add a `--json` flag to `ace status` that prints one JSON object (no ANSI, no prose).
+### Out
+- Do NOT change the default human output.
+- Do NOT add `--json` to other commands in this change.
+
+## 4. Acceptance criteria
+- AC-1 WHEN `ace status --json` runs THE SYSTEM SHALL print exactly one valid JSON object and nothing else.
+- AC-E1 WHEN status data is unavailable THE SYSTEM SHALL emit `{"ready":false,"reason":"<msg>"}` and exit non-zero.
+
+## 5. Integration (cited)
+- Files to touch: the status entrypoint (cites ace:L1-L5) and the telemetry reader it calls (cites lib/telemetry.sh:L1-L10).
+- Blast radius: read-only; no other command consumes status output.
+
+## 6. Increments
+1. json emitter — files: lib/telemetry.sh — ACs: AC-1 — deps: —
+2. unavailable path — files: lib/telemetry.sh — ACs: AC-E1 — deps: 1
+
+## 7. Open questions / assumptions
+- None.
+
+## C1. Contract
+`{"ready":bool,"roadmap_open":int,"branch":string,"reason":string?}` — additive-only fields.
+## C2. Data model
+N/A — no schema change.
+## C3. UX flow
+N/A — non-interactive output.
+## C4. NFRs
+Emits within the existing status latency; no extra process spawns.
+## C5. Security
+N/A — reads local state only; no secrets in the object.
+## C6. Risk & rollback
+Behind the flag; default output unchanged. Revert the commit to remove.

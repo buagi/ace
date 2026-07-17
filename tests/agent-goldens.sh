@@ -31,8 +31,24 @@ scrub(){ sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?/<ts>/g; s/ses_[a-zA-Z0-
 # does the critic's output carry an APPROVING verdict (and NOT a rejecting one)?
 approves(){ grep -qiE '\b(APPROVE|APPROVED|PASS|PASSED|\bGO\b)\b' "$1" && ! grep -qiE 'CHANGES_REQUESTED|\bFAIL(ED)?\b|NO-GO|\bblocker\b' "$1"; }
 
+# researcher golden (Part H/H3 Edit 4): the output is a SPEC body, not a verdict — validate it PARSES under the
+# H5 spec-lint (a usable first draft) and cites only files that EXIST (the core researcher risk is a fabricated
+# citation). Nightly capture runs it over a frozen fixture; the seed cites real repo files so --check passes now.
+check_researcher(){
+  local f="$1" base tmp rc gaps p; base="$(basename "$f" .txt)"; tmp="$(mktemp --suffix=.md)"; cp "$f" "$tmp"
+  REPO="$ROOT" bash lib/swarm.sh spec-lint "$tmp" >/tmp/.rg.$$ 2>/dev/null; rc=$?
+  [ "$rc" -le 1 ] || bad "$base: researcher output does not parse as a spec under swarm_spec_lint (rc=$rc — crash/usage, not a spec)"
+  gaps="$(grep -c '^SPECGAP' /tmp/.rg.$$ 2>/dev/null || true)"; gaps="${gaps:-0}"
+  [ "${gaps:-0}" -le "${RESEARCHER_MAX_GAPS:-4}" ] || { bad "$base: researcher spec has $gaps lint gap(s) (> ${RESEARCHER_MAX_GAPS:-4}) — not a usable first draft"; grep '^SPECGAP' /tmp/.rg.$$ | sed 's/^/    /'; }
+  while IFS= read -r p; do [ -z "$p" ] && continue
+    [ -e "$ROOT/$p" ] || [ -e "$p" ] || bad "$base: cites a NON-EXISTENT path '$p' (fabricated citation — the #1 researcher failure)"
+  done < <(grep -oE '\(cites [^:) ]+' "$f" | sed -E 's/^\(cites //')
+  rm -f "$tmp" /tmp/.rg.$$
+}
+
 check_one(){ # <goldenfile>  (name: <critic>__<case>.txt)
   local f="$1" base case; base="$(basename "$f" .txt)"; case="${base##*__}"
+  [ "${base%%__*}" = researcher ] && { check_researcher "$f"; return; }   # spec artifact, not a verdict — routed above
   # SCHEMA: a recognizable verdict token must be present at all (else the orchestrator can't read the verdict)
   grep -qiE '\b(APPROVE|CHANGES_REQUESTED|PASS|FAIL|GO|NO-GO|UNVERIFIED|UNSURE)\b' "$f" \
     || { bad "$base: no parseable verdict token (broken output contract)"; return; }
@@ -58,6 +74,11 @@ if [ "$MODE" = capture ]; then
 
 $(cat "$d")" 2>/dev/null | scrub > "$SNAP/$pair.txt" && echo "captured $pair.txt"
   done
+  # researcher (Part H/H3): produce a spec from a brief over a frozen fixture; the golden is the returned spec body.
+  if [ -f "$INP/researcher-brief.txt" ]; then
+    opencode run --agent researcher "$(cat "$INP/researcher-brief.txt")" 2>/dev/null | scrub > "$SNAP/researcher__ace-status-json.txt" \
+      && echo "captured researcher__ace-status-json.txt"
+  fi
   echo "agent-goldens: captured. Review, then commit tests/snapshots/agents/*.txt (replaces the seeded examples with real ones)."
   exit 0
 fi
