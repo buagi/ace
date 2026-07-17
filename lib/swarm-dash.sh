@@ -163,20 +163,26 @@ _dash_cost(){
 }
 
 # infer the coordinator's PRE-worker phase from its log so the dash NAMES what it's doing (never blank).
-# emits: "human label<TAB>step-idx"  (step: 0 preflight · 1 planning · 2 dispatching)
+# emits: "human label<TAB>step-idx"  (step: 0 preflight · 1 plan/research/spec · 2 gate · 3 dispatching)
+# The Part H research→spec→gate phases each take minutes; they're matched BEFORE the generic 'planning' catch
+# so the panel shows the EXACT sub-phase (not a stale-looking generic label) the whole pre-dispatch stretch.
 _coord_phase(){
   local l; l="$(grep -avE 'jq:|parse error|Cannot index' "$SWARM_DIR/coordinator.log" 2>/dev/null | grep -vE '^[[:space:]]*$' | tail -n 30 | sed "s/$ESC\\[[0-9;]*m//g" | tr 'A-Z' 'a-z')"
   case "$l" in
     *"usage limit"*|*"waiting for reset"*|*"limit — waiting"*|*"limit hasn't reset"*) printf '%s\t%s' "paused — overseer hit a usage limit; resumes automatically on reset" 1 ;;
-    *"syncing objectives"*|*"→ roadmap"*|*"read objectives"*|*"read roadmap"*|*"planning"*|*"chore/plan"*) printf '%s\t%s' "planning — the orchestrator is turning OBJECTIVES into ROADMAP tasks" 1 ;;
+    *"re-spec"*|*"spec-lint found"*|*"spec gap"*|*"spec-gate"*|*"spec-rubric"*) printf '%s\t%s' "spec-gate — linting + repairing the feature specs before any code is written" 2 ;;
+    *"plan-lint"*|*"re-slic"*|*"colliding"*|*"oversize"*) printf '%s\t%s' "plan-gate — re-slicing colliding/oversized tasks so workers stay path-disjoint" 2 ;;
+    *"webfetch"*|*"firecrawl"*|*"researching"*|*"research pass"*|*"comparable product"*|*"prior art"*|*"industry-standard"*) printf '%s\t%s' "researching — studying how comparable products build this before speccing" 1 ;;
+    *"writing spec"*|*"opencode/specs"*|*"filling the template"*|*"spec-template"*) printf '%s\t%s' "speccing — writing the feature spec (scope · acceptance criteria · integration)" 1 ;;
+    *"syncing objectives"*|*"→ roadmap"*|*"read objectives"*|*"read roadmap"*|*"planning"*|*"chore/plan"*) printf '%s\t%s' "planning — turning OBJECTIVES into ROADMAP tasks (research → spec → tasks)" 1 ;;
     *"container gate"*|*"ci.sh --container"*|*"verifying ./ci.sh"*|*"resuming"*|*"rescue"*) printf '%s\t%s' "verifying the gate on prior work before dispatch" 0 ;;
     *"preflight"*|*"consistency"*|*"reconcil"*) printf '%s\t%s' "preflight — reconciling repo state (git · gitnexus · opencode)" 0 ;;
     *"conflict-policy"*|*"self-heal"*|*"🐝 swarm"*) printf '%s\t%s' "starting up — wiring the swarm + conflict policy" 0 ;;
-    *) printf '%s\t%s' "spinning up workers — they will claim tasks any moment" 2 ;;
+    *) printf '%s\t%s' "spinning up workers — they will claim tasks any moment" 3 ;;
   esac
 }
-# mini step tracker:  preflight ✓ → ▸plan◂ → dispatch
-_coord_steps(){ local a="$1" i=0 out="" s names=(preflight plan dispatch)
+# mini step tracker:  preflight ✓ → ▸plan◂ → gate → dispatch
+_coord_steps(){ local a="$1" i=0 out="" s names=(preflight plan gate dispatch)
   for s in "${names[@]}"; do
     [ "$i" -gt 0 ] && out+="${c_dim} → ${c_reset}"
     if   [ "$i" -lt "$a" ]; then out+="${c_green}${s} ✓${c_reset}"

@@ -389,7 +389,7 @@ _land_plan_pr() {
 }
 
 _swarm_plan_sync() {
-  echo "  planning: syncing OBJECTIVES → ROADMAP on your model (waits on a limit; SWARM_SYNC=0 to skip)…"
+  echo "  planning: researching + decomposing OBJECTIVES → ROADMAP on your model — research → spec → tasks (waits on a limit; SWARM_SYNC=0 to skip)…"
   ( cd "$REPO" && LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
       bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 \
     || echo "  planning: sync ended (see coordinator.log) — proceeding with the current ROADMAP"
@@ -430,6 +430,7 @@ _swarm_plan_sync() {
       # H5 Edit 5: OPTIONAL LLM rubric (SPEC_RUBRIC=1, default OFF) — one bounded, fail-open call per lint-GREEN
       # HIGH-risk spec; its GAPS fold into the SAME SPECGAP report so the re-spec drive below handles them.
       if [ "${SPEC_RUBRIC:-0}" = 1 ]; then
+        echo "  planning: spec-rubric judging the feature spec(s) on your model (SPEC_RUBRIC=1)…"
         local _rsp _rub
         while IFS= read -r _rsp; do
           [ -n "$_rsp" ] || continue
