@@ -17,6 +17,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/swarm.sh" 2>/dev/null || true
+. "$HERE/dash-common.sh" 2>/dev/null || true   # shared phase inference + agent roster (one source of truth with the solo dash)
 
 ESC=$'\033'
 c_reset="${ESC}[0m"; bold="${ESC}[1m"
@@ -162,24 +163,18 @@ _dash_cost(){
   printf '%s' "$out"
 }
 
-# infer the coordinator's PRE-worker phase from its log so the dash NAMES what it's doing (never blank).
-# emits: "human label<TAB>step-idx"  (step: 0 preflight · 1 plan/research/spec · 2 gate · 3 dispatching)
-# The Part H research→spec→gate phases each take minutes; they're matched BEFORE the generic 'planning' catch
-# so the panel shows the EXACT sub-phase (not a stale-looking generic label) the whole pre-dispatch stretch.
+# infer the coordinator's PRE-worker phase → "human label<TAB>step-idx" (step: 0 preflight · 1 plan/research/spec
+# · 2 gate · 3 dispatching). Delegates to the SHARED dash_phase_from_log (predispatch context) so the solo dash
+# and this cockpit name phases from ONE vocabulary — then maps the phasekey to this panel's 4-step tracker.
 _coord_phase(){
-  local l; l="$(grep -avE 'jq:|parse error|Cannot index' "$SWARM_DIR/coordinator.log" 2>/dev/null | grep -vE '^[[:space:]]*$' | tail -n 30 | sed "s/$ESC\\[[0-9;]*m//g" | tr 'A-Z' 'a-z')"
-  case "$l" in
-    *"usage limit"*|*"waiting for reset"*|*"limit — waiting"*|*"limit hasn't reset"*) printf '%s\t%s' "paused — overseer hit a usage limit; resumes automatically on reset" 1 ;;
-    *"re-spec"*|*"spec-lint found"*|*"spec gap"*|*"spec-gate"*|*"spec-rubric"*) printf '%s\t%s' "spec-gate — linting + repairing the feature specs before any code is written" 2 ;;
-    *"plan-lint"*|*"re-slic"*|*"colliding"*|*"oversize"*) printf '%s\t%s' "plan-gate — re-slicing colliding/oversized tasks so workers stay path-disjoint" 2 ;;
-    *"webfetch"*|*"firecrawl"*|*"researching"*|*"research pass"*|*"comparable product"*|*"prior art"*|*"industry-standard"*) printf '%s\t%s' "researching — studying how comparable products build this before speccing" 1 ;;
-    *"writing spec"*|*"opencode/specs"*|*"filling the template"*|*"spec-template"*) printf '%s\t%s' "speccing — writing the feature spec (scope · acceptance criteria · integration)" 1 ;;
-    *"syncing objectives"*|*"→ roadmap"*|*"read objectives"*|*"read roadmap"*|*"planning"*|*"chore/plan"*) printf '%s\t%s' "planning — turning OBJECTIVES into ROADMAP tasks (research → spec → tasks)" 1 ;;
-    *"container gate"*|*"ci.sh --container"*|*"verifying ./ci.sh"*|*"resuming"*|*"rescue"*) printf '%s\t%s' "verifying the gate on prior work before dispatch" 0 ;;
-    *"preflight"*|*"consistency"*|*"reconcil"*) printf '%s\t%s' "preflight — reconciling repo state (git · gitnexus · opencode)" 0 ;;
-    *"conflict-policy"*|*"self-heal"*|*"🐝 swarm"*) printf '%s\t%s' "starting up — wiring the swarm + conflict policy" 0 ;;
-    *) printf '%s\t%s' "spinning up workers — they will claim tasks any moment" 3 ;;
+  local lbl key; IFS=$'\t' read -r lbl key < <(dash_phase_from_log "$SWARM_DIR/coordinator.log" predispatch)
+  local step; case "$key" in
+    preflight|verify) step=0 ;;
+    paused|research|spec|plan) step=1 ;;
+    specgate) step=2 ;;
+    *) step=3 ;;
   esac
+  printf '%s\t%s' "$lbl" "$step"
 }
 # mini step tracker:  preflight ✓ → ▸plan◂ → gate → dispatch
 _coord_steps(){ local a="$1" i=0 out="" s names=(preflight plan gate dispatch)
