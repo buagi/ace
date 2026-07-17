@@ -204,6 +204,24 @@ ace_debate_trend(){
         else "  CONCLUSION: FLAT — no meaningful F1 move; change a lever (model / prompt / knob) then re-score. `ace debate review` shows where it fails." end)' 2>/dev/null || true
 }
 
+# ace_debate_testproject [dir] — materialize the labeled sandbox into a runnable ACE project (specs →
+# .opencode/specs, profile, ci.sh, OBJECTIVES, git init) so you can watch the debate fire in a real autorun.
+ace_debate_testproject(){
+  local dir="${1:-/tmp/ace-debate-sandbox}" src
+  src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/tests/debate-sandbox"
+  [ -d "$src/specs" ] || { echo "debate: sandbox template not found at $src" >&2; return 1; }
+  mkdir -p "$dir/.opencode/specs" || { echo "debate: cannot create $dir" >&2; return 1; }
+  cp "$src/specs/"*.md "$dir/.opencode/specs/" 2>/dev/null
+  cp "$src/profile.yaml" "$dir/.opencode/profile.yaml" 2>/dev/null
+  cp "$src/OBJECTIVES.md" "$src/labels.tsv" "$src/ci.sh" "$src/README.md" "$dir/" 2>/dev/null
+  chmod +x "$dir/ci.sh" 2>/dev/null
+  ( cd "$dir" && { [ -d .git ] || git init -q; } && git add -A \
+      && git -c user.email=debate@ace -c user.name=debate commit -qm "debate sandbox" >/dev/null 2>&1 ) || true
+  echo "debate: sandbox materialized → $dir"
+  echo "  cd $dir  &&  SPEC_DEBATE=1 DEBATE_ONLY=authz-missing,webhook-nosig,vague-acs ace autorun --yes"
+  echo "  (needs OPENROUTER_API_KEY + DEBATE_MODEL_B in ~/.config/ace/config; or just: ace debate score --capture)"
+}
+
 # no-network selftest: the guard + fail-open contract (never makes a call in these paths).
 ace_debate_selftest(){
   local d ok=1 out; d="$(mktemp -d)" || return 1
@@ -226,7 +244,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     spec|review) ace_debate "$@" ;;
     report)      shift; ace_debate_report "$@" ;;
     trend)       shift; ace_debate_trend "$@" ;;
+    testproject) shift; ace_debate_testproject "$@" ;;
     selftest)    ace_debate_selftest ;;
-    *)           echo "usage: debate.sh {spec <file> [slug] | review [base] [slug] | report [jsonl] | trend [jsonl] | selftest}" >&2; exit 2 ;;
+    *)           echo "usage: debate.sh {spec <file> [slug] | review [base] [slug] | report [jsonl] | trend [jsonl] | testproject [dir] | selftest}" >&2; exit 2 ;;
   esac
 fi

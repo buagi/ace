@@ -1,0 +1,10 @@
+# minimal profile so the sandbox is a valid runnable ACE project (materialized to .opencode/profile.yaml)
+mission: A tiny orders API used to trial + measure the cross-model debate.
+audience: internal
+values: correctness, security, honesty
+language: bash
+delivery: local
+merge_gate: local
+auto_merge: false
+deploy_kind: none
+throughput: low
