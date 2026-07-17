@@ -97,6 +97,9 @@ grep -q 'suffix -2 so you never overwrite' lib/autoloop.sh || bad "planner lost 
 # --- Part H unify (Phase 1): the SOLO path (par=1) runs the SAME spec gate + slice the swarm coordinator does ---
 [ "$(grep -c 'spec_gate_solo' lib/autoloop.sh)" -ge 2 ] || bad "autoloop lost the solo spec-gate (def+call) — par=1 would skip the Part H lint/rubric"
 [ "$(grep -c 'spec_slice_for' lib/autoloop.sh)" -ge 2 ] || bad "autoloop lost the solo spec-slice (def+call) — par=1 implementer would miss its frozen slice"
+# --- Part H unify (Phase 2): one dashboard surface — every dash entry point routes through dash_auto ---
+grep -q 'dash_auto()' lib/dash.sh || bad "dash.sh lost the unified dash_auto router"
+[ "$(grep -c 'dash_auto' ace)" -ge 3 ] || bad "ace dispatch no longer routes all three dash entry points (loop/swarm/top-level) through dash_auto"
 grep -q 'swarm_spec_lint' lib/swarm-run.sh || bad "swarm-run lost the pre-dispatch spec gate"
 
 # --- Part H / H6: AC tracing (grammar order · ledger AC ids · verifier merge-time proof) ---

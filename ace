@@ -201,6 +201,8 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
                       run the loop as a detached systemd user service (survives terminal-close
                       + sleep) — start/stop/restart/status/tail/bring-up-to-date. Steerable from
                       Hermes/Signal. (bare 'ace loop' = the interactive launcher.)
+  ace dash | watch    ONE live dashboard for either flow — auto-detects a running swarm (its cockpit)
+                      vs the single-flow loop (the solo dash). Same as 'ace loop dash' / 'ace swarm dash'.
   ace awake on|off|status [dur]
                       keep the machine awake (no idle-sleep / lid-suspend) so you can reach it
                       from Hermes/Signal while away. 'on 4h' auto-releases; 'on' holds till 'off'.
@@ -313,10 +315,11 @@ case "${cmd:-menu}" in
   autoloop|autorun|loop|resume)
     case "${ACE_ARG:-}" in
       start|stop|restart|status|logs|tail|stats|metrics|up|update) loop_ctl "$ACE_ARG" ;;
-      dash|dashboard)    loop_dash ;;
+      dash|dashboard)    dash_auto ;;   # auto-detect: swarm cockpit if a swarm is live, else the solo dash
       --explain|explain) cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" 2>/dev/null || true; autorun_explain ;;
       *) autoloop_run ;;
     esac ;;
+  dash|watch)        dash_auto ;;   # one dashboard for one flow — shows whatever is running (solo loop or swarm)
   loop-service)      loop_service_run "${ACE_ARG:-}" ;;   # internal: systemd ExecStart target
   report|triage)     _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/report.sh"
                      if [ "$cmd" = triage ] || [ "${ACE_ARG:-}" = triage ]; then ace_triage
@@ -330,7 +333,7 @@ case "${cmd:-menu}" in
                                        # after it prints its flags, drop straight into the live cockpit (unless piped or opted out)
                                        [ -t 1 ] && [ -t 0 ] && [ "${ACE_NO_DASH:-0}" != 1 ] && ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" dash ); fi ;;
                        stop)      ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" stop ) ;;
-                       dash|watch)( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" dash ) ;;
+                       dash|watch) dash_auto ;;   # auto-detect: swarm cockpit if live, else the solo dash (never a blank cockpit)
                        split)     ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" split ) ;;
                        pause)     ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" pause ) ;;
                        resume)    ( cd "$_sr" && SWARM_REPO="$_sr" bash "$_sl/swarm-run.sh" resume ) ;;
