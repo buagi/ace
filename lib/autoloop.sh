@@ -368,7 +368,16 @@ spec_gate_solo(){
                   | sort -u | while IFS= read -r s; do [ -f "$s" ] && printf '%s\n' "$s"; done; }
   specs="$(_solo_specs)"; [ -n "$specs" ] || return 0
   slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $specs 2>/dev/null)"
-  if [ "${SPEC_RUBRIC:-0}" = 1 ]; then      # optional LLM rubric on lint-GREEN specs only (default OFF, fail-open)
+  # optional quality layer on lint-GREEN specs (both default OFF, fail-open). SPEC_DEBATE (cross-model dialogue)
+  # subsumes the single-shot SPEC_RUBRIC — when both are on, the debate wins. Solo parity with the coordinator.
+  if [ "${SPEC_DEBATE:-0}" = 1 ]; then
+    local _dsh deb; _dsh="$(dirname "$_SWARM_SH")/debate.sh"
+    for sp in $specs; do
+      printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue
+      deb="$(bash "$_dsh" spec "$sp" 2>/dev/null)" || true
+      [ -n "$deb" ] && slint="$(printf '%s\n%s' "$slint" "$deb")"
+    done
+  elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
     for sp in $specs; do
       printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue
       rub="$(REPO="$PWD" bash "$_SWARM_SH" spec-rubric "$sp" 2>/dev/null)" || true

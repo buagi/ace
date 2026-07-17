@@ -74,6 +74,10 @@ grep -q 'DEBATE_MODEL_B' lib/debate.sh || bad "debate.sh lost the OpenRouter cha
 grep -q "risk:\[\[:space:\]\]\*HIGH" lib/debate.sh || bad "debate.sh lost the HIGH-risk-only guard (spec mode)"
 grep -qE 'debate\)' ace || bad "ace dispatch lost the 'debate' command"
 grep -q '__OPENROUTER_PROVIDER__' lib/install.sh || bad "install.sh lost the openrouter provider seam"
+# SPEC_DEBATE auto-gate — both spec gates (coordinator + solo) run the debate on lint-GREEN HIGH-risk specs
+grep -q 'SPEC_DEBATE' lib/swarm-run.sh || bad "coordinator spec gate lost the SPEC_DEBATE branch"
+grep -q 'SPEC_DEBATE' lib/autoloop.sh || bad "solo spec gate lost the SPEC_DEBATE branch"
+grep -q 'debate.sh" spec' lib/swarm-run.sh || bad "coordinator spec gate does not invoke the debate engine"
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 
