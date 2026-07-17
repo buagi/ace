@@ -20,7 +20,7 @@ command -v jq >/dev/null 2>&1 || { echo "prompt-contracts: jq not found — cann
 [ -f "$IN" ] || { echo "prompt-contracts: $IN not found"; exit 1; }
 
 # --- 1. every placeholder survives (a lost placeholder = a broken generated config) ---
-for ph in __PLUGINS__ __OPENAI_PROVIDER__ __ORCH_MODEL__ __ORCH_OPTS__ __MAXCTX__ __EFF_MAIN__ __EFF_VERIFY__ __VERIFIER_MODEL__; do
+for ph in __PLUGINS__ __OPENAI_PROVIDER__ __OPENROUTER_PROVIDER__ __ORCH_MODEL__ __ORCH_OPTS__ __MAXCTX__ __EFF_MAIN__ __EFF_VERIFY__ __VERIFIER_MODEL__; do
   [ "$(grep -c -- "$ph" "$IN")" -gt 0 ] || bad "placeholder $ph missing from $IN (generated config would break)"
 done
 
@@ -28,7 +28,7 @@ done
 # NB: use the single-quoted awk anchored on `opencode.json" <<` — the 00-START-HERE §4 awk embeds
 # `$cfgdir`, which GNU awk parses as an end-of-line anchor (captures nothing). See LEDGER A1/F0.
 JSON="$(awk '/opencode\.json" <</{f=1;next} /^JSON$/{f=0} f' "$IN" \
-  | sed -e 's/__PLUGINS__/"x"/g' -e 's/__OPENAI_PROVIDER__//g' \
+  | sed -e 's/__PLUGINS__/"x"/g' -e 's/__OPENAI_PROVIDER__//g' -e 's/__OPENROUTER_PROVIDER__//g' \
         -e 's#__ORCH_MODEL__#anthropic/claude-opus-x#g' -e 's/__ORCH_OPTS__/"x":"y"/g' \
         -e 's/__MAXCTX__/800000/g' -e 's/__EFF_MAIN__/max/g' -e 's/__EFF_VERIFY__/max/g' \
         -e 's/__VERIFIER_MODEL__/deepseek-v4-pro/g')"

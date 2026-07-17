@@ -11,6 +11,12 @@ set_deepseek_key() {
   if validate_deepseek_key "$k"; then secret_set DEEPSEEK_API_KEY "$k"; export DEEPSEEK_API_KEY="$k"; ok "DeepSeek key saved + valid."
   else err "Key rejected by DeepSeek — not saved."; fi
 }
+set_openrouter_key() {
+  ask_secret "OpenRouter API key (sk-or-…, Enter to keep current)"; local k="$ASK_REPLY"
+  [ -n "$k" ] || { info "kept current OpenRouter key."; return; }
+  secret_set OPENROUTER_API_KEY "$k"; export OPENROUTER_API_KEY="$k"
+  ok "OpenRouter key saved. Use it per agent via 'openrouter/<model>' (Models → per-agent), or for the cross-model debate (DEBATE_MODEL_B)."
+}
 set_context7_key() {
   ask_secret "Context7 API key (optional; Enter to KEEP the current one)"
   if [ -n "$ASK_REPLY" ]; then
@@ -47,9 +53,10 @@ providers_menu() {
       "DeepSeek API key::$([ -n "${DEEPSEEK_API_KEY:-}" ] && echo set || echo unset)" \
       "Anthropic — Claude Pro/Max subscription::$astat (login + plugin)" \
       "OpenAI::mode=$(o=$(config_get AUTH_openai); echo "${o:-subscription}") · $ostat" \
+      "OpenRouter API key::$([ -n "${OPENROUTER_API_KEY:-}" ] && echo set || echo unset) · per-agent 'openrouter/<model>' + debate challenger" \
       "Context7 key::$([ -n "${CONTEXT7_API_KEY:-}" ] && echo set || echo unset)" \
       "← back::"
-    case "$MENU_CHOICE" in 1) set_deepseek_key ;; 2) set_anthropic_sub ;; 3) set_openai ;; 4) set_context7_key ;; 5) return ;; esac
+    case "$MENU_CHOICE" in 1) set_deepseek_key ;; 2) set_anthropic_sub ;; 3) set_openai ;; 4) set_openrouter_key ;; 5) set_context7_key ;; 6) return ;; esac
   done
 }
 
@@ -65,14 +72,17 @@ set_agent_model() {  # <agent>
     "DeepSeek::deepseek-v4-pro / -flash" \
     "Anthropic (Claude subscription)::claude-opus-4-8 / sonnet-4-6" \
     "OpenAI::gpt-… (subscription or API)" \
+    "OpenRouter::openrouter/<vendor/model> (API key)" \
     "Reset to default::clears the per-agent override" \
     "← back::"
   case "$MENU_CHOICE" in
     1) prov=deepseek; def="deepseek/deepseek-v4-pro" ;;
     2) prov=anthropic; def="anthropic/claude-opus-4-8" ;;
     3) prov=openai; def="openai/gpt-5" ;;
-    4) config_set "MODEL_$a" ""; ok "$a → default"; return ;;
-    5) return ;;
+    4) prov=openrouter; def="openrouter/anthropic/claude-opus-4.1"
+       [ -n "${OPENROUTER_API_KEY:-}" ] || warn "No OPENROUTER_API_KEY set — Settings → Providers & keys → OpenRouter first." ;;
+    5) config_set "MODEL_$a" ""; ok "$a → default"; return ;;
+    6) return ;;
   esac
   ask "Model id for $a ($prov/…)" "$def"; m="$ASK_REPLY"
   [ -n "$m" ] && { config_set "MODEL_$a" "$m"; ok "$a → $m"; }
@@ -84,6 +94,7 @@ model_presets_menu() {
     "Overseer on Claude::orchestrator → claude-opus-4-8, rest DeepSeek" \
     "Overseer on OpenAI::orchestrator → gpt-5, rest DeepSeek" \
     "Mixed (Claude plan + DeepSeek)::orchestrator → claude-sonnet-4-6; light checks (verifier/standards/alignment) → flash; deep critics stay pro" \
+    "Cross-review (critics ≠ implementer)::implementer/test → DeepSeek; the review panel → OpenRouter, so review isn't same-model self-agreement (needs OPENROUTER_API_KEY)" \
     "← back::"
   local a
   case "$MENU_CHOICE" in
@@ -94,7 +105,14 @@ model_presets_menu() {
        config_set MODEL_orchestrator "anthropic/claude-sonnet-4-6"; config_set ORCH_PROVIDER sonnet
        config_set MODEL_verifier "deepseek/deepseek-v4-flash"; config_set MODEL_standards_keeper "deepseek/deepseek-v4-flash"; config_set MODEL_alignment_reviewer "deepseek/deepseek-v4-flash"
        ok "preset: mixed." ;;
-    5) : ;;
+    5) [ -n "${OPENROUTER_API_KEY:-}" ] || warn "No OPENROUTER_API_KEY — set it first (Settings → Providers & keys → OpenRouter); the preset is applied regardless."
+       local _orm; ask "OpenRouter model for the review panel" "openrouter/anthropic/claude-opus-4.1"; _orm="$ASK_REPLY"
+       for a in $ACE_AGENTS; do config_set "MODEL_$a" ""; done
+       # implementer + test_engineer stay DeepSeek (default); the review panel moves to a DIFFERENT provider so
+       # critics don't share the implementer's blind spots. Overseer unchanged.
+       for a in reviewer ux_reviewer standards_keeper alignment_reviewer; do config_set "MODEL_$a" "$_orm"; done
+       ok "preset: cross-review — review panel → $_orm (implementer/test stay DeepSeek). Run 'ace opencode' to apply." ;;
+    6) : ;;
   esac
 }
 agent_models_menu() {

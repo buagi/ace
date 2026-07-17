@@ -427,10 +427,11 @@ _agent_model() { local m; m="$(config_get "MODEL_$1" 2>/dev/null)"; [ -n "$m" ] 
 # provider-appropriate options JSON for a model + effort tier
 _model_opts() {  # <provider/model> <eff>
   case "$1" in
-    deepseek/*)  printf '{ "reasoningEffort": "%s", "thinking": { "type": "enabled" } }' "$2" ;;
-    anthropic/*) printf '{ "thinking": { "type": "enabled" } }' ;;
-    openai/*)    printf '{ "reasoningEffort": "%s" }' "$2" ;;
-    *)           printf '{ }' ;;
+    deepseek/*)   printf '{ "reasoningEffort": "%s", "thinking": { "type": "enabled" } }' "$2" ;;
+    anthropic/*)  printf '{ "thinking": { "type": "enabled" } }' ;;
+    openai/*)     printf '{ "reasoningEffort": "%s" }' "$2" ;;
+    openrouter/*) printf '{ }' ;;   # OpenRouter proxies many models; leave options empty so no provider-specific param is mis-sent
+    *)            printf '{ }' ;;
   esac
 }
 # distinct providers across all agents' resolved models
@@ -513,6 +514,12 @@ write_opencode_config() {
   if printf '%s' "$_provs" | grep -qx openai && [ "$(config_get AUTH_openai)" = api ]; then
     OPENAI_PROVIDER=', "openai": { "npm": "@ai-sdk/openai", "name": "OpenAI", "options": { "apiKey": "{env:OPENAI_API_KEY}" } }'
   fi
+  # OpenRouter provider block — emitted when ANY agent's model (or the debate) resolves to openrouter/*. OpenAI-
+  # compatible endpoint keyed by OPENROUTER_API_KEY (env-key, no OAuth — stored in secrets.env like DeepSeek).
+  local OPENROUTER_PROVIDER=''
+  if printf '%s' "$_provs" | grep -qx openrouter; then
+    OPENROUTER_PROVIDER=', "openrouter": { "npm": "@ai-sdk/openai-compatible", "name": "OpenRouter", "options": { "baseURL": "https://openrouter.ai/api/v1", "apiKey": "{env:OPENROUTER_API_KEY}" } }'
+  fi
 
   if [ "$ACE_DRY_RUN" = 1 ]; then
     info "[dry-run] would write $cfgdir/opencode.json (eff=$EFF_MAIN, verifier=$VERIFIER_MODEL) + AGENTS.md"; return
@@ -531,7 +538,7 @@ write_opencode_config() {
         "deepseek-v4-pro":   { "name": "DeepSeek V4 Pro",   "limit": { "context": 1048576, "output": 196608 }, "options": { "reasoningEffort": "max", "thinking": { "type": "enabled" } } },
         "deepseek-v4-flash": { "name": "DeepSeek V4 Flash", "limit": { "context": 1048576, "output": 196608 }, "options": { "reasoningEffort": "high", "thinking": { "type": "enabled" } } }
       }
-    }__OPENAI_PROVIDER__
+    }__OPENAI_PROVIDER____OPENROUTER_PROVIDER__
   },
   "model": "deepseek/deepseek-v4-pro",
   "small_model": "deepseek/deepseek-v4-flash",
@@ -633,7 +640,7 @@ write_opencode_config() {
   }
 }
 JSON
-  sed -i "s|__PLUGINS__|$PLUGINS|; s|__OPENAI_PROVIDER__|$OPENAI_PROVIDER|; s|__ORCH_MODEL__|$ORCH_MODEL|; s|__ORCH_OPTS__|$ORCH_OPTS|; s|__MAXCTX__|$MAXCTX|; s|__EFF_MAIN__|$EFF_MAIN|g; s|__EFF_VERIFY__|$EFF_VERIFY|g; s|__VERIFIER_MODEL__|$VERIFIER_MODEL|g" "$cfgdir/opencode.json"
+  sed -i "s|__PLUGINS__|$PLUGINS|; s|__OPENAI_PROVIDER__|$OPENAI_PROVIDER|; s|__OPENROUTER_PROVIDER__|$OPENROUTER_PROVIDER|; s|__ORCH_MODEL__|$ORCH_MODEL|; s|__ORCH_OPTS__|$ORCH_OPTS|; s|__MAXCTX__|$MAXCTX|; s|__EFF_MAIN__|$EFF_MAIN|g; s|__EFF_VERIFY__|$EFF_VERIFY|g; s|__VERIFIER_MODEL__|$VERIFIER_MODEL|g" "$cfgdir/opencode.json"
   # context7 needs an API key — disable the MCP when none is configured, else opencode fails to start
   # that server on EVERY launch (npx …context7-mcp --api-key "" → connect error). Re-enabled once a key
   # is saved (secrets.env) by re-running `ace install`.
