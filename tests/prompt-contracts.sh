@@ -34,7 +34,7 @@ JSON="$(awk '/opencode\.json" <</{f=1;next} /^JSON$/{f=0} f' "$IN" \
         -e 's/__VERIFIER_MODEL__/deepseek-v4-pro/g')"
 echo "$JSON" | jq -e . >/dev/null 2>&1 || bad "generated opencode.json is not valid JSON (broken escaping in a prompt edit)"
 NAGENTS="$(echo "$JSON" | jq -r '.agent | keys | length' 2>/dev/null || echo 0)"
-[ "$NAGENTS" = 10 ] || bad "expected 10 agents in the generated config, got $NAGENTS"
+[ "$NAGENTS" = 11 ] || bad "expected 11 agents in the generated config, got $NAGENTS"   # was 10 — Part H/H3 added researcher
 
 # --- helpers ---
 has(){ # <agent> <fixed-string clause>
@@ -48,7 +48,7 @@ perm_deny(){ # <agent> — a read-only critic must keep task:deny (else it can s
 
 # --- 3. per-agent load-bearing contracts (verified PRESENT in STEP 0 / F0 baseline) ---
 # read-only critics keep task:deny
-for a in verifier reviewer ux_reviewer standards_keeper alignment_reviewer launch_readiness_reviewer; do perm_deny "$a"; done
+for a in verifier reviewer ux_reviewer standards_keeper alignment_reviewer launch_readiness_reviewer researcher; do perm_deny "$a"; done
 # findings must cite concrete evidence (file:line)
 for a in verifier reviewer ux_reviewer standards_keeper alignment_reviewer; do has "$a" "file:line"; done
 # verifier: PASS/FAIL contract + the abstention token
@@ -102,8 +102,17 @@ grep -q "placed BEFORE its 'Files:' hint" lib/autoloop.sh || bad "planner lost t
 has implementer 'spec-slice.<slug>.md'
 grep -q 'swarm_spec_slice' lib/swarm-run.sh || bad "swarm-run lost the _do_work spec-slice assembly"
 
+# --- Part H / H3: the read-only researcher subagent (#11) — isolated spec drafting ---
+has researcher 'read-only'
+has researcher 'spec-template.md'
+has researcher 'cites <path>:L'
+has researcher 'UNVERIFIED'
+jq -e '.agent.researcher.permission.edit == "deny" and .agent.researcher.permission.write == "deny" and .agent.researcher.permission.task == "deny"' \
+  <<<"$JSON" >/dev/null 2>&1 || bad "researcher lost its read-only denies (edit/write/task must all be deny)"
+has orchestrator 'RESEARCH DELEGATION'
+
 if [ "$fail" = 0 ]; then
-  echo "prompt-contracts: PASS — 10 agents, valid JSON, all placeholders + load-bearing clauses intact"
+  echo "prompt-contracts: PASS — 11 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0
 fi
 echo "prompt-contracts: FAIL — a load-bearing agent clause regressed (see above)"
