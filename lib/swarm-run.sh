@@ -427,9 +427,19 @@ _swarm_plan_sync() {
                  | while IFS= read -r _s; do [ -n "$_s" ] && [ -f "$REPO/$_s" ] && printf '%s\n' "$REPO/$_s"; done; }
     if [ -n "$(_specf)" ]; then
       _slint="$(cd "$REPO" && REPO="$REPO" swarm_spec_lint $(_specf) 2>/dev/null)"
-      # H5 Edit 5: OPTIONAL LLM rubric (SPEC_RUBRIC=1, default OFF) — one bounded, fail-open call per lint-GREEN
-      # HIGH-risk spec; its GAPS fold into the SAME SPECGAP report so the re-spec drive below handles them.
-      if [ "${SPEC_RUBRIC:-0}" = 1 ]; then
+      # OPTIONAL quality layer on lint-GREEN HIGH-risk specs, folding GAPS into the SAME SPECGAP report the
+      # re-spec drive below reads. Both default OFF, fail-open. SPEC_DEBATE (cross-model dialogue) subsumes the
+      # single-shot SPEC_RUBRIC, so when both are on the debate wins.
+      if [ "${SPEC_DEBATE:-0}" = 1 ]; then
+        echo "  planning: spec-debate — cross-model dialogue pressure-testing the feature spec(s) (SPEC_DEBATE=1)…"
+        local _rsp _deb
+        while IFS= read -r _rsp; do
+          [ -n "$_rsp" ] || continue
+          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue   # lint already flagged this spec
+          _deb="$(cd "$REPO" && bash "$HERE/debate.sh" spec "$_rsp" 2>/dev/null)" || true
+          [ -n "$_deb" ] && _slint="$(printf '%s\n%s' "$_slint" "$_deb")"
+        done < <(_specf)
+      elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
         echo "  planning: spec-rubric judging the feature spec(s) on your model (SPEC_RUBRIC=1)…"
         local _rsp _rub
         while IFS= read -r _rsp; do
