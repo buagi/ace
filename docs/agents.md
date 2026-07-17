@@ -27,7 +27,7 @@ The orchestrator runs on your chosen overseer brain and writes no code — it pl
 
 ## Overseer brain
 
-The orchestrator's model is your choice; the nine subagents are fixed on DeepSeek V4.
+The orchestrator's model is your choice; the ten subagents are fixed on DeepSeek V4.
 
 | Brain | Model id | Needs |
 |-------|----------|-------|
