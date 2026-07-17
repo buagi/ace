@@ -56,7 +56,7 @@ con_check_gitnexus(){
   if [ "$st" = stale ] || [ "${stale:-0}" -gt 0 ]; then
     warn "gitnexus   ${st:-?}; ${stale} stale branch-graph(s); ${sz:-?}MB"; return 1; fi
   [ "${sz:-0}" -gt "$ACE_GITNEXUS_WARN_MB" ] && { warn "gitnexus   up-to-date but large (${sz}MB ≥ ${ACE_GITNEXUS_WARN_MB}MB)"; return 1; }
-  ok "gitnexus   up-to-date, lean (${sz:-?}MB, $(ls "$root"/.gitnexus/branches 2>/dev/null | grep -c . || echo 0) branch-graphs)"; return 0
+  ok "gitnexus   up-to-date, lean (${sz:-?}MB, $(ls "$root"/.gitnexus/branches 2>/dev/null | grep -c . || true) branch-graphs)"; return 0
 }
 
 con_check_arch(){ # informational only — freshness is gated by ci.sh + per-task graph-refresh

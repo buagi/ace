@@ -38,9 +38,10 @@ _debate_turn(){ timeout "${DEBATE_TIMEOUT:-600}" opencode run --agent debater --
 # _debate_converged <challenger-out> <defender-out> → prints "conv<TAB>needs" (1/0 each)
 _debate_flags(){
   local conv=0 needs=0
-  printf '%s' "$1" | grep -iE '^CONVERGED:' | tail -1 | grep -qi 'yes' \
-    && printf '%s' "$2" | grep -iE '^CONVERGED:' | tail -1 | grep -qi 'yes' && conv=1
-  printf '%s\n%s' "$1" "$2" | grep -iE '^NEEDS-MORE:' | grep -qi 'yes' && needs=1
+  # require 'yes' RIGHT AFTER the colon (a line like "CONVERGED: no — answer yes/no on X" must NOT count as yes)
+  printf '%s' "$1" | grep -iE '^CONVERGED:[[:space:]]*yes\b' >/dev/null \
+    && printf '%s' "$2" | grep -iE '^CONVERGED:[[:space:]]*yes\b' >/dev/null && conv=1
+  printf '%s\n%s' "$1" "$2" | grep -iE '^NEEDS-MORE:[[:space:]]*yes\b' >/dev/null && needs=1
   printf '%s\t%s' "$conv" "$needs"
 }
 
@@ -70,6 +71,7 @@ ace_debate(){
     "$mode" "$slug" "$A" "$B" "${DEBATE_MIN:-2}" "${DEBATE_MAX:-4}" "${DEBATE_HARD_MAX:-10}" > "$trf"
 
   local transcript="" round=0 min="${DEBATE_MIN:-2}" max="${DEBATE_MAX:-4}" hard="${DEBATE_HARD_MAX:-10}"
+  local _start; _start="$(date +%s)"   # total wall-clock backstop: this gate runs SYNCHRONOUSLY in planning
   while :; do
     round=$((round+1))
     local cprompt cout
@@ -102,6 +104,9 @@ $dout"
     [ "$round" -ge "$min" ] && [ "$conv" = 1 ] && break               # both converged (after the min real exchange)
     if [ "$round" -ge "$max" ]; then { [ "$needs" = 1 ] && [ "$round" -lt "$hard" ]; } || break; fi
     [ "$round" -ge "$hard" ] && break
+    # wall backstop: a non-converging pair that keeps flagging NEEDS-MORE could run rounds×2×DEBATE_TIMEOUT —
+    # far too long for a synchronous planning gate. Cap total debate wall time (default 30m). Fail-open: proceed to synthesis with what we have.
+    [ "$(( $(date +%s) - _start ))" -ge "${DEBATE_WALL_MAX:-1800}" ] && { printf '\n── debate wall-cap (%ss) reached at round %s — synthesizing what we have ──\n' "${DEBATE_WALL_MAX:-1800}" "$round" >> "$trf"; break; }
   done
 
   # synthesis — the defender distills ONLY the issues both sides accepted into machine lines.
