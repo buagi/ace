@@ -98,6 +98,9 @@ grep -q 'swarm_spec_lint' lib/swarm-run.sh || bad "swarm-run lost the pre-dispat
 has orchestrator '(AC-2,AC-E1)'
 has verifier 'ACCEPTANCE PROOF'
 grep -q "placed BEFORE its 'Files:' hint" lib/autoloop.sh || bad "planner lost the Spec/AC-before-Files field ordering"
+# H6 Edit 2: worker-dispatch spec slice — implementer reads it first; swarm-run assembles it fail-open
+has implementer 'spec-slice.<slug>.md'
+grep -q 'swarm_spec_slice' lib/swarm-run.sh || bad "swarm-run lost the _do_work spec-slice assembly"
 
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 10 agents, valid JSON, all placeholders + load-bearing clauses intact"

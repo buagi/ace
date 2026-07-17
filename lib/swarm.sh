@@ -642,6 +642,68 @@ SP
   rm -rf "$d"; [ "$ok" = 1 ]
 }
 
+# swarm_spec_slice <spec.md> <ac-csv> — Part H/H6 Edit 2: assemble the self-contained increment context a
+# worker needs, so the RIGHT slice of the spec is in the prompt even when a worker economizes reads. Emits §3
+# Scope (full — In AND Out is the anti-drift wall), §4 filtered to ONLY this increment's AC ids, and §C1/§C5
+# iff they're not N/A, then the Definition-of-Done line. Capped at 120 lines (a bloated slice is a spec smell).
+swarm_spec_slice() {
+  local spec="$1" acs="${2:-}"
+  [ -f "$spec" ] || { echo "swarm: no spec $spec" >&2; return 2; }
+  _sec(){ awk -v H="## $1." 'index($0,H)==1{f=1;next} /^## /{f=0} f' "$spec"; }
+  local acre; acre="$(printf '%s' "$acs" | tr ',' '\n' | sed 's/[[:blank:]]//g' | grep -E '^AC-E?[0-9]+$' | sed 's/$/ /' | paste -sd '|' -)"
+  {
+    printf '── SPEC SLICE · %s · ACs: %s ──\n' "$(basename "$spec")" "${acs:-<none>}"
+    printf '\n## 3. Scope\n'; _sec 3 "$spec"
+    printf '\n## 4. Acceptance criteria (THIS increment only)\n'
+    if [ -n "$acre" ]; then _sec 4 "$spec" | grep -E "^[[:space:]]*- ($acre)" || true; else _sec 4 "$spec"; fi
+    local c body
+    for c in C1 C5; do
+      body="$(_sec "$c" "$spec" | grep -vE '^[[:space:]]*(<!--.*)?$')"
+      [ -n "$body" ] && ! printf '%s\n' "$body" | grep -qiE '^[[:space:]]*N/A' && { printf '\n## %s.\n%s\n' "$c" "$body"; }
+    done
+    printf '\nDefinition-of-Done = ACs %s. §3-Out bounds you (touching an Out item is scope-creep). Full spec: %s\n──\n' "${acs:-<none>}" "$spec"
+  } | head -120
+}
+
+# swarm_spec_slice_selftest — a slice from a 2-AC spec must contain §3, ONLY the requested AC line, and be capped.
+swarm_spec_slice_selftest() {
+  local d ok=1 out; d="$(mktemp -d)" || return 1
+  ( cd "$d"
+    cat > s.md <<'SP'
+<!-- ace-spec-template v1 -->
+# Spec: Demo   (slug: s · risk: LOW · tier: FULL)
+## 3. Scope
+### In
+- add save
+### Out
+- no offline sync
+## 4. Acceptance criteria
+- AC-1 WHEN save clicked THE SYSTEM SHALL persist in 200ms.
+- AC-2 WHEN reload THE SYSTEM SHALL restore state.
+- AC-E1 WHEN empty THE SYSTEM SHALL reject 400.
+## 5. Integration (cited)
+- x (cites a.ts:L1)
+## 6. Increments
+1. p — files: a.ts — ACs: AC-1
+## C1. Contract
+POST /save {id}
+## C5. Security
+N/A — none
+SP
+    out="$(swarm_spec_slice s.md 'AC-1,AC-E1')"
+    printf '%s\n' "$out" | grep -q '## 3. Scope' || { echo "[spec-slice] missing §3 Scope"; ok=0; }
+    printf '%s\n' "$out" | grep -q 'no offline sync' || { echo "[spec-slice] missing §3 Out"; ok=0; }
+    printf '%s\n' "$out" | grep -q 'AC-1 WHEN save' || { echo "[spec-slice] missing requested AC-1"; ok=0; }
+    printf '%s\n' "$out" | grep -q 'AC-E1 WHEN empty' || { echo "[spec-slice] missing requested AC-E1"; ok=0; }
+    printf '%s\n' "$out" | grep -q 'AC-2 WHEN reload' && { echo "[spec-slice] leaked non-requested AC-2"; ok=0; }
+    printf '%s\n' "$out" | grep -q 'POST /save' || { echo "[spec-slice] missing §C1 (not N/A)"; ok=0; }
+    printf '%s\n' "$out" | grep -q '## C5' && { echo "[spec-slice] included §C5 which is N/A"; ok=0; }
+    [ "$(printf '%s\n' "$out" | wc -l)" -le 120 ] || { echo "[spec-slice] not capped at 120 lines"; ok=0; }
+    [ "$ok" = 1 ] && echo "[spec-slice] PASS ✓" || { echo "[spec-slice] FAIL ✗"; exit 1; }
+  ) || ok=0
+  rm -rf "$d"; [ "$ok" = 1 ]
+}
+
 # swarm_touch WORKER HASH ADDPATHS — extend an ACTIVE claim mid-flight when a
 # flow discovers it must edit more files. Succeeds iff ADDPATHS don't overlap
 # ANOTHER worker's active lease (a flow's own lease can always grow). ok/busy.
@@ -1146,11 +1208,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     plan-lint-selftest) swarm_plan_lint_selftest ;;
     spec-lint)      shift; swarm_spec_lint "$@" ;;
     spec-lint-selftest) swarm_spec_lint_selftest ;;
+    spec-slice)     shift; swarm_spec_slice "$@" ;;
+    spec-slice-selftest) swarm_spec_slice_selftest ;;
     scope-stats)    swarm_scope_stats ;;
     stats)          swarm_stats ;;
     green-set)      swarm_green_set "${2:-}" ;;
     green-get)      swarm_green_get ;;
     main-red)       swarm_main_red "${2:-get}" "${3:-}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|spec-slice|spec-slice-selftest|scope-stats}" >&2; exit 2 ;;
   esac
 fi

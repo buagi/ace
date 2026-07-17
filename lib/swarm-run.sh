@@ -83,6 +83,19 @@ _do_work() {
   # short human slug for tagging telemetry ([w1·generate], events.jsonl feat=…)
   local feat; feat="$(printf '%s' "$item" | sed -E 's/^[0-9]+:[[:space:]]*- \[[ x]\] //; s/\*//g' | grep -oE '`[^`]+`' | head -1 | tr -d '`')"
   [ -n "$feat" ] || feat="$(printf '%s' "$item" | sed -E 's/^[0-9]+:[[:space:]]*- \[[ x]\] //; s/\*//g' | awk '{print $1, $2, $3}')"
+  # H6 Edit 2: if the claimed item carries 'Spec:' (+ 'AC:'), assemble a self-contained SLICE (§3 Scope + only
+  # this increment's ACs + non-N/A C1/C5) into a gitignored cache file the implementer reads first — so the
+  # right context is in the prompt even when the worker economizes reads. SPEC_SLICE=0 skips. Fail-open.
+  if [ "${SPEC_SLICE:-1}" = 1 ]; then
+    local _sp _ac _sl; _sp="$(printf '%s' "$item" | grep -oE 'Spec:[[:space:]]*[^ )]+\.md' | sed -E 's/^Spec:[[:space:]]*//')"
+    _ac="$(printf '%s' "$item" | grep -oE 'AC:[[:space:]]*[A-Za-z0-9,-]+' | sed -E 's/^AC:[[:space:]]*//')"
+    if [ -n "$_sp" ] && [ -f "$wt/$_sp" ]; then
+      _sl="$wt/.opencode/cache/spec-slice.$(basename "$_sp" .md).md"; mkdir -p "$(dirname "$_sl")" 2>/dev/null
+      swarm_spec_slice "$wt/$_sp" "$_ac" > "$_sl" 2>/dev/null || rm -f "$_sl"
+    elif [ -n "$_sp" ]; then
+      swarm_post "$wid" needs-attention "spec-slice: $_sp not in worktree — dispatching without a slice (fail-open)" "$item" 2>/dev/null || true
+    fi
+  fi
   # #62: run the autoloop in the BACKGROUND with `exec` so $! is the autoloop's OWN pid — then the abandon
   # watcher (run_worker) can TERM exactly this process, whose cleanup trap commits WIP + kills opencode + exits.
   ( cd "$wt" && SWARM_WORKER="$wid" SWARM_HASH="$hash" SWARM_DIR="$SWARM_DIR" \
