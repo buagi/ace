@@ -83,6 +83,13 @@ done
 grep -q 'FILLING THE TEMPLATE' lib/autoloop.sh || bad "sync_objectives drive lost the template clause"
 grep -q 'every .opencode/specs/\*.md' lib/autoloop.sh || bad "planner commit clause lost the spec-commit rule"
 
+# --- Part H / H4: firecrawl research MCP + tool-shape routing + SSRF safety ---
+jq -e '.mcp | keys | sort == ["context7","firecrawl","gitnexus","serena"]' <<<"$JSON" >/dev/null 2>&1 \
+  || bad "mcp block keys drifted (expected context7+firecrawl+gitnexus+serena)"
+grep -q 'RESEARCH TOOL-SHAPE' "$IN"      || bad "AGENTS.md lost the TOOL-SHAPE routing block"
+grep -q 'NEVER firecrawl_crawl' "$IN"    || bad "AGENTS.md lost the crawl prohibition"
+grep -q 'RESEARCH SAFETY (SSRF' "$IN"    || bad "AGENTS.md lost the SSRF research-safety rule"
+
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 10 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0

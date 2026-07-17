@@ -219,6 +219,7 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace verify          deep post-deploy verification agent: probe the VPS (reachability,
                       TLS, service, errors, integrations) -> triage findings into ROADMAP.md
   ace logs            tail the latest log
+  ace firecrawl up|down|status   ACE-managed LOCAL research crawler (loopback-only; boosts feature research)
   ace stats [global|N|task] per-subagent × worker (or 'task' = per-ROADMAP-task) token/cost from the opencode session DB ('global'=all projects, N=last-N-days). ACE_TELEMETRY=0 turns OFF all run logging
   ace quality         quality leading-indicators: per-critic false-positive rate + retry rate + escaped-bug (-> .opencode/quality-report.md)
   ace hermes          wire loop milestones + command-back to Hermes (-> Signal/Telegram/phone)
@@ -293,6 +294,7 @@ done
 case "${cmd:-menu}" in
   menu)              alt_screen_on; trap 'alt_screen_off' EXIT INT TERM; main_menu; alt_screen_off; trap - EXIT INT TERM ;;
   status|doctor)     doctor ;;
+  firecrawl)         firecrawl_cmd "${ACE_ARG:-status}" ;;
   install|guided)    guided ;;
   keys)              configure_keys ;;
   opencode)          write_opencode_config ;;

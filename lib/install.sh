@@ -620,7 +620,8 @@ write_opencode_config() {
   "mcp": {
     "gitnexus": { "type": "local", "command": ["sh", "-c", "command -v gitnexus >/dev/null 2>&1 && exec gitnexus mcp || exec npx -y gitnexus@latest mcp"], "enabled": true },
     "serena":   { "type": "local", "command": ["uvx", "--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], "enabled": true },
-    "context7": { "type": "local", "command": ["npx", "-y", "@upstash/context7-mcp", "--api-key", "{env:CONTEXT7_API_KEY}"], "enabled": true }
+    "context7": { "type": "local", "command": ["npx", "-y", "@upstash/context7-mcp", "--api-key", "{env:CONTEXT7_API_KEY}"], "enabled": true },
+    "firecrawl": { "type": "local", "command": ["npx", "-y", "firecrawl-mcp"], "enabled": true }
   }
 }
 JSON
@@ -631,6 +632,16 @@ JSON
   if [ -z "${CONTEXT7_API_KEY:-}" ] && ! grep -q '^export CONTEXT7_API_KEY=.' "${ACE_SECRETS:-$HOME/.config/ace/secrets.env}" 2>/dev/null; then
     _ct="$(mktemp)" && jq '.mcp.context7.enabled=false' "$cfgdir/opencode.json" > "$_ct" 2>/dev/null && mv "$_ct" "$cfgdir/opencode.json" \
       && info "context7 MCP disabled (no CONTEXT7_API_KEY) — re-run 'ace install' with a key to enable it."
+  fi
+  # firecrawl is self-hosted + on-demand — disable the MCP when the instance isn't reachable, else opencode
+  # fails to start that server on EVERY launch (same failure mode as context7-without-key). LOCAL by default
+  # (loopback 127.0.0.1:3002 — no data leaves the box, no cloud key). Re-enabled by 'ace firecrawl up' + re-run.
+  local _fcurl="${FIRECRAWL_API_URL:-http://127.0.0.1:${FIRECRAWL_PORT:-3002}}"
+  if ! curl -fsS -m 3 "${_fcurl%/}/" >/dev/null 2>&1; then
+    _fc="$(mktemp)" && jq '.mcp.firecrawl.enabled=false' "$cfgdir/opencode.json" > "$_fc" 2>/dev/null && mv "$_fc" "$cfgdir/opencode.json" \
+      && info "firecrawl MCP disabled (instance unreachable at $_fcurl) — 'ace firecrawl up' then re-run 'ace opencode'. Research falls back to webfetch."
+  else
+    ok "firecrawl MCP enabled (LOCAL $_fcurl · loopback-only · no cloud key)."
   fi
   # per-agent model overrides: an explicit MODEL_<agent> beats the default just stamped. With NO
   # MODEL_* set (the common case) this loop is a no-op, so the output is byte-identical to before.
@@ -734,6 +745,45 @@ N/A — <reason>
 SPEC_TEMPLATE
 }
 
+# firecrawl_cmd (Part H / H4) — ACE-managed LOCAL research crawler. `ace firecrawl {up|down|status}`. Brings up
+# the self-hosted Firecrawl container (loopback-only), verifies the binding, persists the LOCAL url so the MCP
+# inherits it, and EMPHASIZES the security posture to the user before starting anything. Fail-open everywhere.
+firecrawl_cmd() {
+  local sub="${1:-status}" eng dir port sec n
+  dir="${FIRECRAWL_DIR:-$HOME/firecrawl}"; port="${FIRECRAWL_PORT:-3002}"
+  eng="$(command -v podman >/dev/null 2>&1 && echo podman || { command -v docker >/dev/null 2>&1 && echo docker; })"
+  _fc_up() { curl -fsS -m 2 "http://127.0.0.1:${port}/" >/dev/null 2>&1; }
+  case "$sub" in
+    up)
+      { [ -f "$dir/docker-compose.yaml" ] || [ -f "$dir/docker-compose.yml" ]; } || { err "no Firecrawl compose in $dir (set FIRECRAWL_DIR). Self-host: github.com/firecrawl/firecrawl."; return 1; }
+      [ -n "$eng" ] || { err "need podman or docker to run Firecrawl."; return 1; }
+      box "⛧ Firecrawl — LOCAL research crawler (please read)" \
+        "ACE will start a Firecrawl container on THIS machine so the loop can research features —" \
+        "search the web for how comparable products build a feature + the industry-standard scope." \
+        "" \
+        "SECURITY — why this is safe:" \
+        "• Bound to 127.0.0.1 (loopback) ONLY — never exposed to your network or the inbound internet." \
+        "• Self-hosted: NO cloud key. Your code / prompts / secrets are NEVER sent to any Firecrawl cloud." \
+        "  The only outbound traffic is the container fetching the PUBLIC pages an agent asks it to read." \
+        "• Agents are instructed (AGENTS.md SSRF rule) to fetch ONLY public docs — never localhost, internal" \
+        "  services, cloud-metadata (169.254.169.254), or file:// paths." \
+        "• Stop it anytime:  ace firecrawl down"
+      confirm "Start the local Firecrawl container now?" Y || { info "skipped."; return 0; }
+      ( cd "$dir" && $eng compose up -d ) || { err "compose up failed — check '$eng compose logs' in $dir."; return 1; }
+      for n in $(seq 1 20); do _fc_up && break; sleep 1.5; done
+      if _fc_up; then
+        $eng ps --format '{{.Ports}}' 2>/dev/null | grep -qE "0\.0\.0\.0:${port}|\[::\]:${port}|(^|[^.0-9])${port}->" \
+          && warn "⚠ port ${port} may be bound to ALL interfaces (0.0.0.0) — publish '127.0.0.1:${port}:${port}' in the compose so it stays loopback-only."
+        sec="${ACE_SECRETS:-$HOME/.config/ace/secrets.env}"; mkdir -p "$(dirname "$sec")"
+        grep -q '^export FIRECRAWL_API_URL=' "$sec" 2>/dev/null || echo "export FIRECRAWL_API_URL=http://127.0.0.1:${port}" >> "$sec"
+        ok "Firecrawl UP (http://127.0.0.1:${port} · loopback-only · no cloud key). Now run 'ace opencode' to enable the MCP."
+      else err "Firecrawl didn't answer on :${port} within 30s — check '$eng compose logs' in $dir."; return 1; fi ;;
+    down) [ -n "$eng" ] && ( cd "$dir" && $eng compose down ) && ok "Firecrawl stopped." || warn "no engine / nothing to stop." ;;
+    status|"") if _fc_up; then ok "Firecrawl: UP (http://127.0.0.1:${port} · loopback)"; else warn "Firecrawl: DOWN — 'ace firecrawl up' to start (optional; research falls back to webfetch)."; fi ;;
+    *) echo "usage: ace firecrawl {up|down|status}" >&2; return 2 ;;
+  esac
+}
+
 write_global_agents_md() {
   cat > "$1" <<'MD'
 # Global agent rules
@@ -776,13 +826,26 @@ Navigate FIRST, before writing code.
   a framework's newest convention)? Use **`webfetch`** against the authoritative source — e.g.
   `https://endoflife.date/api/<product>.json` for runtime LTS/EOL, or a framework's official
   releases/changelog — rather than guessing. Context7 covers library-API docs.
+- RESEARCH TOOL-SHAPE — research is not one job; pick the tool for the shape:
+  - FIND (what exists / how others do it)      → firecrawl_search, then scrape only the 1-2 best hits.
+  - READ a known page fully                    → firecrawl_scrape (markdown).
+  - EXTRACT structured facts from a page       → firecrawl_extract.
+  - LIBRARY API specifics                      → Context7 — never guess signatures.
+  - Single known authoritative URL, or firecrawl tools absent → webfetch (the always-available fallback).
+  NEVER firecrawl_crawl in the loop (unbounded); search+scrape ≤ ACE_RESEARCH_MAX_FETCHES pages total. Cite
+  every used page '(source: <url>, <date>)'.
+- RESEARCH SAFETY (SSRF — mandatory): research fetches ONLY public http(s) documentation/product pages. NEVER
+  aim firecrawl or webfetch at localhost / 127.0.0.1 / 0.0.0.0, a private or link-local address (10.* ·
+  172.16-31.* · 192.168.* · 169.254.* — including the 169.254.169.254 cloud-metadata endpoint), a file:// path,
+  or any internal service; and NEVER place a secret, token, or repo content into a fetched URL. The crawler
+  reaches the public web on your behalf — keep its target list to public sources only.
 - The ACE/loop CLI and its config live OUTSIDE the project repo and are NOT editable from here — own
   any needed fix in-repo (precedent: the in-repo vps-verify + ace-guard work).
 - BATCHING (every turn re-sends the full, growing context — fewer turns = lower cost): issue independent
   reads/greps/edits as PARALLEL tool calls in ONE turn (go sequential only on a real dependency); chain
   shell steps (`cmd1 && cmd2 && cmd3`) and run test+lint+build as ONE command capturing combined output.
 - MCP/tool tax: every tool schema is re-sent on EVERY call by EVERY agent (×16–32 in a swarm). The three
-  shipped MCPs — gitnexus, serena, context7 — are all used; NEVER add an MCP/connector the crew doesn't use.
+  shipped MCPs — gitnexus, serena, context7, firecrawl (self-hosted; auto-disabled when the instance is down) — are all used; NEVER add an MCP/connector the crew doesn't use.
 
 ## Host environment (don't fight the host's package model)
 - On an **atomic/immutable host (Fedora Silverblue/Kinoite, rpm-ostree)** — package installs to the host DO NOT
