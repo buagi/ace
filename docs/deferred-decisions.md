@@ -16,6 +16,7 @@ Maintainer reference for work ACE intentionally leaves unbuilt, with enough cont
 | Swarm next-round backlog (10 ranked fixes) | Post-validation throughput/resilience work, ranked by lever | Ranked below under *Swarm: next fixing round* |
 | Cross-family model for the launch gate | Blocked on the "prompts before models" model-routing deferral | The model-routing deferral lifts (Part D / D4) |
 | Blue-green / canary + multi-region DR | ACE targets a single VPS | ACE promotes beyond one VPS, or needs zero-downtime deploys |
+| Firecrawl auto-spin + startup presentation | Firecrawl is manual (`ace firecrawl up`) and its MCP enable/disable is baked at `ace opencode` time, not surfaced at run start | A run needs richer research, or the `up`→`opencode` ordering trips a user |
 
 ## Swarm: serialized merge and the semantic re-gate
 
@@ -138,3 +139,19 @@ The BLOCK items (tested restore, rollback, env separation, reconciliation, spend
 - [swarm.md](swarm.md) — the parallel-worker swarm these trade-offs are about
 - [autorun.md](autorun.md) — the auto-loop, `merge_if_ready`, and `MERGE_GATE=local`
 - [the-gate.md](the-gate.md) — `./ci.sh --container` and `--launch`
+
+## Firecrawl: auto-spin + present its state at autorun/swarm start
+
+Deferred 2026-07-17. The local research crawler (Part H / H4) works but its lifecycle is manual and its state is decided at the wrong moment + never shown to the user at run start.
+
+**The three problems today**
+1. **No auto-start on a run** — you must `ace firecrawl up` by hand; nothing brings it up for `ace autorun` / `ace swarm start`.
+2. **Enable/disable is baked at `ace opencode` time**, not per-run: the reachability probe (`lib/install.sh:671-676`) flips `mcp.firecrawl.enabled` when the config is generated. So **`ace firecrawl up` must precede `ace opencode`** — start it *after* and the config still has it OFF for the whole run. Silent footgun.
+3. **Nothing tells the user** at run start whether research will use Firecrawl or fall back to `webfetch`.
+
+**To build (polish)**
+- **Surface it in the preflight/START box** — `swarm_preflight` (`lib/swarm-run.sh`) STATE table and `autoloop_run` (`lib/scaffold.sh`) confirm box: `research: Firecrawl UP (loopback · MCP enabled)` vs `research: webfetch fallback (Firecrawl down — 'ace firecrawl up' + 'ace opencode' to enable)`.
+- **Opt-in auto-spin** — `FIRECRAWL_AUTO=1` (or a preflight prompt) runs `ace firecrawl up` at the start of a run, waits for reachability, and — if it flipped up — re-runs the MCP-enable step so the just-generated config reflects it (avoid the stale-config trap). Default OFF, loopback-only, no cloud key (same security posture).
+- **Consider moving the reachability→enable/disable to run-time** (a per-run MCP toggle) so the `up`→`opencode` ordering footgun disappears entirely.
+
+**Trigger:** a run that depends on richer research (search+scrape, not single-URL webfetch), or the ordering trips a user. **Hooks:** `firecrawl_cmd` (`lib/install.sh:780`, the up/down/status), `swarm_preflight`/`_swarm_plan_sync` (`lib/swarm-run.sh`), `autoloop_run` (`lib/scaffold.sh`).
