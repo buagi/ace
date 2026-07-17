@@ -34,7 +34,7 @@ JSON="$(awk '/opencode\.json" <</{f=1;next} /^JSON$/{f=0} f' "$IN" \
         -e 's/__VERIFIER_MODEL__/deepseek-v4-pro/g')"
 echo "$JSON" | jq -e . >/dev/null 2>&1 || bad "generated opencode.json is not valid JSON (broken escaping in a prompt edit)"
 NAGENTS="$(echo "$JSON" | jq -r '.agent | keys | length' 2>/dev/null || echo 0)"
-[ "$NAGENTS" = 11 ] || bad "expected 11 agents in the generated config, got $NAGENTS"   # was 10 — Part H/H3 added researcher
+[ "$NAGENTS" = 12 ] || bad "expected 12 agents in the generated config, got $NAGENTS"   # 10→11 researcher (Part H/H3), 11→12 debater
 
 # --- helpers ---
 has(){ # <agent> <fixed-string clause>
@@ -48,7 +48,7 @@ perm_deny(){ # <agent> — a read-only critic must keep task:deny (else it can s
 
 # --- 3. per-agent load-bearing contracts (verified PRESENT in STEP 0 / F0 baseline) ---
 # read-only critics keep task:deny
-for a in verifier reviewer ux_reviewer standards_keeper alignment_reviewer launch_readiness_reviewer researcher; do perm_deny "$a"; done
+for a in verifier reviewer ux_reviewer standards_keeper alignment_reviewer launch_readiness_reviewer researcher debater; do perm_deny "$a"; done
 # findings must cite concrete evidence (file:line)
 for a in verifier reviewer ux_reviewer standards_keeper alignment_reviewer; do has "$a" "file:line"; done
 # verifier: PASS/FAIL contract + the abstention token
@@ -65,6 +65,15 @@ for a in standards_keeper alignment_reviewer; do has "$a" "PROCEDURE:"; has "$a"
 has conflict_resolver "UNRESOLVABLE"; has conflict_resolver "INTENT and SEMANTICS"
 # launch gate: NO-GO verdict + UNVERIFIED-is-a-fail
 has launch_readiness_reviewer "NO-GO"; has launch_readiness_reviewer "UNVERIFIED"
+# debater (cross-model debate): the good-faith rules + the machine-readable convergence contract
+has debater "sycophantic"; has debater "GROUNDING IS MANDATORY"; has debater "ACCEPTED:"; has debater "CONVERGED:"; has debater "DIFFERENT LLM"
+# the debate ENGINE + its transport/guards (fail-open, HIGH-risk-only, bounded) + the CLI route
+[ -f lib/debate.sh ] || bad "lib/debate.sh (the debate engine) is missing"
+grep -q 'opencode run --agent debater --model' lib/debate.sh || bad "debate.sh lost the read-only debater transport"
+grep -q 'DEBATE_MODEL_B' lib/debate.sh || bad "debate.sh lost the OpenRouter challenger model resolution"
+grep -q "risk:\[\[:space:\]\]\*HIGH" lib/debate.sh || bad "debate.sh lost the HIGH-risk-only guard (spec mode)"
+grep -qE 'debate\)' ace || bad "ace dispatch lost the 'debate' command"
+grep -q '__OPENROUTER_PROVIDER__' lib/install.sh || bad "install.sh lost the openrouter provider seam"
 # orchestrator: the E-series sizing/resume clauses
 has orchestrator "TASK-SIZE GATE"; has orchestrator "IMPLEMENTER-COUNT"; has orchestrator "RESUME DISCIPLINE"
 
@@ -126,7 +135,7 @@ grep -q 'swarm_spec_rubric' lib/swarm-run.sh || bad "swarm-run lost the optional
 grep -q 'SPEC_RUBRIC:-0' lib/swarm.sh || bad "swarm_spec_rubric lost its default-OFF guard (must make zero calls by default)"
 
 if [ "$fail" = 0 ]; then
-  echo "prompt-contracts: PASS — 11 agents, valid JSON, all placeholders + load-bearing clauses intact"
+  echo "prompt-contracts: PASS — 12 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0
 fi
 echo "prompt-contracts: FAIL — a load-bearing agent clause regressed (see above)"

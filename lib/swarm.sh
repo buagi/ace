@@ -1274,11 +1274,12 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     spec-slice-selftest) swarm_spec_slice_selftest ;;
     spec-rubric)    shift; swarm_spec_rubric "$@" ;;
     spec-rubric-selftest) swarm_spec_rubric_selftest ;;
+    debate-selftest) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/debate.sh" selftest ;;
     scope-stats)    swarm_scope_stats ;;
     stats)          swarm_stats ;;
     green-set)      swarm_green_set "${2:-}" ;;
     green-get)      swarm_green_get ;;
     main-red)       swarm_main_red "${2:-get}" "${3:-}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|spec-slice|spec-slice-selftest|spec-rubric|spec-rubric-selftest|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|spec-slice|spec-slice-selftest|spec-rubric|spec-rubric-selftest|debate-selftest|scope-stats}" >&2; exit 2 ;;
   esac
 fi
