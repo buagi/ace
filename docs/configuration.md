@@ -37,7 +37,9 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 
 ### Providers & per-agent models (`ace settings`)
 
-`ace settings → Models & agents` sets which model each of the 11 agents runs, independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 10 subagents default to DeepSeek — **the coders (implementer · test_engineer) run `deepseek-v4-pro`; `-flash` is used only for cheap/mechanical roles** (the rathole judge, opencode's `small_model`, and — under the `balanced`/`mixed` presets — the light checks verifier/standards/alignment). To put a coder on flash: `MODEL_implementer=deepseek/deepseek-v4-flash` (cheaper, weaker — measure with Experiment C before adopting).
+`ace settings → Models & agents` sets which model each of the 11 agents runs, independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed` · `cross-review`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 10 subagents default to DeepSeek — **the coders (implementer · test_engineer) run `deepseek-v4-pro`; `-flash` is used only for cheap/mechanical roles** (the rathole judge, opencode's `small_model`, and — under the `balanced`/`mixed` presets — the light checks verifier/standards/alignment). To put a coder on flash: `MODEL_implementer=deepseek/deepseek-v4-flash` (cheaper, weaker — measure with Experiment C before adopting).
+
+**Any agent can run on any wired provider** — `MODEL_<agent>=<provider>/<model>` (e.g. `MODEL_reviewer=openrouter/anthropic/claude-opus-4.1`). The **cross-review** preset uses this to put the review panel (reviewer · ux_reviewer · standards_keeper · alignment_reviewer) on a **different provider than the implementer**, so review isn't same-model self-agreement — the same cross-model principle the debate engine uses (needs `OPENROUTER_API_KEY`). Re-run `ace opencode` after changing any `MODEL_<agent>`.
 
 `ace settings → Providers & keys`:
 
@@ -46,6 +48,7 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 | DeepSeek | API key | `DEEPSEEK_API_KEY`. |
 | Anthropic | Claude Pro/Max **subscription** | ACE installs the anthropic-auth plugin and runs `opencode auth login -p anthropic` (paste the token), so `anthropic/*` models bill your plan. |
 | OpenAI | ChatGPT **subscription** | Or set `AUTH_openai=api` to use `OPENAI_API_KEY` instead. |
+| OpenRouter | API key | `OPENROUTER_API_KEY`. Wires an OpenAI-compatible `openrouter` provider so any agent (or the debate challenger) can use `openrouter/<vendor/model>`. The provider block is emitted only when some model resolves to `openrouter/*`. |
 
 > [!NOTE]
 > Subscription is the default for Anthropic and OpenAI; an API key is used only if you set one explicitly. On apply, ACE writes `~/.config/opencode/package.json` and runs `bun install` for the needed plugins.
