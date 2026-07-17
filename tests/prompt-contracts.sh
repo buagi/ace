@@ -93,6 +93,10 @@ grep -q 'RESEARCH SAFETY (SSRF' "$IN"    || bad "AGENTS.md lost the SSRF researc
 # --- Part H / H5: spec gate — the re-spec drive must survive ---
 grep -q 're-spec flagged feature specs' lib/autoloop.sh || bad "sync_objectives lost the SPECLINT_REPORT re-spec drive"
 grep -q 'suffix -2 so you never overwrite' lib/autoloop.sh || bad "planner lost the slug-collision guard (H8 §6.8)"
+
+# --- Part H unify (Phase 1): the SOLO path (par=1) runs the SAME spec gate + slice the swarm coordinator does ---
+[ "$(grep -c 'spec_gate_solo' lib/autoloop.sh)" -ge 2 ] || bad "autoloop lost the solo spec-gate (def+call) — par=1 would skip the Part H lint/rubric"
+[ "$(grep -c 'spec_slice_for' lib/autoloop.sh)" -ge 2 ] || bad "autoloop lost the solo spec-slice (def+call) — par=1 implementer would miss its frozen slice"
 grep -q 'swarm_spec_lint' lib/swarm-run.sh || bad "swarm-run lost the pre-dispatch spec gate"
 
 # --- Part H / H6: AC tracing (grammar order · ledger AC ids · verifier merge-time proof) ---

@@ -300,7 +300,7 @@ The planner researches `[value]` features (how comparable products build them + 
 
 ### Feature-spec pipeline (Part H)
 
-Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<slug>.md`, filling `.opencode/spec-template.md`), gated by a deterministic bash lint **before** any LLM call, then sliced per increment at dispatch. The knobs — all safe defaults, all fail-open:
+Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<slug>.md`, filling `.opencode/spec-template.md`), gated by a deterministic bash lint **before** any LLM call, then sliced per increment at dispatch. **The single-flow loop (`ace autorun`, one worker) and the swarm run the identical gate + slice + rubric** — same knobs, same `swarm.sh` code, so a solo run is never a weaker pipeline than a parallel one. The knobs — all safe defaults, all fail-open:
 
 | Var | Default | What it does |
 |-----|---------|--------------|
