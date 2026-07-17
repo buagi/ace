@@ -284,6 +284,20 @@ Visual only — copy stays plain and technical. Stored in `~/.config/ace/config`
 | `DEMO_SPEED` | `normal` | `slow` / `normal` / `fast` — typing + pause cadence. `slow` suits voice-over. |
 | `DEMO_SECTIONS` | *all* | comma list to trim the tour: `intro,status,scaffold,atlas,graph,policy,loop,swarm,stats,deploy,outro`. |
 
+### Research crawler (Firecrawl — optional, local)
+
+The planner researches `[value]` features (how comparable products build them + the industry-standard scope). With no crawler this runs on `webfetch` (single-URL). A **self-hosted Firecrawl** adds search + scrape + extract. **Security by design:** it runs on **your machine, bound to `127.0.0.1` (loopback) only**, with **no cloud key** — your code/prompts/secrets never leave the box; the only outbound is the container fetching the *public* pages an agent asks it to read, and the agents are held to an **SSRF rule** (AGENTS.md) that forbids fetching localhost/internal/cloud-metadata/`file://`.
+
+`ace firecrawl up` starts it (prints the security notice + verifies the loopback binding); `down` stops it; `status` checks it. The MCP **auto-disables** when the instance is unreachable — a down crawler never bricks a run (research falls back to `webfetch`).
+
+| Env var | Default | What it does |
+|---------|---------|--------------|
+| `FIRECRAWL_API_URL` | `http://127.0.0.1:3002` | the self-hosted endpoint the MCP + reachability gate use; unreachable ⇒ MCP disabled. |
+| `FIRECRAWL_PORT` | `3002` | loopback port the local crawler listens on. |
+| `FIRECRAWL_DIR` | `~/firecrawl` | where the Firecrawl compose lives (`ace firecrawl up` runs `compose up -d` there). |
+| `FIRECRAWL_API_KEY` | *(unset)* | only if your instance enforces auth; not needed for a plain loopback self-host. |
+| `ACE_RESEARCH_MAX_FETCHES` | `6` | shared search+scrape page budget per feature (keeps research bounded). |
+
 ## Where config lives
 
 Global — machine-wide, loaded by opencode at launch:
