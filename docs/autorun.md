@@ -21,7 +21,7 @@ flowchart TD
 
 | Step | What happens |
 |------|--------------|
-| **Plan** | When ROADMAP is empty, the planner breaks the top `OBJECTIVES.md` objective into ROADMAP tasks. |
+| **Plan** | When ROADMAP is empty, the planner breaks the top `OBJECTIVES.md` objective into ROADMAP tasks. For a **`[value]` user-facing feature** it does a short **research + design pass first** — webfetches how leading/comparable products implement the pattern + the industry-standard scope, decides the right scope (adopt a better approach, or judge the current one sufficient — no gold-plating), writes a concise design to `.opencode/specs/<slug>.md`, and **decomposes the feature *from that design*** into coherent increments. `[infra]` plumbing skips research (known patterns). The overseer can re-plan/adjust live. |
 | **Build** | opencode builds the next ROADMAP item in the 10-agent loop — a fresh session per feature. |
 | **Gate** | Push a branch and open a PR, then run the merge gate. Red → pull the failed log, fix the root cause, push, re-gate. |
 | **Merge** | On green, `merge_if_ready` squash-merges, deletes the branch, and pulls `main`. |
