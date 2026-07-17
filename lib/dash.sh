@@ -5,6 +5,9 @@
 # grid in a REAL run lights only what the bash loop can observe (orchestrator/implementer/verifier/conflict —
 # the 4 critics run inside opencode). Watch a running loop in a second terminal/pane.
 
+# shared dash telemetry (phase inference + canonical agent roster) — one source of truth with the swarm cockpit
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dash-common.sh"
+
 _dvis(){ local s; s="$(printf '%s' "$1" | sed $'s/\033\\[[0-9;:]*m//g')"; printf %s "${#s}"; }   # ANSI-stripped width
 _drep(){ local i s=''; for ((i=0;i<${2:-0};i++)); do s+="$1"; done; printf %s "$s"; }
 _dpad(){ local w="$1" s="$2" v; v="$(_dvis "$s")"; [ "$v" -ge "$w" ] && { printf '%s' "$s"; return; }; printf '%s%*s' "$s" "$((w-v))" ''; }
@@ -65,6 +68,10 @@ loop_dash() {
   _dsz
   local -a LOG=()
   local cyc=0 feat=0 fixes=0 plans=0 branch="—" ci="idle" ovr="deepseek" paused=0 logoff=0
+  local phlabel="starting…" phkey=idle runlive=0    # live phase tag (shared inference) + is-a-run-live flag
+  # braille spinner keyed on the render frame — an "it's alive" cue that moves every frame even if the log is
+  # momentarily silent (a long think/build), so the solo dash never reads as hung. Mirrors the swarm cockpit.
+  _dspin(){ local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏); printf '%s' "${f[$(( (${frame:-0}/3) % 10 ))]}"; }
 
   # ── colorize a raw log line by ACE marker ──
   _dcol(){ local t="$1" c="$FGc"
@@ -101,6 +108,14 @@ loop_dash() {
         _logsz=$sz
       fi
     fi
+    # live PHASE tag (shared with the swarm cockpit) + is-the-loop-live: a fresh log or an alive pid means a run
+    # is going, so we show the tagged phase (research · spec-gate · implementing · verifying · reviewing · merging)
+    # instead of the idle tagline — the user always sees WHICH phase is happening, never a static screen.
+    IFS=$'\t' read -r phlabel phkey < <(dash_phase_from_log "$lf")
+    local _lp; _lp="$(sed -n 's/^pid=//p' "$f" 2>/dev/null | head -1)"
+    if { [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null; } \
+       || { [ -f "$lf" ] && [ "$(( $(date +%s) - $(stat -c %Y "$lf" 2>/dev/null || echo 0) ))" -lt "${DASH_LIVE_WINDOW:-180}" ]; }; then
+      runlive=1; else runlive=0; fi
   }
 
   # ── demo: a scripted cycle mirroring the loop (orchestrator → implement → verify → critics → merge) ──
@@ -150,7 +165,11 @@ loop_dash() {
     buf+="$(_at 5  "  ${AC}${WORD5}${RS}")"
     buf+="$(_at 6  "  ${AC}${WORD6}${RS}")"
     buf+="$(_at 7  "$(_dcen "$COLS" "${MU}⛧  Agentic Coding Environment  ⛧${RS}")")"
-    buf+="$(_at 8  "$(_dcen "$COLS" "${DM}the forge never sleeps · the loop is ${GO}eternal${RS}")")"
+    if [ "$runlive" = 1 ]; then
+      buf+="$(_at 8  "$(_dcen "$COLS" "${GO}$(_dspin)${RS} ${FGc}${phlabel}${RS}")")"
+    else
+      buf+="$(_at 8  "$(_dcen "$COLS" "${DM}the forge never sleeps · the loop is ${GO}eternal${RS}")")"
+    fi
     # status chips
     local cis="$GN"; case "$ci" in *fail*|*RED*|red) cis="$RD";; running) cis="$GO";; idle) cis="$MU";; esac
     local sb; sb=" $(_chip d "$AC" loop "#$cyc")    $(_chip d "$cis" ci "$ci")    $(_chip d "$GO" repo "$(basename "$proj")")    $(_chip d "$GO" branch "$branch")    $(_chip d "$GN" overseer "$ovr")    $(_chip d "$AC" features "$feat/∞")"
