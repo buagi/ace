@@ -1,0 +1,2 @@
+DEBATEISSUE major · session-not-rotated · rotate the session id on login + revoke other sessions on password change · spec §C5 omits both
+DEBATEISSUE minor · reset-token-lifetime-unstated · pin the reset token to single-use + a 15m TTL · §4 AC-E1 has no expiry

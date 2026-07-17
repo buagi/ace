@@ -1,8 +1,8 @@
 # Agents
 
-ACE builds every feature with a fixed set of 11 agents: one **orchestrator** that plans and delegates, plus ten subagents it calls to research, implement, test, and review the work. The config is written to `~/.config/opencode/opencode.json` by `ace install` / `ace opencode`.
+ACE builds every feature with a fixed set of 12 agents: one **orchestrator** that plans and delegates, plus eleven subagents it calls to research, implement, test, review, and debate the work. The config is written to `~/.config/opencode/opencode.json` by `ace install` / `ace opencode`.
 
-The orchestrator runs on your chosen overseer brain and writes no code — it plans, delegates, and drives the loop. All ten subagents run on DeepSeek V4.
+The orchestrator runs on your chosen overseer brain and writes no code — it plans, delegates, and drives the loop. The subagents default to DeepSeek V4; any can be pointed at another provider with `MODEL_<agent>=<provider>/<model>` (e.g. the `cross-review` preset puts the critics on OpenRouter).
 
 ## The roster
 
@@ -19,6 +19,7 @@ The orchestrator runs on your chosen overseer brain and writes no code — it pl
 | `alignment_reviewer` | every task (planner) + high-risk (critic) | Mission/values/audience critic — judges whether a change serves the [profile](profile.md). |
 | `conflict_resolver` | on a merge conflict | Resolves a PR's conflicts by preserving both sides' intent; escalates UNRESOLVABLE. |
 | `launch_readiness_reviewer` | once, before a live promotion | Operational-readiness gate. Verifies a tested restore, rollback, secrets separation, and spend caps → GO / NO-GO. |
+| `debater` | opt-in (`SPEC_DEBATE` / `REVIEW_DEBATE`), high-risk | Read-only side of a cross-model **debate** — one instance runs on your overseer (defender), one on an OpenRouter model (challenger), pressure-testing a spec or diff until they converge on the issues both accept. Default off; calibrate first. |
 
 **One spec, shared by the crew.** For a `[value]` feature the planner writes a single canonical spec to `.opencode/specs/<slug>.md` (filling `.opencode/spec-template.md`) — delegating the drafting to the read-only `researcher` on heavy/high-risk features so the research cost lands in a throwaway context, not the orchestrator's. It's the load-bearing artifact: the **implementer** reads it by path (§3-Out bounds scope, its increment's `AC:` ids are the Definition-of-Done, §C1 contract shapes are law), and the **test_engineer**, **reviewer**, and **verifier** read the same file — so acceptance criteria and cited integration points are one shared vocabulary, not re-derived per agent. A per-task "spec" is a *slice* of that one file (scope + the increment's ACs), never a second document. See [autorun.md → Feature specs](autorun.md#feature-specs--the-research-first-artifact).
 
@@ -27,7 +28,7 @@ The orchestrator runs on your chosen overseer brain and writes no code — it pl
 
 ## Overseer brain
 
-The orchestrator's model is your choice; the ten subagents are fixed on DeepSeek V4.
+The orchestrator's model is your choice; the eleven subagents default to DeepSeek V4 (any can be repointed per `MODEL_<agent>`).
 
 | Brain | Model id | Needs |
 |-------|----------|-------|

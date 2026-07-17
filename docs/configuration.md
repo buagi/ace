@@ -37,7 +37,7 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 
 ### Providers & per-agent models (`ace settings`)
 
-`ace settings → Models & agents` sets which model each of the 11 agents runs, independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed` · `cross-review`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 10 subagents default to DeepSeek — **the coders (implementer · test_engineer) run `deepseek-v4-pro`; `-flash` is used only for cheap/mechanical roles** (the rathole judge, opencode's `small_model`, and — under the `balanced`/`mixed` presets — the light checks verifier/standards/alignment). To put a coder on flash: `MODEL_implementer=deepseek/deepseek-v4-flash` (cheaper, weaker — measure with Experiment C before adopting).
+`ace settings → Models & agents` sets which model each of the 12 agents runs, independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed` · `cross-review`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 11 subagents default to DeepSeek — **the coders (implementer · test_engineer) run `deepseek-v4-pro`; `-flash` is used only for cheap/mechanical roles** (the rathole judge, opencode's `small_model`, and — under the `balanced`/`mixed` presets — the light checks verifier/standards/alignment). To put a coder on flash: `MODEL_implementer=deepseek/deepseek-v4-flash` (cheaper, weaker — measure with Experiment C before adopting).
 
 **Any agent can run on any wired provider** — `MODEL_<agent>=<provider>/<model>` (e.g. `MODEL_reviewer=openrouter/anthropic/claude-opus-4.1`). The **cross-review** preset uses this to put the review panel (reviewer · ux_reviewer · standards_keeper · alignment_reviewer) on a **different provider than the implementer**, so review isn't same-model self-agreement — the same cross-model principle the debate engine uses (needs `OPENROUTER_API_KEY`). Re-run `ace opencode` after changing any `MODEL_<agent>`.
 
@@ -312,6 +312,16 @@ Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<
 | `SPEC_SLICE` | `1` | Assemble a focused, capped context slice per increment (`.opencode/cache/spec-slice.<slug>.md` — §3 Scope + only that increment's ACs + non-N/A contracts) the implementer reads first. `0` disables. |
 | `SPEC_RUBRIC` | `0` | **Off by default.** An optional one-call LLM rubric that judges a lint-green spec on 7 criteria (only for HIGH-RISK `[value]` features). Enable per project only after calibrating against the goldens. |
 | `SPEC_RUBRIC_MODEL` | *(overseer)* | Which model the rubric runs on. A documented seam only — defaults to the overseer plumbing; stays put until the "prompts before models" boundary lifts (deferred #10). |
+| `SPEC_DEBATE` | `0` | **Off by default.** The heavier alternative to the rubric: a cross-model **debate** on each lint-green HIGH-risk spec (see below). When on, it *subsumes* `SPEC_RUBRIC`. Agreed gaps route into the re-spec channel. |
+| `REVIEW_DEBATE` | `0` | **Off by default.** A cross-model debate over the branch diff *before* a PR self-merges; agreed [blocker]/[major] findings hold the merge for a fix. Fail-open. |
+| `DEBATE_MODEL_A` | *(overseer)* | The **defender** (owns the artifact) — defaults to your overseer model (Claude via subscription, no API key). |
+| `DEBATE_MODEL_B` | *(unset)* | The **challenger** — an OpenRouter slug (e.g. `openrouter/anthropic/claude-opus-4.1`). **Required to enable** any debate; unset ⇒ the debate is a silent no-op. Needs `OPENROUTER_API_KEY`. |
+| `DEBATE_MIN` / `DEBATE_MAX` / `DEBATE_HARD_MAX` | `2` / `4` / `10` | Debate rounds: at least MIN before it may converge, MAX by default, extend to HARD_MAX only while a side flags `NEEDS-MORE`. |
+| `DEBATE_TIMEOUT` | `600` | Per-turn wall-clock cap (s). |
+
+### Cross-model debate
+
+`SPEC_DEBATE` / `REVIEW_DEBATE` run a **grounded adversarial dialogue between two *different* LLMs** over an artifact (a spec, or a diff). The **defender** (`DEBATE_MODEL_A`, your overseer — Claude, who planned it) and the **challenger** (`DEBATE_MODEL_B`, an OpenRouter model) exchange citations, concede correct points, and refute weak ones, converging on the issues **both accept**. A point becomes a fix **only when the defender concedes it** — so a strong argument promotes it and a hallucinated one is refuted by the other model. Both run **read-only** (the `debater` agent) so they can fact-check each other against the actual repo — the anti-hallucination lever. The full transcript is saved to `.opencode/cache/{spec,review}-debate-<slug>.md` so you can read the argument. **Cost:** opt-in, HIGH-risk-only, hard round + per-turn caps. **Enable only after** `tests/spec-debate-goldens.sh --calibrate` prints **GO** on your labeled set. Standalone: `ace debate spec <file>` / `ace debate review [base]`.
 
 **Token economics — prompt-cache prefix discipline.** Prompt caching is *provider-side* (Anthropic / DeepSeek), keyed on a **stable prefix**. ACE can't turn it on — it only avoids breaking it. The worker prompt is assembled **stable-first, volatile-last**: system prompt (AGENTS.md-governed) → profile facts → the **frozen spec slice** → item text → run-specific state (attempt counters, bus notes). A byte-identical prefix across a feature's dispatches (the spec is frozen after the gate passes, so the slice is byte-identical — see the H7 determinism selftest) is what makes retries and multi-increment features cheap; a mutating prefix (a timestamp or attempt number above the slice) silently re-bills the whole context every call. This is why a gate-passed spec is **never** edited mid-implementation — scope changes go through a re-spec (re-gated) or a new increment.
 
@@ -321,7 +331,7 @@ Global — machine-wide, loaded by opencode at launch:
 
 | Path | Holds |
 |------|-------|
-| `~/.config/opencode/opencode.json` | 11 agents · DeepSeek workers · MCP · compaction (~80%). |
+| `~/.config/opencode/opencode.json` | 12 agents · DeepSeek workers · MCP · compaction (~80%). |
 | `~/.config/opencode/AGENTS.md` | Grounding · navigation · Definition-of-Done · git · handover. |
 | `~/.config/ace/secrets.env` | `DEEPSEEK_API_KEY` / `CONTEXT7_API_KEY` (chmod 600). |
 | `~/.config/ace/vps.env` | Host · user · key · port · dir · os. |
