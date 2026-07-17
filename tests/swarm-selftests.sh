@@ -10,7 +10,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SW="$ROOT/lib/swarm.sh"
 
-tests="selftest sched-selftest policy-selftest redmain-selftest abandon-selftest owns-selftest plan-lint-selftest spec-lint-selftest spec-slice-selftest mergiraf-selftest"
+tests="selftest sched-selftest policy-selftest redmain-selftest abandon-selftest owns-selftest plan-lint-selftest spec-lint-selftest spec-slice-selftest spec-rubric-selftest mergiraf-selftest"
 fail=0
 for t in $tests; do
   if out="$(bash "$SW" "$t" 2>&1)"; then
