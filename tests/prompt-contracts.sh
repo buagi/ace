@@ -113,6 +113,9 @@ has orchestrator 'RESEARCH DELEGATION'
 
 # --- Part H / H7: spec freeze + prompt-cache prefix discipline ---
 grep -q 'SPECS ARE FROZEN after the spec-gate' "$IN" || bad "AGENTS.md lost the spec-freeze / prompt-cache prefix rule (H7)"
+# H5 Edit 5: optional LLM spec rubric — default OFF, fail-open, folded into the SPECGAP re-spec channel
+grep -q 'swarm_spec_rubric' lib/swarm-run.sh || bad "swarm-run lost the optional spec-rubric gate hook"
+grep -q 'SPEC_RUBRIC:-0' lib/swarm.sh || bad "swarm_spec_rubric lost its default-OFF guard (must make zero calls by default)"
 
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 11 agents, valid JSON, all placeholders + load-bearing clauses intact"

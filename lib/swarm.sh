@@ -707,6 +707,54 @@ SP
   rm -rf "$d"; [ "$ok" = 1 ]
 }
 
+# swarm_spec_rubric <spec> — H5 Edit 5: OPTIONAL LLM spec rubric, DEFAULT OFF (SPEC_RUBRIC=1 to enable).
+# Runs ONLY on a HIGH-risk spec (the caller only invokes it on lint-GREEN specs). ONE bounded, FAIL-OPEN model
+# call — mirrors rathole_verdict's transport (hard-timed curl; any missing key / error / garble ⇒ ZERO output,
+# spec passes). GAPS emit 'SPECGAP <basename-slug> RUBRIC:<criterion> <evidence>' into the SAME channel the
+# deterministic lint uses, so the existing re-spec drive handles them — the rubric adds judgment, never a new
+# code path. With SPEC_RUBRIC=0 (default) it makes ZERO calls (AC-H5.8). Model = SPEC_RUBRIC_MODEL (a seam;
+# default deepseek-v4-pro, reached via the same DeepSeek endpoint the rathole judge uses).
+swarm_spec_rubric() {
+  local spec="$1"
+  [ "${SPEC_RUBRIC:-0}" = 1 ] || return 0
+  [ -f "$spec" ] || return 0
+  grep -qiE 'risk:[[:space:]]*HIGH' "$spec" || return 0     # HIGH-risk only — not worth a call otherwise
+  { [ -n "${DEEPSEEK_API_KEY:-}" ] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; } || return 0
+  local slug body resp content verdict
+  slug="$(basename "$spec" .md)"
+  body="$(jq -nc --arg m "${SPEC_RUBRIC_MODEL:-deepseek-v4-pro}" --arg c "Judge this feature spec on 7 criteria. Score 1-3 each (1 fail · 2 adequate · 3 strong) + one-line evidence: testable_acs · scope_tightness · contract_clarity · edge_coverage · grounded_integration · prior_art_justified · increments_shippable. Verdict: PASS if no criterion is 1, else GAPS + the criterion names. Output ONLY this JSON: {\"scores\":{},\"evidence\":{},\"verdict\":\"PASS|GAPS\",\"gaps\":[]}
+
+SPEC:
+$(cat "$spec" 2>/dev/null)" '{model:$m,stream:false,temperature:0,max_tokens:600,messages:[{role:"user",content:$c}]}' 2>/dev/null)" || return 0
+  resp="$(curl -sS --max-time "${SPEC_RUBRIC_TIMEOUT:-90}" https://api.deepseek.com/chat/completions \
+            -H "Authorization: Bearer $DEEPSEEK_API_KEY" -H 'Content-Type: application/json' -d "$body" 2>/dev/null)" || return 0
+  content="$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null | grep -oE '\{.*\}' | head -1)"
+  [ -n "$content" ] || return 0
+  verdict="$(printf '%s' "$content" | jq -r '.verdict // empty' 2>/dev/null)"
+  [ "$verdict" = GAPS ] || return 0     # PASS / malformed ⇒ fail-open (no gaps)
+  printf '%s' "$content" | jq -r --arg s "$slug" \
+    '. as $r | (.gaps // [])[] | "SPECGAP \($s) RUBRIC:\(.) " + (($r.evidence[.] // "score 1") | tostring | gsub("\n";" "))' \
+    2>/dev/null || true
+}
+
+# swarm_spec_rubric_selftest — AC-H5.8: default OFF ⇒ ZERO calls / ZERO output; and even enabled without a key
+# it must fail-open silently (no network, no output). Deterministic, no-network.
+swarm_spec_rubric_selftest() {
+  local d ok=1 out; d="$(mktemp -d)" || return 1
+  ( cd "$d"
+    printf '<!-- ace-spec-template v1 -->\n# Spec (slug: r · risk: HIGH · tier: FULL)\n## 3. Scope\n' > r.md
+    out="$(SPEC_RUBRIC=0 swarm_spec_rubric r.md)"
+    [ -z "$out" ] || { echo "[spec-rubric] SPEC_RUBRIC=0 must produce NO output (got: $out)"; ok=0; }
+    out="$(SPEC_RUBRIC=1 DEEPSEEK_API_KEY='' swarm_spec_rubric r.md)"
+    [ -z "$out" ] || { echo "[spec-rubric] no key must fail-open with NO output (got: $out)"; ok=0; }
+    printf '# not-high (slug: n · risk: LOW)\n' > n.md
+    out="$(SPEC_RUBRIC=1 DEEPSEEK_API_KEY=x swarm_spec_rubric n.md)"
+    [ -z "$out" ] || { echo "[spec-rubric] LOW-risk spec must be skipped (got: $out)"; ok=0; }
+    [ "$ok" = 1 ] && echo "[spec-rubric] PASS ✓" || { echo "[spec-rubric] FAIL ✗"; exit 1; }
+  ) || ok=0
+  rm -rf "$d"; [ "$ok" = 1 ]
+}
+
 # swarm_touch WORKER HASH ADDPATHS — extend an ACTIVE claim mid-flight when a
 # flow discovers it must edit more files. Succeeds iff ADDPATHS don't overlap
 # ANOTHER worker's active lease (a flow's own lease can always grow). ok/busy.
@@ -1213,11 +1261,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     spec-lint-selftest) swarm_spec_lint_selftest ;;
     spec-slice)     shift; swarm_spec_slice "$@" ;;
     spec-slice-selftest) swarm_spec_slice_selftest ;;
+    spec-rubric)    shift; swarm_spec_rubric "$@" ;;
+    spec-rubric-selftest) swarm_spec_rubric_selftest ;;
     scope-stats)    swarm_scope_stats ;;
     stats)          swarm_stats ;;
     green-set)      swarm_green_set "${2:-}" ;;
     green-get)      swarm_green_get ;;
     main-red)       swarm_main_red "${2:-get}" "${3:-}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|spec-slice|spec-slice-selftest|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|spec-slice|spec-slice-selftest|spec-rubric|spec-rubric-selftest|scope-stats}" >&2; exit 2 ;;
   esac
 fi

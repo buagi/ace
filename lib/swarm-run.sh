@@ -427,6 +427,17 @@ _swarm_plan_sync() {
                  | while IFS= read -r _s; do [ -n "$_s" ] && [ -f "$REPO/$_s" ] && printf '%s\n' "$REPO/$_s"; done; }
     if [ -n "$(_specf)" ]; then
       _slint="$(cd "$REPO" && REPO="$REPO" swarm_spec_lint $(_specf) 2>/dev/null)"
+      # H5 Edit 5: OPTIONAL LLM rubric (SPEC_RUBRIC=1, default OFF) — one bounded, fail-open call per lint-GREEN
+      # HIGH-risk spec; its GAPS fold into the SAME SPECGAP report so the re-spec drive below handles them.
+      if [ "${SPEC_RUBRIC:-0}" = 1 ]; then
+        local _rsp _rub
+        while IFS= read -r _rsp; do
+          [ -n "$_rsp" ] || continue
+          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue   # lint already flagged this spec — skip the call
+          _rub="$(cd "$REPO" && swarm_spec_rubric "$_rsp" 2>/dev/null)" || true
+          [ -n "$_rub" ] && _slint="$(printf '%s\n%s' "$_slint" "$_rub")"
+        done < <(_specf)
+      fi
       if printf '%s\n' "$_slint" | grep -q '^SPECGAP' && [ "${SWARM_RESLICE:-1}" != 0 ]; then
         _sgn="$(printf '%s\n' "$_slint" | grep -c '^SPECGAP')"
         echo "  planning: spec-lint found $_sgn spec gap(s) — re-spec before dispatch"
