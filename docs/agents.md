@@ -1,14 +1,15 @@
 # Agents
 
-ACE builds every feature with a fixed set of 10 agents: one **orchestrator** that plans and delegates, plus nine subagents it calls to implement, test, and review the work. The config is written to `~/.config/opencode/opencode.json` by `ace install` / `ace opencode`.
+ACE builds every feature with a fixed set of 11 agents: one **orchestrator** that plans and delegates, plus ten subagents it calls to research, implement, test, and review the work. The config is written to `~/.config/opencode/opencode.json` by `ace install` / `ace opencode`.
 
-The orchestrator runs on your chosen overseer brain and writes no code — it plans, delegates, and drives the loop. All nine subagents run on DeepSeek V4.
+The orchestrator runs on your chosen overseer brain and writes no code — it plans, delegates, and drives the loop. All ten subagents run on DeepSeek V4.
 
 ## The roster
 
 | Agent | Runs | Role |
 |-------|------|------|
 | `orchestrator` | every run | Plans into small tasks, delegates, drives the loop. Writes no code. Reads the [profile](profile.md) and routes work to serve the mission. |
+| `researcher` | before a high-risk / `[value]` feature | Read-only research & spec agent. Explores docs + the repo in a *fresh* context and returns the filled `.opencode/spec-template.md` body — keeping the expensive orchestrator context clean. Never writes, edits, or spawns subagents. |
 | `implementer` | every task | Senior implementation specialist. Executes one scoped task to production quality (tests included); self-reviews before returning. |
 | `test_engineer` | high-risk / logic-dense tasks | Adversarial test author. Designs the test strategy and writes independent tests that try to break the code. Test files + shared helpers only — never production code. |
 | `verifier` | every task | Read-only. Runs `./ci.sh`, re-reads the diff, confirms cited symbols exist, runs a security scan → PASS/FAIL. |
@@ -19,7 +20,7 @@ The orchestrator runs on your chosen overseer brain and writes no code — it pl
 | `conflict_resolver` | on a merge conflict | Resolves a PR's conflicts by preserving both sides' intent; escalates UNRESOLVABLE. |
 | `launch_readiness_reviewer` | once, before a live promotion | Operational-readiness gate. Verifies a tested restore, rollback, secrets separation, and spend caps → GO / NO-GO. |
 
-**One spec, shared by the crew.** For a `[value]` feature the planner writes a single canonical spec to `.opencode/specs/<slug>.md` (filling `.opencode/spec-template.md`). It's the load-bearing artifact: the **implementer** reads it by path (§3-Out bounds scope, its increment's `AC:` ids are the Definition-of-Done, §C1 contract shapes are law), and the **test_engineer**, **reviewer**, and **verifier** read the same file — so acceptance criteria and cited integration points are one shared vocabulary, not re-derived per agent. A per-task "spec" is a *slice* of that one file (scope + the increment's ACs), never a second document. See [autorun.md → Feature specs](autorun.md#feature-specs--the-research-first-artifact).
+**One spec, shared by the crew.** For a `[value]` feature the planner writes a single canonical spec to `.opencode/specs/<slug>.md` (filling `.opencode/spec-template.md`) — delegating the drafting to the read-only `researcher` on heavy/high-risk features so the research cost lands in a throwaway context, not the orchestrator's. It's the load-bearing artifact: the **implementer** reads it by path (§3-Out bounds scope, its increment's `AC:` ids are the Definition-of-Done, §C1 contract shapes are law), and the **test_engineer**, **reviewer**, and **verifier** read the same file — so acceptance criteria and cited integration points are one shared vocabulary, not re-derived per agent. A per-task "spec" is a *slice* of that one file (scope + the increment's ACs), never a second document. See [autorun.md → Feature specs](autorun.md#feature-specs--the-research-first-artifact).
 
 > [!NOTE]
 > `launch_readiness_reviewer` is the one agent that does not run per feature. It runs a single time before a change is promoted to the live VPS.
