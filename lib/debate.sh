@@ -183,6 +183,27 @@ ace_debate_report(){
     | jq -r 'to_entries[]|"  \(.key): \(.value)"' 2>/dev/null || true
 }
 
+# ace_debate_trend — the over-time conclusion: is the debate getting MORE effective (F1↑) as you tune it, and
+# at what cost? Reads the effectiveness-history log (appended by `ace debate score`).
+ace_debate_trend(){
+  local f="${1:-tests/debate-sandbox/effectiveness-history.jsonl}"
+  [ -f "$f" ] || { echo "debate: no effectiveness history at $f — run 'ace debate score' first."; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo "debate: jq required." >&2; return 1; }
+  local n; n="$(jq -s 'length' "$f" 2>/dev/null || echo 0)"; [ "${n:-0}" -ge 1 ] || { echo "debate: empty history ($f)."; return 0; }
+  echo "── debate effectiveness over time · $f · $n review(s) ──"; echo
+  printf '  %-12s %-26s %-6s %-6s %-6s %-6s %-7s\n' DATE MODEL_B F1 PREC REC CONV AVGCOST
+  jq -r '[(.ts|split("T")[0]),.model_b,(.f1|tostring),(.precision|tostring),(.recall|tostring),(.convergence_pct|tostring),(.avg_cost_s|tostring)]|@tsv' "$f" \
+    | awk -F'\t' '{printf "  %-12s %-26s %-6s %-6s %-6s %-6s %-7s\n",$1,substr($2,1,26),$3,$4,$5,$6"%",$7"s"}'
+  echo
+  jq -s '(.[0].f1) as $first|(.[-1].f1) as $last|(if length>1 then .[-2].f1 else .[0].f1 end) as $prev|(.[-1].avg_cost_s-.[0].avg_cost_s) as $dc|
+     {first:$first,last:$last,dall:(($last-$first)*1000|round/1000),drecent:(($last-$prev)*1000|round/1000),dcost:$dc}' "$f" 2>/dev/null \
+    | jq -r '"  F1: \(.first) → \(.last)   (all-time \(if .dall>=0 then "+" else "" end)\(.dall) · since last \(if .drecent>=0 then "+" else "" end)\(.drecent))",
+       "  cost: \(if .dcost>0 then "+\(.dcost)s (up)" elif .dcost<0 then "\(.dcost)s (down)" else "flat" end)",
+       (if .drecent>0.02 then "  CONCLUSION: IMPROVING — the last change raised F1; keep this direction (see `ace debate review` for what still fails)."
+        elif .drecent<-0.02 then "  CONCLUSION: REGRESSING — the last change LOWERED F1; revert it or try another lever."
+        else "  CONCLUSION: FLAT — no meaningful F1 move; change a lever (model / prompt / knob) then re-score. `ace debate review` shows where it fails." end)' 2>/dev/null || true
+}
+
 # no-network selftest: the guard + fail-open contract (never makes a call in these paths).
 ace_debate_selftest(){
   local d ok=1 out; d="$(mktemp -d)" || return 1
@@ -204,7 +225,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   case "${1:-}" in
     spec|review) ace_debate "$@" ;;
     report)      shift; ace_debate_report "$@" ;;
+    trend)       shift; ace_debate_trend "$@" ;;
     selftest)    ace_debate_selftest ;;
-    *)           echo "usage: debate.sh {spec <file> [slug] | review [base] [slug] | report [jsonl] | selftest}" >&2; exit 2 ;;
+    *)           echo "usage: debate.sh {spec <file> [slug] | review [base] [slug] | report [jsonl] | trend [jsonl] | selftest}" >&2; exit 2 ;;
   esac
 fi
