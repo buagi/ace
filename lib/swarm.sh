@@ -714,14 +714,15 @@ SP
 # deterministic lint uses, so the existing re-spec drive handles them — the rubric adds judgment, never a new
 # code path. With SPEC_RUBRIC=0 (default) it makes ZERO calls (AC-H5.8). Model = SPEC_RUBRIC_MODEL (a seam;
 # default deepseek-v4-pro, reached via the same DeepSeek endpoint the rathole judge uses).
-swarm_spec_rubric() {
-  local spec="$1"
-  [ "${SPEC_RUBRIC:-0}" = 1 ] || return 0
+# swarm_spec_rubric_json <spec> — the raw rubric PRIMITIVE: the ONE bounded, fail-open model call, returning the
+# validated JSON verdict (or nothing). Guards on risk:HIGH + key + curl/jq, but NOT on SPEC_RUBRIC (that's the
+# caller's enablement gate). Used by swarm_spec_rubric (→ SPECGAP) AND by the nightly rubric goldens (which record
+# + calibrate the JSON). A missing key / error / non-JSON ⇒ empty output.
+swarm_spec_rubric_json() {
+  local spec="$1" body resp content
   [ -f "$spec" ] || return 0
   grep -qiE 'risk:[[:space:]]*HIGH' "$spec" || return 0     # HIGH-risk only — not worth a call otherwise
   { [ -n "${DEEPSEEK_API_KEY:-}" ] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; } || return 0
-  local slug body resp content verdict
-  slug="$(basename "$spec" .md)"
   body="$(jq -nc --arg m "${SPEC_RUBRIC_MODEL:-deepseek-v4-pro}" --arg c "Judge this feature spec on 7 criteria. Score 1-3 each (1 fail · 2 adequate · 3 strong) + one-line evidence: testable_acs · scope_tightness · contract_clarity · edge_coverage · grounded_integration · prior_art_justified · increments_shippable. Verdict: PASS if no criterion is 1, else GAPS + the criterion names. Output ONLY this JSON: {\"scores\":{},\"evidence\":{},\"verdict\":\"PASS|GAPS\",\"gaps\":[]}
 
 SPEC:
@@ -730,8 +731,18 @@ $(cat "$spec" 2>/dev/null)" '{model:$m,stream:false,temperature:0,max_tokens:600
             -H "Authorization: Bearer $DEEPSEEK_API_KEY" -H 'Content-Type: application/json' -d "$body" 2>/dev/null)" || return 0
   content="$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null | grep -oE '\{.*\}' | head -1)"
   [ -n "$content" ] || return 0
+  printf '%s' "$content" | jq -e . >/dev/null 2>&1 || return 0   # must be valid JSON
+  printf '%s' "$content"
+}
+
+swarm_spec_rubric() {
+  [ "${SPEC_RUBRIC:-0}" = 1 ] || return 0
+  local spec="$1" slug content verdict
+  content="$(swarm_spec_rubric_json "$spec")" || return 0
+  [ -n "$content" ] || return 0
   verdict="$(printf '%s' "$content" | jq -r '.verdict // empty' 2>/dev/null)"
   [ "$verdict" = GAPS ] || return 0     # PASS / malformed ⇒ fail-open (no gaps)
+  slug="$(basename "$spec" .md)"
   printf '%s' "$content" | jq -r --arg s "$slug" \
     '. as $r | (.gaps // [])[] | "SPECGAP \($s) RUBRIC:\(.) " + (($r.evidence[.] // "score 1") | tostring | gsub("\n";" "))' \
     2>/dev/null || true
