@@ -25,7 +25,8 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | `ace opencode` | (re)write the OpenCode config |
 | `ace settings` | thematic submenus: providers/keys · which model each agent runs · model profile · appearance (theme/animation/art) · toolchain |
 | `ace git` | git identity + `gh` login + credential helper |
-| `ace status` / `doctor` | health check: tools · keys · `gh` · VPS · profile |
+| `ace status` / `doctor` | health check (tools · keys · `gh` · VPS · profile) ending in a **Readiness report** — a plain-language "✓ ready now / ⚠ needs setup (with the fix) / ◦ optional" summary + a single READY/NOT-READY verdict. Also printed at the end of `ace install`. |
+| `ace logs` | tail the latest run/install log (`~/.config/ace/logs/`). |
 | `ace arch` | print the architecture overview and what-lives-where |
 | `ace demo` | paced, **zero-credit** feature walkthrough for recording (`DEMO_AUTO=1` hands-free; see [demo/RECORDING.md](demo/RECORDING.md)) |
 | `ace logs` | tail the latest log |

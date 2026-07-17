@@ -77,6 +77,38 @@ doctor() {
   printf '\n%s\n' "${C_GREY}profile: ${prof:-unset}  •  dry-run: $ACE_DRY_RUN  •  log: $ACE_LOG_FILE${C_RESET}"
   # when run inside a repo, also surface repo drift (git/gitnexus/opencode/podman)
   _con_in_repo && { hr; consistency_report || true; }
+  hr; readiness_report
+}
+
+# readiness_report — the plain-language "what works now / what still needs setup" summary. Classifies each
+# capability into READY / NEEDS-SETUP (with the exact fix command + what it unlocks) / OPTIONAL, ending with a
+# single verdict. Shown at the end of `ace status` AND after `ace install`, so a user always knows exactly
+# where they stand and what to do next. Read-only.
+readiness_report() {
+  step "Readiness — what's functional, what still needs setup"
+  local ready=() need=() opt=() x
+  [ -n "$(container_engine 2>/dev/null)" ] && ready+=("container gate — the ./ci.sh --container merge check") \
+    || need+=("container engine (podman/docker) — nothing can be gate-verified without it")
+  [ -n "${DEEPSEEK_API_KEY:-}" ] && ready+=("model key — the 10-agent crew can run") \
+    || need+=("model key → run  ace keys   (the crew cannot run without it)")
+  { have gh && gh auth status >/dev/null 2>&1; } && ready+=("GitHub — PRs · merges · CI-watch") \
+    || need+=("GitHub login → run  ace git   (autorun works by opening/merging PRs)")
+  { git config --global user.name >/dev/null 2>&1 && git config --global user.email >/dev/null 2>&1; } \
+    && ready+=("git identity") || need+=("git identity → run  ace git")
+  [ -f "$HOME/.config/opencode/opencode.json" ] && ready+=("agent config (~/.config/opencode/opencode.json)") \
+    || need+=("agent config → run  ace opencode")
+  vps_configured 2>/dev/null && ready+=("VPS deploy target") || opt+=("VPS deploy → run  ace vps   (only if you ship to a server)")
+  [ -n "${CONTEXT7_API_KEY:-}" ] && opt+=("Context7 key set (faster library-doc lookups)") \
+    || opt+=("Context7 key — optional (library docs still work, rate-limited)")
+  if curl -fsS -m 2 "http://127.0.0.1:${FIRECRAWL_PORT:-3002}/" >/dev/null 2>&1; then
+    ready+=("Firecrawl research (LOCAL · loopback-only · boosts feature research)")
+  else opt+=("Firecrawl research → run  ace firecrawl up   (optional; local research crawler)"); fi
+  printf '\n %sREADY NOW%s\n' "${C_GREEN}${C_BOLD:-}" "$C_RESET"; for x in "${ready[@]}"; do printf '   %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$x"; done
+  [ ${#need[@]} -gt 0 ] && { printf '\n %sNEEDS SETUP before a live run%s\n' "${C_GOLD}${C_BOLD:-}" "$C_RESET"; for x in "${need[@]}"; do printf '   %s⚠%s %s\n' "$C_GOLD" "$C_RESET" "$x"; done; }
+  [ ${#opt[@]} -gt 0 ] && { printf '\n %soptional%s\n' "$C_GREY" "$C_RESET"; for x in "${opt[@]}"; do printf '   %s◦%s %s\n' "$C_GREY" "$C_RESET" "$x"; done; }
+  if [ ${#need[@]} -eq 0 ]; then printf '\n %s✔ READY — you can run:  ace autorun   ·   ace swarm start%s\n' "${C_GREEN}${C_BOLD:-}" "$C_RESET"
+  else printf '\n %s⚠ NOT READY — clear the %d item(s) above, then re-check with  ace status%s\n' "${C_GOLD}${C_BOLD:-}" "${#need[@]}" "$C_RESET"; fi
+  printf ' %sfull log: %s%s\n' "$C_GREY" "${ACE_LOG_FILE:-$ACE_LOG_DIR/ace-<date>.log}" "$C_RESET"
 }
 
 logs() {
@@ -114,7 +146,9 @@ guided() {
   progress "Project (optional)";  confirm "Scaffold a project now?" Y && scaffold_project || info "skipped scaffolding"
   ensure_hermes_skill   # if Hermes is present, install/refresh its 'ace' chat skill (stamped to this version)
   ensure_loop_unit      # upgrade an already-installed ace-loop.service to the current OOM/restart guards
-  step "All done"; ok "Run 'ace status' to verify, then 'cd <project> && opencode'."; note_new_shell
+  step "All done"; ok "Run 'ace status' to re-check anytime, then 'cd <project> && opencode'."
+  hr; readiness_report   # tell the user plainly what's functional now and what still needs a step
+  note_new_shell
 }
 
 # ----------------------------------------------------------------- uninstall
