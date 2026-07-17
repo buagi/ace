@@ -26,7 +26,7 @@ This installs everything the rig needs, all user-local:
 |----------|------|
 | Host tools | `fnm`/node · `uv` · `bun` · `jq` · `opencode` · `gh` · Go toolchain |
 | Keys | DeepSeek API key (validated) |
-| OpenCode config | the 11-agent crew |
+| OpenCode config | the 12-agent crew |
 | GitHub | `gh` login |
 
 `ace status` confirms the rig is green: tools · keys · `gh` · VPS · profile.
@@ -98,7 +98,7 @@ ACE has three kinds of code, and each updates a different way. Knowing which is 
 |-------|-----------|-------------------------------|
 | **`lib/*.sh` (the loop & swarm engine)** | `autoloop.sh`, `swarm.sh`, `swarm-run.sh`, `scaffold.sh`, … | **Live-sourced — automatic, free.** A scaffolded project's `scripts/auto-loop.sh` is a thin shim that sources `<ace>/lib/autoloop.sh`; the swarm coordinator runs `<ace>/lib/swarm-run.sh` directly. The next `ace loop` / `ace swarm start` runs the current code. Nothing to install. |
 | **Generated per-project files** | `ci.sh`, `.githooks/*`, `scripts/atlas-refresh.sh`, scaffolds, the profile wiring | **`ace upgrade`** (a.k.a. `adopt`) — idempotent; rewrites the machinery whose *content* changed, guided by version stamps (e.g. the atlas generator's `atlas-gen-version`). Safe to re-run; commit the diff. |
-| **Global agent config** | the 11-agent crew, models, MCP servers in `~/.config/opencode/opencode.json` | **`ace opencode`** — only when the crew/model/MCP definitions change. Restart `opencode` after. |
+| **Global agent config** | the 12-agent crew, models, MCP servers in `~/.config/opencode/opencode.json` | **`ace opencode`** — only when the crew/model/MCP definitions change. Restart `opencode` after. |
 
 **Keep the ACE checkout itself current first** (everything above sources from it):
 

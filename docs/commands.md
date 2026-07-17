@@ -20,7 +20,7 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 
 | Command | Does |
 |---------|------|
-| `ace install` / `guided` | host tools + key + 11-agent config + GitHub login |
+| `ace install` / `guided` | host tools + key + 12-agent config + GitHub login |
 | `ace keys` | set/validate DeepSeek + Context7 key, pick model profile + overseer brain |
 | `ace opencode` | (re)write the OpenCode config |
 | `ace settings` | thematic submenus: providers/keys · which model each agent runs · model profile · appearance (theme/animation/art) · toolchain |
@@ -79,6 +79,7 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | `ace resume` | resume after an interruption — rescues uncommitted gate-green work, then continues |
 | `ace stats [global\|N\|task]` | per-subagent × worker token/cost from the opencode session DB (`global` = all projects · `N` = last-N-days · `task` = per-ROADMAP-task). `ACE_TELEMETRY=0` turns off all run logging |
 | `ace quality` | quality leading-indicators: per-critic false-positive rate + retry rate + escaped-bug → `.opencode/quality-report.md` |
+| `ace debate spec <file>` / `review [base]` | run a **cross-model debate** on demand — two different LLMs (defender = your overseer, challenger = `DEBATE_MODEL_B` via OpenRouter) pressure-test a spec or the branch diff; transcript → `.opencode/cache/*-debate-*.md`. Needs `OPENROUTER_API_KEY`. |
 
 > [!NOTE]
 > `ace stats` (token/cost telemetry) is distinct from `ace loop stats` (per-run timing post-mortem, listed under [Remote control](#remote-control)).

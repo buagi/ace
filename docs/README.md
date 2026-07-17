@@ -37,7 +37,7 @@ flowchart LR
 | [autorun.md](autorun.md) | The autonomous loop — lifecycle, per-run metrics, the read-only ACE self-triage. |
 | [the-gate.md](the-gate.md) | The tiered `ci.sh` gate — what blocks a commit. |
 | [deploy.md](deploy.md) | Shipping to the VPS — cadence, the `DEPLOY_GATE` milestone gate, manual deploy, where to check what's live. |
-| [agents.md](agents.md) | The 11-agent crew, risk-gated review, and the alignment critic. |
+| [agents.md](agents.md) | The 12-agent crew, risk-gated review, and the alignment critic. |
 
 ## Run it in parallel
 

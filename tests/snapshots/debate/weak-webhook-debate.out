@@ -1,0 +1,2 @@
+DEBATEISSUE blocker · no-signature-verify · verify the Stripe signature on the RAW body before any DB write · §5 handler has no verification step
+DEBATEISSUE major · no-dedup · dedupe by event id (at-least-once delivery) · §4 lacks a duplicate-event AC

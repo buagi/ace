@@ -22,9 +22,9 @@ flowchart LR
   C -->|lease A| W1["worker 1 · worktree"]
   C -->|lease B| W2["worker 2 · worktree"]
   C -->|lease C| W3["worker 3 · worktree"]
-  W1 --> L1["item A → 11-agent loop → gate → self-merge"]
-  W2 --> L2["item B → 11-agent loop → gate → self-merge"]
-  W3 --> L3["item C → 11-agent loop → gate → self-merge"]
+  W1 --> L1["item A → 12-agent loop → gate → self-merge"]
+  W2 --> L2["item B → 12-agent loop → gate → self-merge"]
+  W3 --> L3["item C → 12-agent loop → gate → self-merge"]
   L1 --> M["main"]
   L2 --> M
   L3 --> M
@@ -43,7 +43,7 @@ flowchart LR
 | Property | Detail |
 |---|---|
 | **Path-disjoint leasing** | the coordinator only hands a worker an item whose files don't overlap another in-flight item, so merges stay clean. See [conflict-policy](conflict-policy.md). |
-| **Self-merge on a local gate** | each worker runs the full [11-agent loop](agents.md) and merges its own PR when `./ci.sh --container` is green (`MERGE_GATE=local`) — no waiting on remote CI |
+| **Self-merge on a local gate** | each worker runs the full [12-agent loop](agents.md) and merges its own PR when `./ci.sh --container` is green (`MERGE_GATE=local`) — no waiting on remote CI |
 | **Live cockpit** | `ace swarm dash` shows every worker's stage, active agent, and live feed on one screen |
 
 ## Run it
@@ -267,6 +267,6 @@ See [configuration](configuration.md) for the loop-wide knobs (`MERGE_GATE`, `AU
 
 - [observability.md](observability.md) — reading the logs: the bus events, the log/artifact map, and `jq` recipes for what happened / why
 - [autorun.md](autorun.md) — the single-flow loop the swarm fans out
-- [agents.md](agents.md) — the 11-agent crew each worker runs
+- [agents.md](agents.md) — the 12-agent crew each worker runs
 - [conflict-policy.md](conflict-policy.md) — how predictable merge conflicts are handled
 - [deferred-decisions.md](deferred-decisions.md) — the serialized-merge re-gate, and why it's deferred
