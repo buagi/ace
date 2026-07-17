@@ -1275,6 +1275,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     spec-rubric)    shift; swarm_spec_rubric "$@" ;;
     spec-rubric-selftest) swarm_spec_rubric_selftest ;;
     debate-selftest) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/debate.sh" selftest ;;
+    scorecard-selftest) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/scorecard-selftest.sh" ;;
     scope-stats)    swarm_scope_stats ;;
     stats)          swarm_stats ;;
     green-set)      swarm_green_set "${2:-}" ;;
