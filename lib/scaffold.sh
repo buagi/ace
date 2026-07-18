@@ -3305,51 +3305,6 @@ upgrade_node_pkg() {
 }
 
 # ace upgrade — adopt an existing repo with ACE machinery (additive, non-destructive)
-# ---- ACE-owned transient artifacts (single source of truth) --------------------------------------------
-# A project adopted BEFORE a given feature landed never gets that feature's ignore line — nothing refreshed
-# .gitignore on upgrade — so a new artifact dir (e.g. .opencode/reanalyze/) gets swept into the loop's
-# rescue-commit. These two functions are the fix: one canonical list, and an idempotent back-fill run by
-# `ace upgrade`. Add new ACE-written transients HERE and every adopted repo picks them up on next upgrade.
-_ace_ignore_lines() {
-  cat <<'IGN'
-.serena/
-.opencode/.agents
-.opencode/.oppid
-.opencode/.step-budget
-.opencode/.timedout
-.opencode/.rathole
-.opencode/.container-green
-.opencode/.harvested-warnings
-.opencode/.objectives-synced
-.opencode/last-run.log
-.opencode/ci-failure.log
-.opencode/ci-build.log
-.opencode/loop-state.env
-.opencode/metrics.csv
-.opencode/run-summary.txt
-.opencode/token-report.md
-.opencode/quality-report.md
-.opencode/.session-id
-.opencode/.kanban-map
-.opencode/.atlas-sig
-.opencode/approvals/
-.opencode/HANDOVER.md
-.opencode/vps-verify-report.md
-.opencode/cache/
-.opencode/reanalyze/
-IGN
-}
-# ensure_ace_ignores — append ONLY the missing rules; never rewrites or reorders the user's .gitignore.
-# NOTE: .opencode/specs/ is deliberately NOT ignored — swarm worktrees read specs from git.
-ensure_ace_ignores() {
-  local gi=.gitignore added=0 line
-  [ -f "$gi" ] || : > "$gi"
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    grep -qxF -- "$line" "$gi" 2>/dev/null || { [ "$added" = 0 ] && printf '\n# ---- ACE loop transients (added by ace upgrade) ----\n' >> "$gi"; printf '%s\n' "$line" >> "$gi"; added=$((added+1)); }
-  done < <(_ace_ignore_lines)
-  if [ "$added" -gt 0 ]; then ok "gitignore: back-filled $added missing ACE transient rule(s)"; else ok "gitignore: all ACE transient rules present"; fi
-}
 
 upgrade_repo() {
   banner; step "Upgrade / adopt an existing repo with ACE machinery"

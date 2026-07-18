@@ -17,6 +17,7 @@ _swarm(){ [ -n "${SWARM_WORKER:-}" ] && [ -f "$_SWARM_SH" ] && bash "$_SWARM_SH"
 # per-subagent token/cost telemetry from opencode's session DB (subagent_report / ace stats). Fail-soft.
 # shellcheck source=/dev/null
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/telemetry.sh" 2>/dev/null || true
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/consistency.sh" 2>/dev/null || true   # ace_repo_hygiene (startup git-cleanliness)
 cd "$(git rev-parse --show-toplevel)" || exit 1
 # delivery policy: defaults come from .opencode/profile.yaml; env still overrides per run.
 prof_get(){ grep -E "^[[:space:]]*$1:[[:space:]]*" .opencode/profile.yaml 2>/dev/null | head -1 | sed -E "s/^[^:]*:[[:space:]]*\"([^\"]*)\".*$/\1/; t; s/^[^:]*:[[:space:]]*'([^']*)'.*$/\1/; t; s/^[^:]*:[[:space:]]*//; s/^#.*$//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//"; }
@@ -398,6 +399,7 @@ spec_gate_solo(){
   local extra=""
   if [ "${SPEC_DEBATE:-0}" = 1 ]; then
     local _dsh deb; _dsh="$(dirname "$_SWARM_SH")/debate.sh"
+    say "spec-debate: cross-model dialogue on the lint-green HIGH-risk spec(s) — each turn can take minutes; per-turn progress follows."
     for sp in $specs; do
       printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue   # still gappy after re-spec → skip
       deb="$(bash "$_dsh" spec "$sp" 2>/dev/null)" || true
@@ -526,6 +528,10 @@ preflight(){
   # needs its own copy. It must run per-worktree — NOT behind the shared stamp above (which the coordinator/first
   # worker warms, starving every other worker → standards_keeper webfetches endoflife.date each review). It carries
   # its own 7-day mtime TTL (refresh_version_cache), so this is a cheap no-op once a worktree's cache is warm.
+  # HYGIENE FIRST — before the resume-rescue below does `git add -A`. If a feature started writing a new
+  # artifact dir after this repo was adopted, its ignore rule is missing and the rescue would sweep it into a
+  # commit. Back-fill the rules + untrack anything already swept, so a stop/kill can never dirty the repo.
+  command -v ace_repo_hygiene >/dev/null 2>&1 && ace_repo_hygiene || true
   refresh_version_cache
   # STALE-BRANCH GUARD: if this branch's work is already shipped (a MERGED PR for its head), don't
   # reprocess it — return to main, delete the stale branch (local + remote), and continue from there.

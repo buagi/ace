@@ -17,6 +17,81 @@
 ACE_OPENCODE_DB_MAX_MB="${ACE_OPENCODE_DB_MAX_MB:-750}"   # reset opencode.db at/above this size
 ACE_GITNEXUS_WARN_MB="${ACE_GITNEXUS_WARN_MB:-1500}"      # informational warning above this
 
+# ---- ACE-owned transient artifacts (single source of truth) --------------------------------------------
+# A project adopted BEFORE a given feature landed never gets that feature's ignore line — nothing refreshed
+# .gitignore on upgrade — so a new artifact dir (e.g. .opencode/reanalyze/) gets swept into the loop's
+# rescue-commit. These two functions are the fix: one canonical list, and an idempotent back-fill run by
+# `ace upgrade`. Add new ACE-written transients HERE and every adopted repo picks them up on next upgrade.
+_ace_ignore_lines() {
+  cat <<'IGN'
+.serena/
+.opencode/.agents
+.opencode/.oppid
+.opencode/.step-budget
+.opencode/.timedout
+.opencode/.rathole
+.opencode/.container-green
+.opencode/.harvested-warnings
+.opencode/.objectives-synced
+.opencode/last-run.log
+.opencode/ci-failure.log
+.opencode/ci-build.log
+.opencode/loop-state.env
+.opencode/metrics.csv
+.opencode/run-summary.txt
+.opencode/token-report.md
+.opencode/quality-report.md
+.opencode/.session-id
+.opencode/.kanban-map
+.opencode/.atlas-sig
+.opencode/approvals/
+.opencode/HANDOVER.md
+.opencode/vps-verify-report.md
+.opencode/cache/
+.opencode/reanalyze/
+IGN
+}
+# ensure_ace_ignores — append ONLY the missing rules; never rewrites or reorders the user's .gitignore.
+# NOTE: .opencode/specs/ is deliberately NOT ignored — swarm worktrees read specs from git.
+ensure_ace_ignores() {
+  local gi=.gitignore added=0 line
+  [ -f "$gi" ] || : > "$gi"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    grep -qxF -- "$line" "$gi" 2>/dev/null || { [ "$added" = 0 ] && printf '\n# ---- ACE loop transients (added by ace upgrade) ----\n' >> "$gi"; printf '%s\n' "$line" >> "$gi"; added=$((added+1)); }
+  done < <(_ace_ignore_lines)
+  if [ "$added" -gt 0 ]; then ok "gitignore: back-filled $added missing ACE transient rule(s)"; else ok "gitignore: all ACE transient rules present"; fi
+}
+
+# ace_repo_hygiene — keep the project's git state clean so a STOP/KILL never leaves ACE artifacts TRACKED.
+# Runs at PREFLIGHT, deliberately BEFORE the resume-rescue `git add -A`: that rescue commits whatever is
+# uncommitted, so the ignore rules must be right FIRST or a newly-added artifact dir is swept into git
+# (observed live: a resume commit swallowed .opencode/cache/ AND a 151-spec .opencode/reanalyze/ baseline).
+# Idempotent + fail-soft, and NOT behind the reconcile TTL — it is a couple of greps.
+# SAFETY: only ever untracks paths ACE itself writes (.opencode/, .serena/) that are ALSO ignored — it will
+# never touch a file the user force-added, and never touches .opencode/specs/ (tracked by design).
+ace_repo_hygiene() {
+  _con_in_repo || return 0
+  ensure_ace_ignores >/dev/null 2>&1 || true
+  local f n=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in .opencode/*|.serena/*) ;; *) continue ;; esac
+    git check-ignore -q --no-index -- "$f" 2>/dev/null || continue   # --no-index: a TRACKED path is never "ignored" without it
+    git rm --cached --quiet -- "$f" 2>/dev/null && n=$((n+1))
+  done < <(git ls-files -- .opencode .serena 2>/dev/null)
+  [ "$n" -gt 0 ] || return 0
+  say "hygiene — untracked $n ACE transient file(s) that a previous run swept into git (now ignored)" 2>/dev/null \
+    || echo "hygiene — untracked $n ACE transient file(s) (now ignored)"
+  # commit the removal ourselves when it is safe: never on main, never mid-merge/rebase
+  local br; br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  case "$br" in main|master|HEAD) return 0 ;; esac
+  [ -d "$(git rev-parse --git-path rebase-merge 2>/dev/null)" ] && return 0
+  [ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] && return 0
+  git add -- .gitignore 2>/dev/null || true   # the back-filled rules belong in the SAME commit, else hygiene leaves its own dirt
+  git commit --no-verify -q -m "chore(git): untrack $n ACE transient file(s) (now covered by .gitignore)" >/dev/null 2>&1 || true
+}
+
 _con_in_repo(){ git rev-parse --git-dir >/dev/null 2>&1; }
 _con_root(){ git rev-parse --show-toplevel 2>/dev/null; }
 # branch dirs are named "<branch with / -> _>-<hash>"; echo the keep-prefixes for live branches

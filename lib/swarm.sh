@@ -1281,6 +1281,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     debate-selftest) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/debate.sh" selftest ;;
     scorecard-selftest) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/scorecard-selftest.sh" ;;
     reanalyze-selftest) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/reanalyze-selftest.sh" ;;
+    hygiene-selftest) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/hygiene-selftest.sh" ;;
     scope-stats)    swarm_scope_stats ;;
     stats)          swarm_stats ;;
     green-set)      swarm_green_set "${2:-}" ;;
