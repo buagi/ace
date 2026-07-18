@@ -308,6 +308,7 @@ coverage/
 .opencode/HANDOVER.md
 .opencode/vps-verify-report.md
 .opencode/cache/
+.opencode/reanalyze/
 *.orig
 *.rej
 EOF
@@ -650,6 +651,7 @@ __pycache__/
 .opencode/HANDOVER.md
 .opencode/vps-verify-report.md
 .opencode/cache/
+.opencode/reanalyze/
 *.orig
 *.rej
 EOF
@@ -875,7 +877,7 @@ EOF
 
 gen_configonly() {
   local name="$1"
-  printf '.env\n.env.*\n!.env.example\n.DS_Store\n# ACE loop transients (keep git status clean)\n.serena/\n.opencode/.agents\n.opencode/.oppid\n.opencode/.step-budget\n.opencode/.timedout\n.opencode/.rathole\n.opencode/.container-green\n.opencode/.harvested-warnings\n.opencode/.objectives-synced\n.opencode/last-run.log\n.opencode/ci-failure.log\n.opencode/ci-build.log\n.opencode/loop-state.env\n.opencode/metrics.csv\n.opencode/run-summary.txt\n.opencode/token-report.md\n.opencode/.session-id\n.opencode/.kanban-map\n.opencode/approvals/\n.opencode/HANDOVER.md\n.opencode/vps-verify-report.md\n.opencode/cache/\n*.orig\n*.rej\n' > .gitignore
+  printf '.env\n.env.*\n!.env.example\n.DS_Store\n# ACE loop transients (keep git status clean)\n.serena/\n.opencode/.agents\n.opencode/.oppid\n.opencode/.step-budget\n.opencode/.timedout\n.opencode/.rathole\n.opencode/.container-green\n.opencode/.harvested-warnings\n.opencode/.objectives-synced\n.opencode/last-run.log\n.opencode/ci-failure.log\n.opencode/ci-build.log\n.opencode/loop-state.env\n.opencode/metrics.csv\n.opencode/run-summary.txt\n.opencode/token-report.md\n.opencode/.session-id\n.opencode/.kanban-map\n.opencode/approvals/\n.opencode/HANDOVER.md\n.opencode/vps-verify-report.md\n.opencode/cache/\n.opencode/reanalyze/\n*.orig\n*.rej\n' > .gitignore
   printf '# Declared env vars\n' > .env.example
   cat > ci.sh <<'EOF'
 #!/usr/bin/env bash
@@ -1515,6 +1517,7 @@ coverage.*
 .opencode/HANDOVER.md
 .opencode/vps-verify-report.md
 .opencode/cache/
+.opencode/reanalyze/
 *.orig
 *.rej
 EOF
@@ -3302,6 +3305,52 @@ upgrade_node_pkg() {
 }
 
 # ace upgrade — adopt an existing repo with ACE machinery (additive, non-destructive)
+# ---- ACE-owned transient artifacts (single source of truth) --------------------------------------------
+# A project adopted BEFORE a given feature landed never gets that feature's ignore line — nothing refreshed
+# .gitignore on upgrade — so a new artifact dir (e.g. .opencode/reanalyze/) gets swept into the loop's
+# rescue-commit. These two functions are the fix: one canonical list, and an idempotent back-fill run by
+# `ace upgrade`. Add new ACE-written transients HERE and every adopted repo picks them up on next upgrade.
+_ace_ignore_lines() {
+  cat <<'IGN'
+.serena/
+.opencode/.agents
+.opencode/.oppid
+.opencode/.step-budget
+.opencode/.timedout
+.opencode/.rathole
+.opencode/.container-green
+.opencode/.harvested-warnings
+.opencode/.objectives-synced
+.opencode/last-run.log
+.opencode/ci-failure.log
+.opencode/ci-build.log
+.opencode/loop-state.env
+.opencode/metrics.csv
+.opencode/run-summary.txt
+.opencode/token-report.md
+.opencode/quality-report.md
+.opencode/.session-id
+.opencode/.kanban-map
+.opencode/.atlas-sig
+.opencode/approvals/
+.opencode/HANDOVER.md
+.opencode/vps-verify-report.md
+.opencode/cache/
+.opencode/reanalyze/
+IGN
+}
+# ensure_ace_ignores — append ONLY the missing rules; never rewrites or reorders the user's .gitignore.
+# NOTE: .opencode/specs/ is deliberately NOT ignored — swarm worktrees read specs from git.
+ensure_ace_ignores() {
+  local gi=.gitignore added=0 line
+  [ -f "$gi" ] || : > "$gi"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    grep -qxF -- "$line" "$gi" 2>/dev/null || { [ "$added" = 0 ] && printf '\n# ---- ACE loop transients (added by ace upgrade) ----\n' >> "$gi"; printf '%s\n' "$line" >> "$gi"; added=$((added+1)); }
+  done < <(_ace_ignore_lines)
+  if [ "$added" -gt 0 ]; then ok "gitignore: back-filled $added missing ACE transient rule(s)"; else ok "gitignore: all ACE transient rules present"; fi
+}
+
 upgrade_repo() {
   banner; step "Upgrade / adopt an existing repo with ACE machinery"
   local root; root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"; cd "$root" || { err "not a git repo"; return 1; }
@@ -3314,6 +3363,7 @@ upgrade_repo() {
   [ -x scripts/atlas-refresh.sh ] && env ATLAS_FORCE=1 bash scripts/atlas-refresh.sh >/dev/null 2>&1 || true   # back-fill: generate docs/atlas.md + the README block now (idempotent; §G.10 phase 6)
   command -v gen_spec_template >/dev/null 2>&1 && gen_spec_template   # Part H/H1: refresh the feature-spec template on upgrade
   ensure_env_merge
+  ensure_ace_ignores   # back-fill ignore rules for artifacts added since this repo was adopted
   gen_autoloop "$root"
   # WIRE THE LOCAL CI GATE — the loop relies on it, and adopt used to skip it entirely (gate-less repo).
   # .githooks/ is ACE-owned so we always write it; but we only AUTO-ACTIVATE (core.hooksPath) when the
