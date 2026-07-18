@@ -499,8 +499,11 @@ swarm_spec_lint() {
     [ -f "$f" ] || { printf 'SPECGAP %s FILE spec file not found\n' "$slug"; gaps=$((gaps+1)); continue; }
     n=$((n+1))
     head -1 "$f" | grep -q 'ace-spec-template v1' || _gap VERSION "line 1 missing 'ace-spec-template v1' tag"
-    tier="$(head -2 "$f" | grep -oiE 'tier:[[:space:]]*(FULL|FAST)' | grep -oiE 'FULL|FAST' | head -1 | tr '[:lower:]' '[:upper:]')"
-    [ -n "$tier" ] || { _gap TIER "line 1 must declare 'tier: FULL' or 'FAST'"; tier=FULL; }
+    # scan the whole TITLE BLOCK, not just 2 lines: real specs are `<!-- ace-spec-template v1 -->`, a BLANK
+    # line, then the `# Spec: … (slug: … · risk: … · tier: …)` heading on line 3 — `head -2` could never see the
+    # tier, so EVERY generated spec failed TIER (153/153 in one repo) and "first-pass clean" was unreachable.
+    tier="$(head -6 "$f" | grep -oiE 'tier:[[:space:]]*(FULL|FAST)' | grep -oiE 'FULL|FAST' | head -1 | tr '[:lower:]' '[:upper:]')"
+    [ -n "$tier" ] || { _gap TIER "spec heading must declare 'tier: FULL' or 'FAST'"; tier=FULL; }
     for h in 1 2 3 4 5 6 7; do grep -qE "^## $h\." "$f" || _gap SECTIONS "missing heading '## $h.'"; done
     if [ "$tier" = FULL ]; then
       _t="$(awk '/^### Out/{f=1;next} /^### |^## /{f=0} f && /^[[:space:]]*-[[:space:]]+[^[:space:]<]/{c++} END{print c+0}' "$f")"
@@ -559,6 +562,7 @@ swarm_spec_lint_selftest() {
     : > lib/widget.ts   # so CITE_REAL's existence check passes for the conforming fixture
     cat > .opencode/specs/good.md <<'SP'
 <!-- ace-spec-template v1 -->
+
 # Spec: Demo   (slug: good · risk: LOW · tier: FULL)
 
 ## 1. Problem
