@@ -67,6 +67,11 @@ has conflict_resolver "UNRESOLVABLE"; has conflict_resolver "INTENT and SEMANTIC
 has launch_readiness_reviewer "NO-GO"; has launch_readiness_reviewer "UNVERIFIED"
 # debater (cross-model debate): the good-faith rules + the machine-readable convergence contract
 has debater "sycophantic"; has debater "GROUNDING IS MANDATORY"; has debater "ACCEPTED:"; has debater "CONVERGED:"; has debater "DIFFERENT LLM"
+# debater MUST be a PRIMARY agent: it is invoked directly as `opencode run --agent debater`, and opencode refuses
+# a subagent there ("is a subagent, not a primary agent — falling back to default agent") — which silently runs the
+# ORCHESTRATOR instead, discarding both the debater prompt above AND its read-only permission block.
+[ "$(echo "$JSON" | jq -r '.agent.debater.mode // "-"' 2>/dev/null)" = primary ] \
+  || bad "debater must be mode:primary — as a subagent, 'opencode run --agent debater' falls back to the orchestrator and the whole debate contract (+ read-only perms) is bypassed"
 # the debate ENGINE + its transport/guards (fail-open, HIGH-risk-only, bounded) + the CLI route
 [ -f lib/debate.sh ] || bad "lib/debate.sh (the debate engine) is missing"
 grep -q 'opencode run --agent debater --model' lib/debate.sh || bad "debate.sh lost the read-only debater transport"
