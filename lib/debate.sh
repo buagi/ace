@@ -107,7 +107,10 @@ ace_debate(){
 $art_text
 === DIALOGUE SO FAR ===
 ${transcript:-<none — this is the opening critique>}"
-    _t0="$(date +%s)"; cout="$(_debate_turn "$B" "$cprompt")"; _cs=$(( $(date +%s) - _t0 )); [ -n "$cout" ] || break   # dead turn ⇒ fail-open end
+    printf '  debate %s · round %s/%s · CHALLENGER (%s) thinking…\n' "$slug" "$round" "$max" "$B" >&2
+    _t0="$(date +%s)"; cout="$(_debate_turn "$B" "$cprompt")"; _cs=$(( $(date +%s) - _t0 ))
+    printf '  debate %s · round %s · CHALLENGER replied in %ss (%s chars)\n' "$slug" "$round" "$_cs" "${#cout}" >&2
+    [ -n "$cout" ] || { printf '  debate %s · challenger returned NOTHING — ending (fail-open)\n' "$slug" >&2; break; }
     transcript="$transcript
 
 ── ROUND $round · CHALLENGER (B) ──
@@ -120,7 +123,10 @@ $cout"
 $art_text
 === DIALOGUE SO FAR ===
 $transcript"
-    _t0="$(date +%s)"; dout="$(_debate_turn "$A" "$dprompt")"; _ds=$(( $(date +%s) - _t0 )); [ -n "$dout" ] || break
+    printf '  debate %s · round %s/%s · DEFENDER (%s) thinking…\n' "$slug" "$round" "$max" "$A" >&2
+    _t0="$(date +%s)"; dout="$(_debate_turn "$A" "$dprompt")"; _ds=$(( $(date +%s) - _t0 ))
+    printf '  debate %s · round %s · DEFENDER replied in %ss (%s chars)\n' "$slug" "$round" "$_ds" "${#dout}" >&2
+    [ -n "$dout" ] || { printf '  debate %s · defender returned NOTHING — ending (fail-open)\n' "$slug" >&2; break; }
     transcript="$transcript
 
 ── ROUND $round · DEFENDER (A) ──
@@ -131,6 +137,8 @@ $dout"
     # per-round metrics row (tab-separated): round · challenger_chars · defender_chars · accepted · disputed · conv · needs · c_secs · d_secs
     _rtsv="${_rtsv}${round}	${#cout}	${#dout}	$(_debate_ids_count "$dout" ACCEPTED)	$(_debate_ids_count "$dout" DISPUTED)	${conv}	${needs}	${_cs}	${_ds}
 "
+    printf '  debate %s · round %s done — accepted %s · disputed %s · converged %s · needs-more %s\n' \
+      "$slug" "$round" "$(_debate_ids_count "$dout" ACCEPTED)" "$(_debate_ids_count "$dout" DISPUTED)" "$conv" "$needs" >&2
     [ "$round" -ge "$min" ] && [ "$conv" = 1 ] && break               # both converged (after the min real exchange)
     if [ "$round" -ge "$max" ]; then { [ "$needs" = 1 ] && [ "$round" -lt "$hard" ]; } || break; fi
     [ "$round" -ge "$hard" ] && break
@@ -141,6 +149,7 @@ $dout"
 
   # synthesis — the defender distills ONLY the issues both sides accepted into machine lines.
   local sout
+  printf '  debate %s · synthesizing agreed issues…\n' "$slug" >&2
   sout="$(_debate_turn "$A" "ROLE: SYNTHESIS. The debate is over. From the ACCEPTED points ONLY (issues BOTH sides agreed are real), output the final list — one per line, EXACTLY this shape and nothing else:
 DEBATEISSUE <blocker|major|minor> · <short label> · <what to fix> · <cite>
 If the artifact is sound (nothing was accepted), output exactly: SOUND
