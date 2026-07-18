@@ -134,6 +134,67 @@ agent_models_menu() {
     else return; fi
   done
 }
+# ---------------------------------------------------------------- cross-model debate
+# Every debate knob is a thin config_get/config_set wrapper (same as the other Settings screens). The model
+# fields show a GREYED format template per provider so the routing prefix is never guessed:
+#   OpenRouter → openrouter/vendor/model   ·   OpenAI → openai/model   ·   Anthropic → anthropic/model
+_DEBATE_MODEL_HINT="openrouter/vendor/model · openai/model · anthropic/model"
+_debate_toggle() { local k="$1"; [ "$(config_get "$k")" = 1 ] && config_set "$k" 0 || config_set "$k" 1; }
+_debate_onoff()  { [ "$(config_get "$1")" = 1 ] && echo ON || echo off; }
+# after setting a challenger/defender model, remind the user which provider credential it needs
+_debate_key_hint() {
+  case "$1" in
+    openrouter/*) [ -n "${OPENROUTER_API_KEY:-}" ] || warn "needs OPENROUTER_API_KEY — Settings → Providers & keys → OpenRouter." ;;
+    openai/*)     opencode auth list 2>/dev/null | grep -qi openai || [ -n "${OPENAI_API_KEY:-}" ] || warn "needs OpenAI auth — Settings → Providers & keys → OpenAI." ;;
+    anthropic/*)  opencode auth list 2>/dev/null | grep -qi anthropic || warn "needs the Anthropic (Claude) subscription login — Settings → Providers & keys → Anthropic." ;;
+    "") : ;;
+    */*) : ;;
+    *) warn "‘$1’ has no provider prefix — use $_DEBATE_MODEL_HINT." ;;
+  esac
+}
+debate_rounds_menu() {
+  banner
+  local mn mx hm to wl
+  mn="$(config_get DEBATE_MIN)"; mx="$(config_get DEBATE_MAX)"; hm="$(config_get DEBATE_HARD_MAX)"
+  to="$(config_get DEBATE_TIMEOUT)"; wl="$(config_get DEBATE_WALL_MAX)"
+  menu "Settings · Debate — rounds & limits" \
+    "Min rounds::${mn:-2} (default) — floor before it may converge" \
+    "Max rounds::${mx:-4} (default) — the normal ceiling" \
+    "Hard-max rounds::${hm:-10} (default) — absolute cap for complex specs" \
+    "Per-turn timeout (s)::${to:-600} (default)" \
+    "Wall backstop (s)::${wl:-1800} (default) — total-debate kill" \
+    "← back::"
+  case "$MENU_CHOICE" in
+    1) ask "Min rounds" "${mn:-2}" "integer ≥1"; config_set DEBATE_MIN "$ASK_REPLY" ;;
+    2) ask "Max rounds" "${mx:-4}" "integer ≥ min"; config_set DEBATE_MAX "$ASK_REPLY" ;;
+    3) ask "Hard-max rounds" "${hm:-10}" "integer ≥ max"; config_set DEBATE_HARD_MAX "$ASK_REPLY" ;;
+    4) ask "Per-turn timeout (seconds)" "${to:-600}"; config_set DEBATE_TIMEOUT "$ASK_REPLY" ;;
+    5) ask "Wall backstop (seconds)" "${wl:-1800}"; config_set DEBATE_WALL_MAX "$ASK_REPLY" ;;
+    6) return ;;
+  esac
+}
+debate_settings_menu() {
+  while true; do
+    banner   # screen clears the previous (no scroll-back clutter)
+    local a b
+    a="$(config_get DEBATE_MODEL_A)"; b="$(config_get DEBATE_MODEL_B)"
+    menu "Settings · Cross-model debate" \
+      "Spec debate (planning)::$(_debate_onoff SPEC_DEBATE) — two models pressure-test each spec before build" \
+      "Review debate (pre-merge)::$(_debate_onoff REVIEW_DEBATE) — debate the branch diff before merging" \
+      "Defender model (A)::${a:-overseer default ($(orch_model 2>/dev/null))} · your side" \
+      "Challenger model (B)::${b:-unset — debate is a no-op until set} · the OTHER model" \
+      "Rounds & limits::min $(config_get DEBATE_MIN || echo 2) · max $(config_get DEBATE_MAX || echo 4) · hard $(config_get DEBATE_HARD_MAX || echo 10)" \
+      "← back::"
+    case "$MENU_CHOICE" in
+      1) _debate_toggle SPEC_DEBATE;   ok "Spec debate → $(_debate_onoff SPEC_DEBATE)." ;;
+      2) _debate_toggle REVIEW_DEBATE; ok "Review debate → $(_debate_onoff REVIEW_DEBATE)." ;;
+      3) ask "Defender model (A) — Enter to use the overseer" "$a" "$_DEBATE_MODEL_HINT"; config_set DEBATE_MODEL_A "$ASK_REPLY"; _debate_key_hint "$ASK_REPLY" ;;
+      4) ask "Challenger model (B)" "$b" "$_DEBATE_MODEL_HINT"; config_set DEBATE_MODEL_B "$ASK_REPLY"; _debate_key_hint "$ASK_REPLY" ;;
+      5) debate_rounds_menu ;;
+      6) return ;;
+    esac
+  done
+}
 model_profile_menu() {
   banner   # screen clears the previous (no scroll-back clutter)
   menu "Settings · Model profile (DeepSeek effort)" \
@@ -149,15 +210,16 @@ settings_menu() {
   while true; do
     banner   # screen clears the previous (no scroll-back clutter)
     menu "ACE — Settings" \
-      "Providers & keys::DeepSeek · Anthropic · OpenAI · Context7" \
-      "Models & agents::which model each of the 10 agents runs" \
+      "Providers & keys::DeepSeek · Anthropic · OpenAI · OpenRouter · Context7" \
+      "Models & agents::which model each of the 12 agents runs" \
       "Model profile::DeepSeek effort (max/high/balanced)" \
+      "Cross-model debate::spec/review toggles · defender/challenger models · rounds" \
       "Appearance::theme · animation · pixel art" \
       "(Re)write OpenCode config::apply current settings now" \
       "Toolchain update::opencode · bun · node · uv · go" \
       "← back::"
     case "$MENU_CHOICE" in
-      1) providers_menu ;; 2) agent_models_menu ;; 3) model_profile_menu ;; 4) appearance_menu ;; 5) write_opencode_config; pause ;; 6) update; pause ;; 7) return ;;
+      1) providers_menu ;; 2) agent_models_menu ;; 3) model_profile_menu ;; 4) debate_settings_menu ;; 5) appearance_menu ;; 6) write_opencode_config; pause ;; 7) update; pause ;; 8) return ;;
     esac
   done
 }

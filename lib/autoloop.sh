@@ -384,28 +384,40 @@ spec_gate_solo(){
                   | sort -u | while IFS= read -r s; do [ -f "$s" ] && printf '%s\n' "$s"; done; }
   specs="$(_solo_specs)"; [ -n "$specs" ] || return 0
   slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $specs 2>/dev/null)"
-  # optional quality layer on lint-GREEN specs (both default OFF, fail-open). SPEC_DEBATE (cross-model dialogue)
-  # subsumes the single-shot SPEC_RUBRIC — when both are on, the debate wins. Solo parity with the coordinator.
+  # 1) deterministic gaps → bounded re-spec FIRST, so the quality layer below sees lint-CLEAN specs. (Freshly
+  # re-derived specs — e.g. a REANALYZE pass — almost always start with a gap; debating BEFORE this step skipped
+  # every one of them, so the debate never ran on its own output. Re-spec first fixes that.)
+  if printf '%s\n' "$slint" | grep -q '^SPECGAP'; then
+    say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') spec gap(s) — bounded re-spec before the quality gate."
+    SPECLINT_REPORT="$(printf '%s\n' "$slint" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" sync_objectives
+    specs="$(_solo_specs)"
+    slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $specs 2>/dev/null)"
+  fi
+  # 2) optional quality layer on the (now lint-GREEN) specs — both default OFF, fail-open. SPEC_DEBATE (cross-model
+  # dialogue) subsumes the single-shot SPEC_RUBRIC — when both are on, the debate wins. Solo parity with the coordinator.
+  local extra=""
   if [ "${SPEC_DEBATE:-0}" = 1 ]; then
     local _dsh deb; _dsh="$(dirname "$_SWARM_SH")/debate.sh"
     for sp in $specs; do
-      printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue
+      printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue   # still gappy after re-spec → skip
       deb="$(bash "$_dsh" spec "$sp" 2>/dev/null)" || true
-      [ -n "$deb" ] && slint="$(printf '%s\n%s' "$slint" "$deb")"
+      [ -n "$deb" ] && extra="$(printf '%s\n%s' "$extra" "$deb")"
     done
   elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
     for sp in $specs; do
       printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue
       rub="$(REPO="$PWD" bash "$_SWARM_SH" spec-rubric "$sp" 2>/dev/null)" || true
-      [ -n "$rub" ] && slint="$(printf '%s\n%s' "$slint" "$rub")"
+      [ -n "$rub" ] && extra="$(printf '%s\n%s' "$extra" "$rub")"
     done
   fi
-  printf '%s\n' "$slint" | grep -q '^SPECGAP' || return 0
-  say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') spec gap(s) — one bounded re-spec pass before working the queue."
-  SPECLINT_REPORT="$(printf '%s\n' "$slint" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" sync_objectives
-  slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $(_solo_specs) 2>/dev/null)"
+  # 3) debate/rubric-surfaced gaps (SPECGAP <slug> DEBATE:…) → one more bounded re-spec
+  if printf '%s\n' "$extra" | grep -q '^SPECGAP'; then
+    say "spec-$([ "${SPEC_DEBATE:-0}" = 1 ] && echo debate || echo rubric): $(printf '%s\n' "$extra" | grep -c '^SPECGAP') agreed gap(s) — one more re-spec before working the queue."
+    SPECLINT_REPORT="$(printf '%s\n' "$extra" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" sync_objectives
+    slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $(_solo_specs) 2>/dev/null)"
+  fi
   printf '%s\n' "$slint" | grep -q '^SPECGAP' \
-    && say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') gap(s) remain after re-spec — proceeding (fail-open)."
+    && say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') gap(s) remain — proceeding (fail-open)."
   return 0
 }
 

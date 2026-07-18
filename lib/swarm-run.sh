@@ -427,39 +427,52 @@ _swarm_plan_sync() {
                  | while IFS= read -r _s; do [ -n "$_s" ] && [ -f "$REPO/$_s" ] && printf '%s\n' "$REPO/$_s"; done; }
     if [ -n "$(_specf)" ]; then
       _slint="$(cd "$REPO" && REPO="$REPO" swarm_spec_lint $(_specf) 2>/dev/null)"
-      # OPTIONAL quality layer on lint-GREEN HIGH-risk specs, folding GAPS into the SAME SPECGAP report the
-      # re-spec drive below reads. Both default OFF, fail-open. SPEC_DEBATE (cross-model dialogue) subsumes the
-      # single-shot SPEC_RUBRIC, so when both are on the debate wins.
+      # a bounded re-spec pass, reused twice: once for deterministic lint gaps, once for debate/rubric-agreed gaps.
+      _respec() {  # $1 = SPECGAP report to feed the re-spec drive
+        ( cd "$REPO" && SPECLINT_REPORT="$1" LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
+            bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 || true
+        _land_plan_pr "$_slug"
+        _slint="$(cd "$REPO" && REPO="$REPO" swarm_spec_lint $(_specf) 2>/dev/null)"
+      }
+      # 1) deterministic gaps → re-spec FIRST, so the quality layer below sees lint-CLEAN specs (a freshly re-derived
+      # spec almost always starts with a gap; debating BEFORE this skipped every one → the debate never ran).
+      if printf '%s\n' "$_slint" | grep -q '^SPECGAP' && [ "${SWARM_RESLICE:-1}" != 0 ]; then
+        _sgn="$(printf '%s\n' "$_slint" | grep -c '^SPECGAP')"
+        echo "  planning: spec-lint found $_sgn spec gap(s) — re-spec before the quality gate"
+        swarm_post coordinator needs-attention "spec-lint: $_sgn spec gap(s) — re-spec before dispatch" "" 2>/dev/null || true
+        _respec "$(printf '%s\n' "$_slint" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")"
+      fi
+      # 2) OPTIONAL quality layer on the now lint-GREEN specs, folding agreed GAPS into a SEPARATE report. Both
+      # default OFF, fail-open. SPEC_DEBATE (cross-model dialogue) subsumes the single-shot SPEC_RUBRIC.
+      local _extra=""
       if [ "${SPEC_DEBATE:-0}" = 1 ]; then
         echo "  planning: spec-debate — cross-model dialogue pressure-testing the feature spec(s) (SPEC_DEBATE=1)…"
         local _rsp _deb
         while IFS= read -r _rsp; do
           [ -n "$_rsp" ] || continue
-          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue   # lint already flagged this spec
+          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue   # still gappy after re-spec → skip
           _deb="$(cd "$REPO" && bash "$HERE/debate.sh" spec "$_rsp" 2>/dev/null)" || true
-          [ -n "$_deb" ] && _slint="$(printf '%s\n%s' "$_slint" "$_deb")"
+          [ -n "$_deb" ] && _extra="$(printf '%s\n%s' "$_extra" "$_deb")"
         done < <(_specf)
       elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
         echo "  planning: spec-rubric judging the feature spec(s) on your model (SPEC_RUBRIC=1)…"
         local _rsp _rub
         while IFS= read -r _rsp; do
           [ -n "$_rsp" ] || continue
-          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue   # lint already flagged this spec — skip the call
+          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue
           _rub="$(cd "$REPO" && swarm_spec_rubric "$_rsp" 2>/dev/null)" || true
-          [ -n "$_rub" ] && _slint="$(printf '%s\n%s' "$_slint" "$_rub")"
+          [ -n "$_rub" ] && _extra="$(printf '%s\n%s' "$_extra" "$_rub")"
         done < <(_specf)
       fi
-      if printf '%s\n' "$_slint" | grep -q '^SPECGAP' && [ "${SWARM_RESLICE:-1}" != 0 ]; then
-        _sgn="$(printf '%s\n' "$_slint" | grep -c '^SPECGAP')"
-        echo "  planning: spec-lint found $_sgn spec gap(s) — re-spec before dispatch"
-        swarm_post coordinator needs-attention "spec-lint: $_sgn spec gap(s) — re-spec before dispatch" "" 2>/dev/null || true
-        ( cd "$REPO" && SPECLINT_REPORT="$(printf '%s\n' "$_slint" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" \
-            LOOP_SYNC_ONLY=1 PLAN=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/coordinator.log" 2>&1 || true
-        _land_plan_pr "$_slug"
-        _slint="$(cd "$REPO" && REPO="$REPO" swarm_spec_lint $(_specf) 2>/dev/null)"
-        printf '%s\n' "$_slint" | grep -q '^SPECGAP' \
-          && swarm_post coordinator needs-attention "spec-lint: $(printf '%s\n' "$_slint" | grep -c '^SPECGAP') gap(s) remain after re-spec — dispatching (fail-open)" "" 2>/dev/null || true
+      # 3) debate/rubric-agreed gaps → one more re-spec
+      if printf '%s\n' "$_extra" | grep -q '^SPECGAP' && [ "${SWARM_RESLICE:-1}" != 0 ]; then
+        _sgn="$(printf '%s\n' "$_extra" | grep -c '^SPECGAP')"
+        echo "  planning: spec-$([ "${SPEC_DEBATE:-0}" = 1 ] && echo debate || echo rubric) agreed $_sgn gap(s) — re-spec before dispatch"
+        swarm_post coordinator needs-attention "spec-debate: $_sgn agreed gap(s) — re-spec before dispatch" "" 2>/dev/null || true
+        _respec "$(printf '%s\n' "$_extra" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")"
       fi
+      printf '%s\n' "$_slint" | grep -q '^SPECGAP' \
+        && swarm_post coordinator needs-attention "spec-lint: $(printf '%s\n' "$_slint" | grep -c '^SPECGAP') gap(s) remain — dispatching (fail-open)" "" 2>/dev/null || true
       { printf '\n-- spec-lint --\n'; printf '%s\n' "$_slint"; } >> "$SWARM_DIR/batch-plan.txt" 2>/dev/null || true
     fi
   fi

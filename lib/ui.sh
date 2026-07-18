@@ -272,11 +272,14 @@ menu() {
 }
 
 # ask "Prompt" "default" -> ASK_REPLY   (headless: returns the default)
+# ask "Prompt" "default" "hint" -> ASK_REPLY. Optional 3rd arg is a GREYED example shown in the prompt but never
+# saved as the value (unlike the default) — e.g. a format template like 'openrouter/vendor/model'.
 ask() {
-  local prompt="$1" def="${2:-}" r
+  local prompt="$1" def="${2:-}" hint="${3:-}" r pfx
   if _noninteractive; then ASK_REPLY="$def"; return 0; fi
-  if [ -n "$def" ]; then printf '%s%s%s %s[%s]%s %s▸%s ' "$C_ORCHID" "$prompt" "$C_RESET" "$C_GREY" "$def" "$C_RESET" "$C_VIOLET" "$C_RESET"
-  else printf '%s%s%s %s▸%s ' "$C_ORCHID" "$prompt" "$C_RESET" "$C_VIOLET" "$C_RESET"; fi
+  pfx="$C_ORCHID$prompt$C_RESET"; [ -n "$hint" ] && pfx="$pfx $C_GREY($hint)$C_RESET"
+  if [ -n "$def" ]; then printf '%s %s[%s]%s %s▸%s ' "$pfx" "$C_GREY" "$def" "$C_RESET" "$C_VIOLET" "$C_RESET"
+  else printf '%s %s▸%s ' "$pfx" "$C_VIOLET" "$C_RESET"; fi
   read -r r; ASK_REPLY="${r:-$def}"
 }
 
