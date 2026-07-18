@@ -820,7 +820,7 @@ drive(){
     # the stable system+tools prefix for Claude — there is NO opencode.json knob to set. The ONLY requirement
     # is prefix stability (guaranteed above); never set/inject per-turn state BEFORE "$task". Live cache-read
     # ratio is captured by capture_usage() below (proven only on a real credit run — see TESTS-TODO / LEDGER D1).
-    { opencode run --agent "$AGENT" ${ORCH_MODEL_OVERRIDE:+--model "$ORCH_MODEL_OVERRIDE"} "$task" & echo $! > .opencode/.oppid; wait $!; } 2>&1 | tee .opencode/last-run.log
+    { opencode run --agent "$AGENT" ${ORCH_MODEL_OVERRIDE:+--model "$ORCH_MODEL_OVERRIDE"} "$task" </dev/null & echo $! > .opencode/.oppid; wait $!; } 2>&1 | tee .opencode/last-run.log
     rc=${PIPESTATUS[0]}; kill "$kp" 2>/dev/null
     [ -f .opencode/.timedout ] && rc=124
     capture_usage 2>/dev/null || true   # D1: log token/prefix-cache usage (fail-soft) — feeds D3 + proves the cache win
@@ -1108,7 +1108,7 @@ harvest_warnings(){
     say "opencode absent — can't curate warnings."; printf '%s\n' "$cand" >>"$seen"; return 0; fi
   say "harvesting $(printf '%s\n' "$fresh" | grep -c .) new build warning(s) -> ROADMAP"
   local items
-  items="$(timeout "${HARVEST_TIMEOUT:-180}" opencode run --agent "${AGENT:-orchestrator}" "These warning/deprecation lines are from the LATEST GREEN container build of THIS repo — they did NOT fail the gate, but a professional build must be WARNING-FREE. Read ROADMAP.md first and SKIP anything already listed unchecked. Cross-check the repo, collapse duplicates/transients/non-actionable noise, and for each REAL, fixable warning emit ONE GitHub-Markdown task line and NOTHING else: '- [ ] fix(build): <specific action that removes the warning> (warn: <short cite>)'. If none are real and actionable, output nothing.
+  items="$(timeout "${HARVEST_TIMEOUT:-180}" opencode run --agent "${AGENT:-orchestrator}" </dev/null "These warning/deprecation lines are from the LATEST GREEN container build of THIS repo — they did NOT fail the gate, but a professional build must be WARNING-FREE. Read ROADMAP.md first and SKIP anything already listed unchecked. Cross-check the repo, collapse duplicates/transients/non-actionable noise, and for each REAL, fixable warning emit ONE GitHub-Markdown task line and NOTHING else: '- [ ] fix(build): <specific action that removes the warning> (warn: <short cite>)'. If none are real and actionable, output nothing.
 
 $fresh" 2>/dev/null)"
   items="$(printf '%s\n' "$items" | grep -E '^- \[ \] ')"

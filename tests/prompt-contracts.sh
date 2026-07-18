@@ -72,6 +72,14 @@ has debater "sycophantic"; has debater "GROUNDING IS MANDATORY"; has debater "AC
 # ORCHESTRATOR instead, discarding both the debater prompt above AND its read-only permission block.
 [ "$(echo "$JSON" | jq -r '.agent.debater.mode // "-"' 2>/dev/null)" = primary ] \
   || bad "debater must be mode:primary — as a subagent, 'opencode run --agent debater' falls back to the orchestrator and the whole debate contract (+ read-only perms) is bypassed"
+# STDIN CONTRACT: `opencode run` blocks on stdin when it is an open pipe (non-TTY: systemd loop, cron, the
+# detached swarm coordinator, nested invocation) — it waits for EOF that never comes, then dies at its internal
+# timeout. Foreground calls MUST pin stdin to /dev/null, else they silently hang for the full timeout and the
+# caller's fail-open reports "nothing found" (this is exactly how the cross-model debate produced zero output).
+while IFS= read -r _oc; do
+  case "$_oc" in *"</dev/null"*) : ;; *) bad "opencode run without '</dev/null' (will hang on non-TTY stdin): ${_oc%%:*}" ;; esac
+done < <(grep -rnE '^[^#]*opencode run ' lib/*.sh 2>/dev/null | grep -v pkill)
+
 # the debate ENGINE + its transport/guards (fail-open, HIGH-risk-only, bounded) + the CLI route
 [ -f lib/debate.sh ] || bad "lib/debate.sh (the debate engine) is missing"
 grep -q 'opencode run --agent debater --model' lib/debate.sh || bad "debate.sh lost the read-only debater transport"

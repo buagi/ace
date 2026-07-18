@@ -33,7 +33,7 @@ _debate_model_a(){
 _debate_model_b(){ local m; m="${DEBATE_MODEL_B:-$(_dcfg DEBATE_MODEL_B)}"; printf '%s' "$m"; }
 
 # one bounded, fail-open turn: run the read-only `debater` agent on the given side model; empty on any failure.
-_debate_turn(){ timeout "${DEBATE_TIMEOUT:-600}" opencode run --agent debater --model "$1" "$2" 2>/dev/null || true; }
+_debate_turn(){ timeout "${DEBATE_TIMEOUT:-600}" opencode run --agent debater --model "$1" "$2" </dev/null 2>/dev/null || true; }
 
 # _debate_converged <challenger-out> <defender-out> → prints "conv<TAB>needs" (1/0 each)
 _debate_flags(){
