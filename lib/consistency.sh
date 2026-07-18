@@ -24,7 +24,7 @@ ACE_GITNEXUS_WARN_MB="${ACE_GITNEXUS_WARN_MB:-1500}"      # informational warnin
 # `ace upgrade`. Add new ACE-written transients HERE and every adopted repo picks them up on next upgrade.
 _ace_ignore_lines() {
   cat <<'IGN'
-.serena/
+.serena/cache/
 .opencode/.agents
 .opencode/.oppid
 .opencode/.step-budget
@@ -68,7 +68,7 @@ ensure_ace_ignores() {
 # uncommitted, so the ignore rules must be right FIRST or a newly-added artifact dir is swept into git
 # (observed live: a resume commit swallowed .opencode/cache/ AND a 151-spec .opencode/reanalyze/ baseline).
 # Idempotent + fail-soft, and NOT behind the reconcile TTL — it is a couple of greps.
-# SAFETY: only ever untracks paths ACE itself writes (.opencode/, .serena/) that are ALSO ignored — it will
+# SAFETY: only ever untracks paths under .opencode/ that are ALSO ignored — it will
 # never touch a file the user force-added, and never touches .opencode/specs/ (tracked by design).
 ace_repo_hygiene() {
   _con_in_repo || return 0
@@ -76,10 +76,10 @@ ace_repo_hygiene() {
   local f n=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    case "$f" in .opencode/*|.serena/*) ;; *) continue ;; esac
+    case "$f" in .opencode/*) ;; *) continue ;; esac   # .opencode ONLY — .serena/memories/** is user content, not a transient
     git check-ignore -q --no-index -- "$f" 2>/dev/null || continue   # --no-index: a TRACKED path is never "ignored" without it
     git rm --cached --quiet -- "$f" 2>/dev/null && n=$((n+1))
-  done < <(git ls-files -- .opencode .serena 2>/dev/null)
+  done < <(git ls-files -- .opencode 2>/dev/null)
   [ "$n" -gt 0 ] || return 0
   say "hygiene — untracked $n ACE transient file(s) that a previous run swept into git (now ignored)" 2>/dev/null \
     || echo "hygiene — untracked $n ACE transient file(s) (now ignored)"

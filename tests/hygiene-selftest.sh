@@ -12,6 +12,9 @@ d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
   echo spec > .opencode/specs/real.md
   echo transcript > .opencode/cache/spec-debate-x.md
   echo baseline > .opencode/reanalyze/before/specs/old.md
+  mkdir -p .serena/memories/specs                                       # user CONTENT, deliberately tracked
+  echo handover > .serena/memories/handover.md
+  echo phase1 > .serena/memories/specs/phase-1.md
   git add -A && git commit -qm "artifacts wrongly swept in" >/dev/null
   . "$ROOT/lib/core.sh" 2>/dev/null; . "$ROOT/lib/ui.sh" 2>/dev/null; . "$ROOT/lib/consistency.sh"
   ace_repo_hygiene >/dev/null 2>&1
@@ -20,6 +23,10 @@ d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
   [ -f .opencode/cache/spec-debate-x.md ]                              || bad "untrack must keep files on disk"
   grep -qx '.opencode/reanalyze/' .gitignore                           || bad "reanalyze rule not back-filled"
   [ -z "$(git status --porcelain)" ]                                   || bad "hygiene left a dirty tree"
+  # REGRESSION GUARD: an over-broad ".serena/" rule once untracked 15 real memory documents
+  # (handover + 11 spec docs) on a live repo. .serena/memories/** is CONTENT, never a transient.
+  [ "$(git ls-files | grep -c '^\.serena/memories/')" = 2 ]             || bad ".serena/memories/** must stay tracked (user content, not a transient)"
+  grep -qx '.serena/' .gitignore                                        && bad "canonical list must NOT blanket-ignore .serena/ (only .serena/cache/)"
   before="$(git log --oneline | wc -l)"
   ace_repo_hygiene >/dev/null 2>&1
   [ "$(git log --oneline | wc -l)" = "$before" ]                       || bad "not idempotent (committed twice)"
