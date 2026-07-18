@@ -2396,7 +2396,7 @@ ace_self_fix() {
   # OPTIONAL enrichment: a bounded READ-ONLY opencode pass adds a root-cause comment (never edits code).
   if command -v opencode >/dev/null 2>&1; then
     ( cd "$dir" && mkdir -p .opencode
-      timeout "${ACE_SELFFIX_TIMEOUT:-1800}" opencode run --agent orchestrator "READ-ONLY triage of ACE itself (bash: ./ace + lib/*.sh; the driver is lib/scaffold.sh). You MUST NOT edit/create/delete any file, branch, commit, push, open a PR, or delegate any code change. Diagnose the ROOT cause of the rathole notes below — navigate via grep/gitnexus/serena and pin the function + file:line — then add ONE comment to the existing issue via: gh issue comment $url --body \"## Root cause (file:line) … ## Proposed fix …\". Do NOTHING else. Notes:
+      timeout "${ACE_SELFFIX_TIMEOUT:-1800}" opencode run --agent orchestrator </dev/null "READ-ONLY triage of ACE itself (bash: ./ace + lib/*.sh; the driver is lib/scaffold.sh). You MUST NOT edit/create/delete any file, branch, commit, push, open a PR, or delegate any code change. Diagnose the ROOT cause of the rathole notes below — navigate via grep/gitnexus/serena and pin the function + file:line — then add ONE comment to the existing issue via: gh issue comment $url --body \"## Root cause (file:line) … ## Proposed fix …\". Do NOTHING else. Notes:
 $notes" >.opencode/last-self-fix.log 2>&1 || true ) \
       && info "added a root-cause comment to $url." || true
   fi
@@ -3150,7 +3150,7 @@ else SYS_MAP="$(_atlas_dir_fallback map)"; DATA_FLOW="$(_atlas_dir_fallback flow
 # OFF by default (zero tokens, deterministic). ATLAS_NARRATIVE=1 asks a read-only worker to fill the Role
 # column from real code; if it returns a table it replaces the deterministic one, else the structure stands.
 if [ "${ATLAS_NARRATIVE:-0}" = 1 ] && command -v opencode >/dev/null 2>&1; then
-  NARR="$(CI=1 timeout -k 10 300 opencode run --agent "${ATLAS_AGENT:-cartographer}" \
+  NARR="$(CI=1 timeout -k 10 300 opencode run --agent "${ATLAS_AGENT:-cartographer}" </dev/null \
     "For '$NAME', fill the Role column of this module table from REAL code (one grounded phrase each; keep Module/Layer/Used by/Depends on exactly as given; output ONLY the markdown table):
 $MODULE_TABLE" </dev/null 2>/dev/null || true)"
   printf '%s' "$NARR" | grep -q '| Module ' && MODULE_TABLE="$NARR"
