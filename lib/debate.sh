@@ -93,7 +93,7 @@ ace_debate(){
   local _only; _only="${DEBATE_ONLY:-$(_dcfg DEBATE_ONLY)}"
   [ -z "$_only" ] || case ",$_only," in *",$slug,"*) : ;; *) return 0 ;; esac
 
-  local dir=".opencode/cache" trf="$dir/${mode}-debate-${slug}.md"; mkdir -p "$dir" 2>/dev/null
+  local dir=".opencode/cache"; local trf="$dir/${mode}-debate-${slug}.md"; mkdir -p "$dir" 2>/dev/null   # NOTE: keep as two `local` statements — `local a=X b=$a` expands $a from the OUTER scope (unbound under set -u) BEFORE the same-line assignment lands
   printf '# %s debate · %s\n\n- defender (A): %s\n- challenger (B): %s\n- rounds: min %s · max %s · hard %s\n' \
     "$mode" "$slug" "$A" "$B" "${DEBATE_MIN:-2}" "${DEBATE_MAX:-4}" "${DEBATE_HARD_MAX:-10}" > "$trf"
 
@@ -226,12 +226,24 @@ ace_debate_testproject(){
 ace_debate_selftest(){
   local d ok=1 out; d="$(mktemp -d)" || return 1
   ( cd "$d"
+    # HERMETIC: point ACE_CONFIG at an empty file so `_dcfg` never reads the user's real ~/.config/ace/config —
+    # otherwise `DEBATE_MODEL_B=''` falls back (via `:-`) to a configured challenger and the "empty B / LOW-risk"
+    # cases fire a live network debate (hangs). CI has no config so this only bit machines with DEBATE_MODEL_B set.
+    : > empty-config; export ACE_CONFIG="$PWD/empty-config"
     printf '<!-- ace-spec-template v1 -->\n# Spec (slug: hi · risk: HIGH)\n## 3. Scope\n' > hi.md
     printf '# Spec (slug: lo · risk: LOW)\n' > lo.md
     out="$(DEBATE_MODEL_B='' ace_debate spec hi.md 2>/dev/null)"
     [ -z "$out" ] || { echo "[debate] no challenger model ⇒ must be silent (got: $out)"; ok=0; }
     out="$(DEBATE_MODEL_B=openrouter/x ace_debate spec lo.md 2>/dev/null)"
     [ -z "$out" ] || { echo "[debate] LOW-risk spec must be skipped (got: $out)"; ok=0; }
+    # regression: a valid challenger + HIGH-risk spec must run PAST the transcript setup and write a transcript.
+    # (Guards the set -u crash at `local dir=.. trf=$dir/..` — the two paths above both return BEFORE that line,
+    # so this is the only test that reaches it.) Stub opencode so no model/network is needed.
+    mkdir -p bin; printf '#!/usr/bin/env bash\necho "no blocking issues."\necho "CONVERGED: yes"\n' > bin/opencode; chmod +x bin/opencode
+    # MIN=MAX=HARD_MAX=1 → exactly one round, guaranteed to terminate; TIMEOUT/WALL small so a future hang fails fast.
+    out="$(PATH="$PWD/bin:$PATH" DEBATE_MODEL_A=stub DEBATE_MODEL_B=openrouter/stub DEBATE_MIN=1 DEBATE_MAX=1 DEBATE_HARD_MAX=1 DEBATE_TIMEOUT=3 DEBATE_WALL_MAX=10 ace_debate spec hi.md 2>&1)"
+    printf '%s' "$out" | grep -q 'unbound variable' && { echo "[debate] transcript setup crashed under set -u: $out"; ok=0; }
+    [ -f .opencode/cache/spec-debate-hi.md ] || { echo "[debate] no transcript written — debate never reached the round loop"; ok=0; }
     out="$(ace_debate bogus x 2>/dev/null)"; [ "$?" = 2 ] || true   # bad mode ⇒ usage rc 2 (not asserted on output)
     [ "$ok" = 1 ] && echo "[debate] PASS ✓" || { echo "[debate] FAIL ✗"; exit 1; }
   ) || ok=0
