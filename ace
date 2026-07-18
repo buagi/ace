@@ -134,7 +134,7 @@ guided() {
   box "This will (each step logged; --dry-run to preview)" \
     "1. host tools (fnm/node, uv, bun, jq, opencode) — user-local" \
     "2. DeepSeek (validated) + Context7 keys + model profile" \
-    "3. OpenCode config (10 agents: orchestrator/implementer/test_engineer/verifier + 4 critics + conflict_resolver + launch_readiness_reviewer + MCP)" \
+    "3. OpenCode config (12 agents: orchestrator/implementer/test_engineer/verifier + 4 critics + conflict_resolver + launch_readiness_reviewer + researcher + debater + MCP)" \
     "4. git identity + GitHub login (gh)" \
     "5. optional: scaffold a project + VPS deploy"
   confirm "Proceed?" Y || return

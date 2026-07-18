@@ -472,7 +472,7 @@ ensure_provider_auth() {  # <provider>  e.g. anthropic | openai
 
 # ---------------------------------------------------------------- opencode config
 write_opencode_config() {
-  step "OpenCode config (10 agents: orchestrator/implementer/test_engineer/verifier/reviewer/ux_reviewer/standards_keeper/alignment_reviewer/conflict_resolver/launch_readiness_reviewer + MCP)"
+  step "OpenCode config (12 agents: orchestrator/implementer/test_engineer/verifier/reviewer/ux_reviewer/standards_keeper/alignment_reviewer/conflict_resolver/launch_readiness_reviewer/researcher/debater + MCP)"
   local cfgdir="$HOME/.config/opencode"
   run mkdir -p "$cfgdir"
   read -r EFF_MAIN EFF_VERIFY VERIFIER_MODEL <<<"$(profile_values)"
