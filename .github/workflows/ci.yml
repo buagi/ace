@@ -38,5 +38,7 @@ jobs:
         run: bash tests/swarm-selftests.sh
       - name: merge-approval gate (deny-by-default · undelivered request · token uniqueness)
         run: bash tests/approval-selftest.sh
+      - name: CLI dispatch ↔ help agreement
+        run: bash tests/cli-dispatch-selftest.sh
       - name: autoloop lifecycle (provider-cap detection · step budget · resume never commits to main)
         run: bash tests/autoloop-selftest.sh
