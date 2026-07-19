@@ -200,6 +200,31 @@ swarm_policy_selftest() {
   printf '{"v":"1"}\n' > "$t/O"; printf '{"v":"2"}\n' > "$t/A"; printf '{"v":"3"}\n' > "$t/B"
   if bash "$ms" json "$t/O" "$t/A" "$t/B"; then echo "[policy] true-clash escalation: FAIL ✗ (should conflict)"; rc=1
   else echo "[policy] true-clash escalation: PASS ✓ (left as conflict)"; fi
+
+  # FALSY-VALUE fixture. Every fixture above uses non-empty STRINGS, which is precisely why the
+  # `$a[$k]//null` descent shipped undetected: jq's `//` fires on `false` (and `null`) as well as on
+  # absence, so a key legitimately set to `false` is fed to the recursion as `null` and comes back out
+  # as `null`. In a real package.json/tsconfig.json that silently flips e.g. "strict": false → null,
+  # which downstream tooling reads as unset. The driver exits 0, so nothing warns.
+  printf '{"opts":{"strict":true,"a":"1"}}\n'  > "$t/O"
+  printf '{"opts":{"strict":false,"a":"1"}}\n' > "$t/A"   # ours flips strict → false
+  printf '{"opts":{"strict":true,"a":"1","b":"2"}}\n' > "$t/B"   # theirs adds b, leaves strict alone
+  if bash "$ms" json "$t/O" "$t/A" "$t/B" \
+     && jq -e '.opts.strict==false and .opts.a=="1" and .opts.b=="2"' "$t/A" >/dev/null; then
+    echo "[policy] false-valued key preserved: PASS ✓"
+  else echo "[policy] false-valued key preserved: FAIL ✗ (got $(jq -c . "$t/A" 2>/dev/null))"; rc=1; fi
+
+  # DELETION fixture. Same root cause seen from the other side: an ABSENT key and a key holding
+  # `null`/`false` are indistinguishable after `//null`, so a deletion on one side looks like "no
+  # change" and the base value (or a null) is re-emitted — the merge RESURRECTS a dependency a worker
+  # deliberately removed. Deletion must survive when the other side only touched unrelated keys.
+  printf '{"deps":{"a":"1","old":"2"}}\n' > "$t/O"
+  printf '{"deps":{"a":"1"}}\n'           > "$t/A"        # ours DELETES old
+  printf '{"deps":{"a":"1","old":"2","new":"3"}}\n' > "$t/B"   # theirs adds new, keeps old untouched
+  if bash "$ms" json "$t/O" "$t/A" "$t/B" \
+     && jq -e '(.deps|has("old")|not) and .deps.new=="3" and .deps.a=="1"' "$t/A" >/dev/null; then
+    echo "[policy] deleted key stays deleted: PASS ✓"
+  else echo "[policy] deleted key stays deleted: FAIL ✗ (got $(jq -c . "$t/A" 2>/dev/null))"; rc=1; fi
   rm -rf "$t"
   swarm_mergiraf_selftest || rc=1
   return $rc

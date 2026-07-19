@@ -1,0 +1,16 @@
+FROM node:24-slim AS build
+ENV CI=1
+WORKDIR /app
+RUN corepack enable
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
+FROM build AS test
+RUN pnpm test
+# --- runtime image (used only by 'ace deploy' for a service; the ./ci.sh gate builds --target test) ---
+FROM build AS final
+ENV NODE_ENV=production
+EXPOSE 3000
+# EDIT: your service's start command. This scaffold is a monorepo — add a root "start" script to
+# package.json that runs your built app (e.g. "start": "node apps/server/dist/index.js").
+CMD ["pnpm", "start"]

@@ -67,7 +67,9 @@ for f in "$DIR"/*.json; do
   lbl="$(cat "$DIR/$base.label" 2>/dev/null | tr -d '[:space:]')"
   [ -n "$lbl" ] || { bad "$base: no human label ($DIR/$base.label) to calibrate against"; continue; }
   got="$(jq -r '.verdict // empty' "$f" 2>/dev/null)"
-  if [ "$got" = "$lbl" ]; then agree=$((agree+1)); else printf 'MISS: %s — rubric said %s, human label %s\n' "$base" "$got" "$lbl"; fi
+  # a MISS is a REGRESSION, not a note: this harness IS the go/no-go gate for SPEC_RUBRIC=1, so label
+  # disagreement must exit non-zero. Print-only (the old behaviour) reported PASS at 0% agreement.
+  if [ "$got" = "$lbl" ]; then agree=$((agree+1)); else bad "$base: rubric said $got, human label $lbl"; fi
 done
 
 pct=0; [ "$n" -gt 0 ] && pct=$(( agree * 100 / n ))
@@ -78,6 +80,10 @@ if [ "$MODE" = calibrate ]; then
     echo "CALIBRATION: GO — >=${RUBRIC_CALIBRATION_MIN:-90}% agreement over >=4 goldens. Enabling SPEC_RUBRIC=1 is defensible for this labeled set."
   else
     echo "CALIBRATION: HOLD — keep SPEC_RUBRIC=0 (default). Need schema-clean + >=4 goldens + >=${RUBRIC_CALIBRATION_MIN:-90}% agreement (have ${n} goldens, ${pct}%)."
+    # A HOLD verdict is a FAILED calibration: exit non-zero so the nightly goes red. Otherwise deleting
+    # the hard goldens shrinks the denominator, prints 100%, still says HOLD, and the job stays green --
+    # the same fixture-erosion fail-open this harness fixes for MISS.
+    fail=1
   fi
 fi
 

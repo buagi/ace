@@ -57,7 +57,9 @@ for f in "$DIR"/*.out; do
   [ "$got" = BAD ] && { bad "$base: malformed synthesis output (want 'SOUND' or well-formed DEBATEISSUE lines)"; continue; }
   lbl="$(tr -d '[:space:]' < "$DIR/$base.label" 2>/dev/null)"
   [ -n "$lbl" ] || { bad "$base: no human label ($DIR/$base.label)"; continue; }
-  if [ "$got" = "$lbl" ]; then agree=$((agree+1)); else printf 'MISS: %s — debate said %s, human label %s\n' "$base" "$got" "$lbl"; fi
+  # a MISS is a REGRESSION, not a note: the harness is the calibration gate, so disagreement with the human
+  # label must make it exit non-zero. Printing only (the old behaviour) let agent-goldens.yml stay green at 0%.
+  if [ "$got" = "$lbl" ]; then agree=$((agree+1)); else bad "$base: debate said $got, human label $lbl"; fi
 done
 
 pct=0; [ "$n" -gt 0 ] && pct=$(( agree * 100 / n ))
@@ -68,6 +70,10 @@ if [ "$MODE" = calibrate ]; then
     echo "CALIBRATION: GO — >=${DEBATE_CALIBRATION_MIN:-90}% agreement over >=4 goldens. Enabling SPEC_DEBATE=1 / REVIEW_DEBATE=1 is defensible for this labeled set."
   else
     echo "CALIBRATION: HOLD — keep SPEC_DEBATE/REVIEW_DEBATE=0 (default). Need schema-clean + >=4 goldens + >=${DEBATE_CALIBRATION_MIN:-90}% agreement (have ${n} goldens, ${pct}%)."
+    # A HOLD verdict is a FAILED calibration: exit non-zero so the nightly goes red. Otherwise deleting
+    # the hard goldens shrinks the denominator, prints 100%, still says HOLD, and the job stays green --
+    # the same fixture-erosion fail-open this harness fixes for MISS.
+    fail=1
   fi
 fi
 

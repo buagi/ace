@@ -98,10 +98,13 @@ fi
 
 # --- score ---
 ls "$OUT"/*.out >/dev/null 2>&1 || { echo "debate-effectiveness: no recorded debates in $OUT — nightly '--capture' seeds them (needs keys). SKIP."; exit 0; }
-tp=0 fp=0 fn=0 tn=0 n=0 bad=0
+tp=0 fp=0 fn=0 tn=0 n=0 bad=0 missing=0
 while IFS=$'\t' read -r slug label kw; do
   [ -n "$slug" ] || continue; case "$slug" in \#*) continue ;; esac
-  o="$OUT/$slug.out"; [ -f "$o" ] || { echo "MISS-FIXTURE: $slug (no recorded .out)"; continue; }
+  # a labelled spec with no recorded .out is a FAILURE, never a silent skip: skipping shrinks BOTH the
+  # denominator and the history row's basis, so deleting the hard cases would *raise* the reported F1.
+  # labels.tsv is the ground truth — every row in it must be scored or the run is not comparable.
+  o="$OUT/$slug.out"; [ -f "$o" ] || { echo "MISS-FIXTURE: $slug (no recorded .out — labelled spec is unscored)"; missing=$((missing+1)); continue; }
   n=$((n+1)); v="$(verdict_of "$o")"
   if [ "$v" = BAD ]; then bad=$((bad+1)); echo "BAD: $slug — unparseable verdict"; continue; fi
   case "$label" in
@@ -128,9 +131,11 @@ if [ -f .opencode/cache/debate-metrics.jsonl ]; then
   avg_cost="$(jq -s 'if length==0 then 0 else (map(.duration_s)|add)/length|floor end' .opencode/cache/debate-metrics.jsonl 2>/dev/null || echo 0)"
 fi
 
-# append a timestamped effectiveness record (config snapshot + scores) — the improvement-over-time log
+# append a timestamped effectiveness record (config snapshot + scores) — the improvement-over-time log.
+# ONLY on a complete basis: a run that skipped labelled specs is not comparable to previous rows, and
+# appending it would let a shrinking fixture set look like an improving trend in `ace debate trend`.
 mkdir -p "$SB"
-jq -nc --arg ts "$(date -u +%FT%TZ)" \
+[ "$missing" -eq 0 ] && jq -nc --arg ts "$(date -u +%FT%TZ)" \
    --arg a "${DEBATE_MODEL_A:-$(_dcfg DEBATE_MODEL_A)}" --arg b "${DEBATE_MODEL_B:-$(_dcfg DEBATE_MODEL_B)}" \
    --argjson min "${DEBATE_MIN:-2}" --argjson max "${DEBATE_MAX:-4}" --argjson hard "${DEBATE_HARD_MAX:-10}" \
    --argjson n "$n" --argjson tp "$tp" --argjson fp "$fp" --argjson fn "$fn" --argjson tn "$tn" \
@@ -143,9 +148,13 @@ jq -nc --arg ts "$(date -u +%FT%TZ)" \
 echo "── debate effectiveness · n=$n · TP=$tp FP=$fp FN=$fn TN=$tn ──"
 printf '  precision %s · recall %s · F1 %s · accuracy %s' "$(_fmt "$prec")" "$(_fmt "$rec")" "$(_fmt "$f1")" "$(_fmt "$acc")"
 [ "$avg_cost" -gt 0 ] 2>/dev/null && printf ' · convergence %s%% · avg-cost %ss' "$conv_rate" "$avg_cost"
-echo; echo "  logged → $HIST"
+echo
+if [ "$missing" -eq 0 ]; then echo "  logged → $HIST"; else echo "  NOT logged → $HIST ($missing labelled spec(s) unscored — partial basis would corrupt the trend)"; fi
 if [ "$bad" -gt 0 ]; then echo "debate-effectiveness: $bad unparseable verdict(s) — FAIL"; exit 1; fi
+if [ "$missing" -gt 0 ]; then echo "debate-effectiveness: $missing MISS-FIXTURE — every row in $LABELS needs a recorded .out (run --capture) — FAIL"; exit 1; fi
 f1min="${DEBATE_F1_MIN:-750}"   # per-mille (0.750)
-if [ "$f1" -ge "$f1min" ]; then echo "  VERDICT: GO — F1 $(_fmt "$f1") >= $(_fmt "$f1min") on $n labeled specs."
-else echo "  VERDICT: HOLD — F1 $(_fmt "$f1") < $(_fmt "$f1min"); review the FP/FN above (\`ace debate review\`) and tune before enabling."; fi
-exit 0
+# HOLD is the whole point of the harness — it must be a non-zero exit or the nightly gate reports success
+# while the debate is measurably below the bar. Tune the debate (or DEBATE_F1_MIN), never the exit code.
+if [ "$f1" -ge "$f1min" ]; then echo "  VERDICT: GO — F1 $(_fmt "$f1") >= $(_fmt "$f1min") on $n labeled specs."; exit 0; fi
+echo "  VERDICT: HOLD — F1 $(_fmt "$f1") < $(_fmt "$f1min"); review the FP/FN above (\`ace debate review\`) and tune before enabling."
+exit 1
