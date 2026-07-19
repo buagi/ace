@@ -61,6 +61,7 @@ flowchart LR
 |------|--------------|
 | [commands.md](commands.md) | Every `ace` subcommand. |
 | [configuration.md](configuration.md) | Every env knob and where config lives — the settings reference. |
+| [engineering-lessons.md](engineering-lessons.md) | **Read before fixing anything.** The 2026-07-18 audit (152 defects): mechanical bash traps with one-line fixes, the fix/review discipline that caught the bad *fixes*, and the design defaults. |
 | [testing.md](testing.md) | The 3-tier test strategy (per-PR gates · nightly goldens · on-demand evals) + the pre-release readiness checklist. |
 | [trial-runs.md](trial-runs.md) | A metered 3-run runbook to verify the spec pipeline + cross-model debate on real features (metric · pass line · where to read it), then fix/optimise. |
 | [scenarios.md](scenarios.md) | Runbooks for the jobs you'll actually run. |

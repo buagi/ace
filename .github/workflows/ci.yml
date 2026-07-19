@@ -10,18 +10,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # scripts/*.sh was outside every lint glob until now — bash-traps.sh scans it, so the cheaper gates
+      # should too. Verified clean at both bash -n and shellcheck -S error before widening.
       - name: bash -n (syntax) — hard gate
         run: |
           rc=0
-          for f in ace lib/*.sh tests/*.sh; do bash -n "$f" || { echo "::error::syntax: $f"; rc=1; }; done
+          for f in ace lib/*.sh tests/*.sh scripts/*.sh; do bash -n "$f" || { echo "::error::syntax: $f"; rc=1; }; done
           exit $rc
+      # Static gate for the bash traps from the 2026-07-18 audit (A1-A11). Lives in `lint` rather than
+      # `tests` because it needs nothing but bash/grep/awk/sed — fastest feedback, and a trap caught here
+      # never reaches the suites below. HARD GATE: no `|| true`, no continue-on-error. It self-tests every
+      # pattern against known-bad and known-good fixtures on each run, so a detector that silently stops
+      # matching turns CI red rather than reporting clean.
+      - name: bash traps (A1-A11 static gate + its own self-test) — hard gate
+        run: bash tests/bash-traps.sh
       - name: shellcheck (errors fail; warnings informational)
         run: |
           sudo apt-get update -y && sudo apt-get install -y shellcheck
           echo "== errors (gate) =="
-          shellcheck -S error -e SC1090,SC1091 ace lib/*.sh tests/*.sh
+          shellcheck -S error -e SC1090,SC1091 ace lib/*.sh tests/*.sh scripts/*.sh
           echo "== warnings (informational) =="
-          shellcheck -S warning -e SC1090,SC1091 ace lib/*.sh tests/*.sh || true
+          shellcheck -S warning -e SC1090,SC1091 ace lib/*.sh tests/*.sh scripts/*.sh || true
   tests:
     runs-on: ubuntu-latest
     steps:

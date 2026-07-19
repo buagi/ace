@@ -396,6 +396,27 @@ Per-project — scaffold writes, upgrade backfills:
 | `.github/workflows/` | build-test · security · codemap · deploy (gated) · release (Go). |
 | `scripts/{auto-loop,graph-refresh,env-merge,deploy,release}.sh` | Generated loop + helper scripts. |
 
+## Lessons stores
+
+Durable gotchas the crew reads *before* planning and appends to *after* each task. Three scopes:
+
+| Path | Scope | Notes |
+|------|-------|-------|
+| `.opencode/lessons.md` | one project | The loop appends one terse, deduped line per task (plus a line naming the critic if one gated the change). `compact_lessons` caps it at `LESSONS_MAX_LINES` and archives the overflow. In a swarm each worker appends only to its own `.opencode/lessons/<branch>.md` shard; the coordinator aggregates them into this canonical file on main (it is `merge=union`, so no entry is ever lost). |
+| `~/.config/ace/host-lessons/<os>.md` | one machine, all projects | Written by the rathole supervisor, so a host-level trap solved in one repo is avoided in the next. |
+| `${ACE_CONFIG_DIR}/lessons.md` | one machine, all projects | The **shared lessons store** — cross-project lessons that aren't host/OS-specific. `ACE_CONFIG_DIR` resolves to `${XDG_CONFIG_HOME:-$HOME/.config}/ace` (`lib/core.sh:4`), so this is normally `~/.config/ace/lessons.md`. |
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `LESSONS_MAX_LINES` | `200` | Cap on `.opencode/lessons.md` before `compact_lessons` archives the overflow — the file is fed into agent prompts, so it is a standing token cost. |
+
+`ace brain` files the host-lessons + the repo's `.opencode/lessons.md` into gbrain (when present) — the one built-in way lessons cross project boundaries into chat.
+
+> [!NOTE]
+> **Verification status.** The per-project store, the swarm shard/aggregate behaviour, `LESSONS_MAX_LINES=200`, the host-lessons path and `ace brain` are all verified in the code. The **shared store at `${ACE_CONFIG_DIR}/lessons.md` is documented from spec** — it was being implemented concurrently with this page, and a grep for it across the tree returned nothing at the time of writing. Grep before you depend on it. The audit lesson behind this note is B11 in [engineering-lessons.md](engineering-lessons.md): do not document a guarantee that does not hold yet. The shared store is now implemented in `lib/core.sh` (`ACE_LESSONS_SHARED`, XDG-aware) and read by the loop via a mirrored `lessons_view`.
+
+The lessons worth reading before you change ACE *itself* are in [engineering-lessons.md](engineering-lessons.md).
+
 ## Code intelligence (GitNexus / Serena)
 
 The agents navigate code through two MCP servers configured in the global `opencode.json`.
@@ -427,3 +448,4 @@ Seeing drift? Lower `maxContext` toward `600000` — an earlier handover is safe
 - [swarm.md](swarm.md#config-knobs) — the full swarm config knobs
 - [deploy.md](deploy.md) — `DEPLOY_GATE` and the release-gated deploy model
 - [profile.md](profile.md) — the `.opencode/profile.yaml` fields several defaults come from
+- [engineering-lessons.md](engineering-lessons.md) — the audit lessons behind several of these defaults (fail-open, deny-by-default, narrate-long-operations)
