@@ -296,3 +296,86 @@ consistency_cmd(){
     *)                   consistency_report ;;
   esac
 }
+
+# ---------------------------------------------------------------------------------------------------
+# firecrawl_ensure — bring the LOCAL research crawler up at run start, and make the MCP actually usable.
+#
+# WHY THIS EXISTS: the enable/disable decision was frozen at `ace opencode` time. write_opencode_config
+# probes 127.0.0.1:3002 and writes `mcp.firecrawl.enabled=false` when nothing answers -- correct in itself
+# (a dead MCP server makes opencode fail to start it on EVERY launch), but the flag then never changed
+# again. So `ace firecrawl up` AFTER `ace opencode` left the container running and the MCP still disabled,
+# and a run silently fell back to single-URL webfetch. Observed live: a full re-analysis pass produced 16
+# citations, every one an in-repo file reference, and ZERO web research -- while nothing said so.
+#
+# Two halves, and BOTH are required:
+#   1. start the container if it is down (FIRECRAWL_AUTO=1, the default -- set 0 to opt out)
+#   2. flip mcp.firecrawl.enabled in the LIVE config to match reality, BEFORE opencode launches
+#
+# FAIL-OPEN BY DESIGN, LOUDLY (C1/C3): no compose dir, no container engine, or a crawler that will not
+# answer must DEGRADE research to webfetch, never block the run. But it must SAY which one you got --
+# the silent fallback is the whole defect being fixed here.
+firecrawl_ensure() {
+  local port url cfg n started=0 was_enabled
+  port="${FIRECRAWL_PORT:-3002}"
+  url="${FIRECRAWL_API_URL:-http://127.0.0.1:${port}}"
+  cfg="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
+  _fce_up() { curl -fsS -m 2 "${url%/}/" >/dev/null 2>&1; }
+
+  # No config = nothing to flip; opencode is not wired here at all.
+  [ -f "$cfg" ] || return 0
+  command -v jq >/dev/null 2>&1 || { say "research: cannot check the Firecrawl MCP (jq missing) — leaving the config untouched."; return 0; }
+  # NOT `.mcp.firecrawl.enabled // "absent"` -- jq's // treats FALSE as empty exactly like null, so a config
+  # with enabled:false (the precise case this function exists to repair) read back as "absent" and the whole
+  # feature returned early doing nothing. Descend on has() and stringify. Same absent-vs-false trap that bit
+  # lib/merge-structured.sh; caught here only because the selftest asserted the enabled:false path.
+  was_enabled="$(jq -r 'if (.mcp|type)=="object" and (.mcp|has("firecrawl")) and (.mcp.firecrawl|type)=="object" and (.mcp.firecrawl|has("enabled")) then (.mcp.firecrawl.enabled|tostring) else "absent" end' "$cfg" 2>/dev/null)"
+  [ "$was_enabled" = absent ] && return 0        # this install does not carry the firecrawl MCP at all
+
+  if ! _fce_up; then
+    if [ "${FIRECRAWL_AUTO:-1}" != 1 ]; then
+      say "research: Firecrawl DOWN and FIRECRAWL_AUTO=0 — research falls back to webfetch (single URL, no search+scrape)."
+      _fce_set false "$cfg"; return 0
+    fi
+    local dir; dir="${FIRECRAWL_DIR:-$HOME/firecrawl}"
+    if ! { [ -f "$dir/docker-compose.yaml" ] || [ -f "$dir/docker-compose.yml" ]; }; then
+      say "research: no Firecrawl compose in $dir — research falls back to webfetch. ('ace firecrawl up' after self-hosting it.)"
+      _fce_set false "$cfg"; return 0
+    fi
+    if ! { command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; }; then
+      say "research: no podman/docker — research falls back to webfetch."
+      _fce_set false "$cfg"; return 0
+    fi
+    say "research: Firecrawl is down — starting it (loopback-only, no cloud key). This takes ~10-30s…"
+    # `set --` before sourcing: install.sh is a lib, but a command substitution/function scope inherits the
+    # caller's positional parameters, and a lib that grows a `case "${1:-}"` dispatcher would then execute
+    # an arbitrary arm. Cheap insurance against a real trap (A13).
+    ( set --; . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" >/dev/null 2>&1; firecrawl_cmd up ) >/dev/null 2>&1 || true
+    for n in $(seq 1 20); do _fce_up && { started=1; break; }; sleep 1.5; done
+    if [ "$started" != 1 ]; then
+      say "research: Firecrawl did NOT come up within 30s — research falls back to webfetch (run is NOT blocked). Check: ace firecrawl status"
+      _fce_set false "$cfg"; return 0
+    fi
+  fi
+
+  # Reachable. Make the live config agree — this is the half that was missing.
+  if [ "$was_enabled" = true ]; then
+    say "research: Firecrawl UP ($url · loopback-only) — MCP already enabled."
+  else
+    _fce_set true "$cfg" \
+      && say "research: Firecrawl UP ($url · loopback-only) — MCP ENABLED for this run (was disabled; no 'ace opencode' needed)." \
+      || say "research: Firecrawl UP but the MCP could not be enabled (config write failed) — falling back to webfetch."
+  fi
+  return 0
+}
+
+# _fce_set <true|false> <cfg> — flip mcp.firecrawl.enabled, atomically. Never leaves a truncated config:
+# a half-written opencode.json breaks every agent, which is far worse than the wrong research backend.
+_fce_set() {
+  local want="$1" cfg="$2" tmp cur
+  cur="$(jq -r 'if (.mcp|type)=="object" and (.mcp|has("firecrawl")) and (.mcp.firecrawl|type)=="object" and (.mcp.firecrawl|has("enabled")) then (.mcp.firecrawl.enabled|tostring) else "absent" end' "$cfg" 2>/dev/null)"
+  [ "$cur" = "$want" ] && return 0
+  tmp="$(mktemp)" || return 1
+  jq --argjson v "$want" '.mcp.firecrawl.enabled=$v' "$cfg" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }   # never install unparseable JSON
+  mv "$tmp" "$cfg" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
