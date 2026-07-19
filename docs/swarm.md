@@ -173,6 +173,8 @@ A self-contained TUI, no tmux required. It reads only the shared store, so you c
 
 Every stop path preserves in-flight work: a worker's uncommitted changes are committed to its own `swarm/…` branch (never `main`) with a `WIP:` message, so nothing is lost and a later run can resume it. When all workers finish, the coordinator shuts down cleanly and the dash flips to "no swarm running."
 
+That guarantee rests on a **signal order** inside `_swarm_trap` (`lib/swarm-run.sh:853`): the auto-loop leaders are TERMed *first*, arming each loop's deferred cleanup, and only then are the workers' `opencode` trees killed, which unblocks it. Reversed, an un-signalled loop reacts to a dead `opencode` by starting a new one, and the WIP is never committed while the stop message still claims it was preserved. The order is pinned on every PR by `tests/killorder-selftest.sh`, which intercepts the signal **sends** rather than their receipt — three earlier receipt-order versions raced on handler scheduling and failed a few percent of the time.
+
 ## Per-run archives
 
 Each `ace swarm start` rotates the **previous** run's terminal output — every `wN.log`, the event bus, and the coordinator log — into a datetime-stamped folder, keeping the last `SWARM_ARCHIVE_KEEP` (default 5):
