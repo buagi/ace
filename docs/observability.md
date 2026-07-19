@@ -17,7 +17,7 @@ You rarely need to open files by hand — the dashboard and `ace swarm stats` su
 One screen, refreshed live. Full key reference is in [swarm.md → The dashboard](swarm.md#the-dashboard--ace-swarm-dash); the regions:
 
 - **Status bar** — run id · live worker count · a ROADMAP **done / in-flight / remaining** bar · peak concurrency.
-- **Worker cell** (one per worker) — its feature, the `PLAN · BUILD · GATE · REVIEW · MERGE` pipeline with the current stage lit, the 9-agent strip (which subagent is active), wall/budget/lease, and a live feed of its output.
+- **Worker cell** (one per worker) — its feature, the `PLAN · BUILD · GATE · REVIEW · MERGE` pipeline with the current stage lit, the 11-agent strip (which subagent is active — the shared roster in `lib/dash-common.sh`; the `debater` is the one crew member with no strip cell), wall/budget/lease, and a live feed of its output.
 - **BUS** — the cross-worker milestone stream (the same events that land in `events.jsonl`; legend below).
 
 For a single (non-swarm) run, `ace loop dash` is the same idea for one worker.

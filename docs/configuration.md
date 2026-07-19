@@ -403,17 +403,24 @@ Durable gotchas the crew reads *before* planning and appends to *after* each tas
 | Path | Scope | Notes |
 |------|-------|-------|
 | `.opencode/lessons.md` | one project | The loop appends one terse, deduped line per task (plus a line naming the critic if one gated the change). `compact_lessons` caps it at `LESSONS_MAX_LINES` and archives the overflow. In a swarm each worker appends only to its own `.opencode/lessons/<branch>.md` shard; the coordinator aggregates them into this canonical file on main (it is `merge=union`, so no entry is ever lost). |
-| `~/.config/ace/host-lessons/<os>.md` | one machine, all projects | Written by the rathole supervisor, so a host-level trap solved in one repo is avoided in the next. |
-| `${ACE_CONFIG_DIR}/lessons.md` | one machine, all projects | The **shared lessons store** — cross-project lessons that aren't host/OS-specific. `ACE_CONFIG_DIR` resolves to `${XDG_CONFIG_HOME:-$HOME/.config}/ace` (`lib/core.sh:4`), so this is normally `~/.config/ace/lessons.md`. |
+| `~/.config/ace/host-lessons/<os>.md` | one machine, all projects | Host-level traps, so one solved in one repo is avoided in the next. **Author it by hand: no ACE code path writes this file.** Its only reference in the tree is a read in `ace brain` (`lib/scaffold.sh:2686-2687`). The rathole supervisor writes the rathole *queue* (`~/.config/ace/ace-fixme.log`, `lib/autoloop.sh:52`), not this. |
+| `${ACE_CONFIG_DIR}/lessons.md` | one machine, all projects | The **shared lessons store** — cross-project lessons that aren't host/OS-specific. `ACE_CONFIG_DIR` resolves to `${XDG_CONFIG_HOME:-$HOME/.config}/ace` (`lib/core.sh:4`), so this is normally `~/.config/ace/lessons.md`. Both stores are read as **one merged view** by `lessons_view` (`lib/core.sh:265`, mirrored for the loop at `lib/autoloop.sh:536`); if the shared file exists but is unreadable the view says so explicitly rather than rendering as absent — an unknown global rule must not read as no global rule. |
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `LESSONS_MAX_LINES` | `200` | Cap on `.opencode/lessons.md` before `compact_lessons` archives the overflow — the file is fed into agent prompts, so it is a standing token cost. |
+| `ACE_LESSONS_SHARED` | `$ACE_CONFIG_DIR/lessons.md` | Path to the shared store (`lib/core.sh:186`). |
+| `ACE_LESSONS_SHARED_MAX` | `60` | Its own cap, deliberately far below `LESSONS_MAX_LINES` — this file is read by *every* project on the host, so its bloat is paid N times (`lib/core.sh:191`). Also caps the rendered view, which states how many lines it hid rather than quietly showing a subset. |
+| `ACE_LESSONS_SHARED_ARCHIVE` | `$ACE_CONFIG_DIR/lessons-archive.md` | Where shared-store overflow is archived (`lib/core.sh:187`). |
+
+**Promotion into the shared store is manual, and stays manual.** The loop only ever *queues* candidates (`lessons_promote_candidates`, `lib/autoloop.sh:569` → `.opencode/lesson-promotions.md`); a human ticks `- [ ]` → `- [x]`, and only ticked lines are promoted. Nothing in ACE ticks that box. The reason is C2 (asymmetry of harm): lessons are **data, never instructions**, and a poisoned lesson that auto-promoted would become a standing rule injected into every prompt in every project on the host, whereas a wrong refusal costs one command.
 
 `ace brain` files the host-lessons + the repo's `.opencode/lessons.md` into gbrain (when present) — the one built-in way lessons cross project boundaries into chat.
 
 > [!NOTE]
-> **Verification status.** The per-project store, the swarm shard/aggregate behaviour, `LESSONS_MAX_LINES=200`, the host-lessons path and `ace brain` are all verified in the code. The **shared store at `${ACE_CONFIG_DIR}/lessons.md` is documented from spec** — it was being implemented concurrently with this page, and a grep for it across the tree returned nothing at the time of writing. Grep before you depend on it. The audit lesson behind this note is B11 in [engineering-lessons.md](engineering-lessons.md): do not document a guarantee that does not hold yet. The shared store is now implemented in `lib/core.sh` (`ACE_LESSONS_SHARED`, XDG-aware) and read by the loop via a mirrored `lessons_view`.
+> **Verification status.** All three stores are verified in the code. The shared store — which this page previously documented *from spec*, while it was still being built — has since **shipped** (`lib/core.sh:186-330`), so that caveat is gone.
+>
+> **One gap remains, and it is a gap rather than a design choice:** there is **no `ace` subcommand** for promotion. `lessons_promote_shared` (`lib/core.sh:303`) is a shell function with no CLI dispatch entry — the only lessons-related subcommand in `ace` is `ace brain`. To promote a ticked candidate today you must source `lib/core.sh` and call the function by hand. The *manual approval* is deliberate (above); the missing entry point is not.
 
 The lessons worth reading before you change ACE *itself* are in [engineering-lessons.md](engineering-lessons.md).
 

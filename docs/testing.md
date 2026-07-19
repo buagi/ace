@@ -7,8 +7,9 @@ ACE's test strategy is three tiers by **cost and cadence** — cheap determinist
 Run on every PR by `.github/workflows/ci.yml` (jobs **lint** + **tests**). Run them all locally before pushing:
 
 ```bash
-for f in ace lib/*.sh tests/*.sh; do bash -n "$f"; done   # syntax — hard gate
-shellcheck -S error -e SC1090,SC1091 ace lib/*.sh tests/*.sh
+for f in ace lib/*.sh tests/*.sh scripts/*.sh; do bash -n "$f"; done   # syntax — hard gate
+bash tests/bash-traps.sh            # static gate for the §A trap shapes + its own self-test
+shellcheck -S error -e SC1090,SC1091 ace lib/*.sh tests/*.sh scripts/*.sh
 bash tests/profile-reader.sh        # profile.yaml parse + required fields + delivery coherence
 bash tests/snapshot-generators.sh   # generated .gitignore / CI config snapshots stay locked
 bash tests/supply-chain.sh          # pinned installs + sha256-verified downloads + curl|sh allowlist
@@ -17,16 +18,19 @@ bash tests/swarm-selftests.sh       # claim store · leasing · fencing · plan-
 bash tests/approval-selftest.sh     # merge-approval: deny-by-default · undelivered request · token uniqueness
 bash tests/cli-dispatch-selftest.sh # CLI dispatch ↔ help agreement
 bash tests/autoloop-selftest.sh     # provider-cap detection · step budget · resume never commits to main
+bash tests/killorder-selftest.sh    # B5 stop ORDER: loop leaders TERMed before their opencode trees
 ```
 
 | Gate | Catches |
 |------|---------|
-| `bash -n` | any syntax break in `ace` / `lib/*.sh` / `tests/*.sh` |
+| `bash -n` | any syntax break in `ace` / `lib/*.sh` / `tests/*.sh` / `scripts/*.sh` |
+| `bash-traps.sh` | the mechanically-greppable [§A trap shapes](engineering-lessons.md#a-mechanical-traps) — **7 of them** (A1 · A2 · A4 · A5 · A6 · A8 · A11), see the coverage note below |
 | `shellcheck -S error` | real shell bugs (warnings are informational) |
 | `prompt-contracts.sh` | a prompt edit that breaks an agent's output contract, a lost placeholder, the agent count drifting off 12, an MCP key dropping, a missing Part-H/debate clause (spec-template · AC-ids · SSRF · researcher + debater denies · dash wiring) |
 | `swarm-selftests.sh` | coordination regressions + the Part H spec functions (`spec-lint`, `spec-slice`, `spec-rubric` default-off) |
 | `profile-reader` · `snapshot-generators` · `supply-chain` | profile/scaffold/supply-chain drift |
 | `approval-selftest` · `cli-dispatch-selftest` · `autoloop-selftest` | merge-approval deny-by-default · a subcommand that dispatches but isn't in `--help` (or vice versa) · step-budget telemetry + resume-never-commits-to-main |
+| `killorder-selftest` | a reordering of `_swarm_trap`'s two stop steps (`lib/swarm-run.sh:853`) — leaders must be TERMed **before** their opencode trees, or WIP is lost while the stop message still claims it was preserved |
 
 ### Why these gates exist — and what they can't catch
 
@@ -38,9 +42,18 @@ Two rules from it bind directly on this page:
 - **A test that nothing runs is not a gate** (B2). Wire it into `.github/workflows/ci.yml` in the **same commit**. A suite once existed, passed locally against a dirty tree, and was in no workflow — main was red while CI was green.
 
 > [!WARNING]
-> **Not gates today.** `tests/hygiene-selftest.sh`, `tests/scorecard-selftest.sh` and `tests/reanalyze-selftest.sh` are present in `tests/` but appear in **no workflow**. Run them by hand until they're wired; don't read a green CI as covering them.
+> **Not gates today.** `tests/hygiene-selftest.sh`, `tests/scorecard-selftest.sh` and `tests/reanalyze-selftest.sh` are present in `tests/` but appear in **no workflow**. Run them by hand until they're wired; don't read a green CI as covering them. Nightly `flake-check` does invoke all three, but only checks that they decide *consistently* — a stably-RED suite passes it (see [below](#flake-check--the-gate-that-watches-the-gates)).
+
+### `bash-traps` — what the static gate does and does not cover
+
+`tests/bash-traps.sh` **shipped** and is a hard step in `ci.yml`'s `lint` job (`.github/workflows/ci.yml:25-26`) — no `|| true`, no `continue-on-error`. It scans `ace` + `lib/*.sh` + `tests/*.sh` + `scripts/*.sh`, and refuses to report clean on fewer than 5 files in scope (`tests/bash-traps.sh:377-384`), so a scan from the wrong directory fails instead of passing trivially. Like `flake-check`, it self-tests every detector against known-bad *and* known-good fixtures on each run, so a pattern that silently stops matching turns CI red rather than reporting clean.
+
+> [!IMPORTANT]
+> **It covers 7 of the §A traps, not all 12** (`CHECKS=(A1 A2 A4 A5 A6 A8 A11)`, `tests/bash-traps.sh:197`). **A3** (`2>&1` folded into parsed data), **A7** (a file written without a trailing newline, then read with `read`), **A9** (EXIT-trap clobbering), **A10** (pidfile trust) and **A12** (state resolved inside a command substitution) are **not detected by anything** — they remain a reading checklist. Do not read a green `bash-traps` as "no §A traps in this diff".
 >
-> A **bash-traps** static gate for the §A trap shapes (`local a=X b=$a`, `grep -c … || echo 0`, `printf | grep -q` under `pipefail`, `git check-ignore` without `--no-index`, an unterminated `.step-budget`-style write) is planned as a Tier 1 lint step. It is **not present in `ci.yml` at the time of writing** — treat this bullet as the spec, and grep before you rely on it.
+> Two further narrowings, both deliberate and both costing false negatives: the **A4** detector matches only bounded-producer shapes (`cat` · `git diff/log/show/status` · `find` · `curl` · `wget`) piped into `grep -q` (`:146`) — a `printf "$var" | grep -q`, the shape that actually bit `prompt-contracts`, is **not** flagged (that class is caught empirically by `flake-check` instead). And **A8** coverage of `lib/*.sh` lives in `prompt-contracts.sh`, not here; `bash-traps.sh` asserts that other half still exists so coverage cannot be halved silently (`:287-295`).
+
+The gate ships with a **BASELINE** of 10 pre-existing sites (`tests/bash-traps.sh:56-67`) — tab-delimited, because a `|` delimiter truncated the stored fragment mid-pipeline. These are **real defects awaiting a fix, not exemptions**, and every run says so. The register can only shrink: an entry whose check no longer fires is a hard failure that distinguishes *"the code was fixed — delete this entry"* from *"the detector regressed — fix the check"*. For a genuine exception, use a per-line `# bash-traps: allow <ID> — <reason>`; the reason is mandatory and an empty one fails the build (`:208-220`).
 
 ## Tier 2 — nightly goldens (model-in-the-loop, needs keys)
 
@@ -50,7 +63,7 @@ Two rules from it bind directly on this page:
 bash tests/agent-goldens.sh              # critic verdict schema + behavioural invariants + the researcher golden
 bash tests/spec-rubric-goldens.sh --calibrate   # rubric JSON schema + label agreement → GO/HOLD for SPEC_RUBRIC=1
 bash tests/spec-debate-goldens.sh --calibrate    # cross-model debate verdict agreement → GO/HOLD for *_DEBATE=1
-bash tests/flake-check.sh --runs 10       # every Tier-1 suite N times; fails on any nondeterministic verdict
+bash tests/flake-check.sh --runs 10       # each suite N times (default 8); fails on any nondeterministic verdict
 ```
 
 ### `flake-check` — the gate that watches the gates
@@ -69,7 +82,14 @@ switched-off gate protects nothing. Running the suites repeatedly costs minutes 
 SIGPIPE races, clock/timezone dependence, ordering, temp-path collisions, concurrency.
 
 Run it by hand before merging anything that touches a test harness. Its own selftest asserts it fires on a
-known-flaky fixture and does *not* misreport a stable-red one.
+known-flaky fixture and does *not* misreport a stable-red one (`tests/flake-check.sh:82-94`).
+
+Its default set is **12 named suites** (`tests/flake-check.sh:25-26`) — the Tier-1 gates plus `hygiene-`,
+`reanalyze-` and `scorecard-selftest`, which are not gates anywhere else (see the warning above), so nightly
+flake-check is currently the *only* automation that runs those three at all. It still isn't a gate for them:
+it only asserts they decide **consistently**, so a suite that is stably RED passes flake-check while failing.
+`swarm-selftests` is deliberately excluded — it shells out to the others, so N runs of it multiply wall-clock
+without adding coverage.
 
 | Golden | Asserts |
 |--------|---------|

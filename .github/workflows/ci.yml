@@ -22,7 +22,10 @@ jobs:
       # never reaches the suites below. HARD GATE: no `|| true`, no continue-on-error. It self-tests every
       # pattern against known-bad and known-good fixtures on each run, so a detector that silently stops
       # matching turns CI red rather than reporting clean.
-      - name: bash traps (A1-A11 static gate + its own self-test) — hard gate
+      # 7 of the traps are statically enforced (A1 A2 A4 A5 A6 A8 A11). A3/A7/A9/A10/A12/A13 are not
+      # machine-checkable at acceptable precision and are enforced by review only — a green tick here is
+      # NOT clearance for the whole A-list.
+      - name: bash traps (A1·A2·A4·A5·A6·A8·A11 static gate + its own self-test) — hard gate
         run: bash tests/bash-traps.sh
       - name: shellcheck (errors fail; warnings informational)
         run: |
@@ -51,3 +54,7 @@ jobs:
         run: bash tests/cli-dispatch-selftest.sh
       - name: autoloop lifecycle (provider-cap detection · step budget · resume never commits to main)
         run: bash tests/autoloop-selftest.sh
+      # The B5 stop-order guarantee: TERM the loop leaders BEFORE killing their opencode trees, or in-flight
+      # WIP is lost while the stop message still claims it was preserved. Pinned by intercepting the SENDS.
+      - name: swarm stop signal ORDER (B5 — leaders TERMed before opencode trees)
+        run: bash tests/killorder-selftest.sh

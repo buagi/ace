@@ -96,14 +96,18 @@ The loop carries forward what it learns so it does not re-solve the same pitfall
 
 | Store | Scope | Holds |
 |-------|-------|-------|
-| `.opencode/lessons.md` | per-repo | Durable decisions and gotchas. The orchestrator reads it before planning and appends one terse, deduped line per lesson after each task (plus a line naming the critic if one gated the change). `compact_lessons` caps it (`LESSONS_MAX_LINES`, 200) and archives the overflow. |
+| `.opencode/lessons.md` | per-repo | Durable decisions and gotchas. The orchestrator **reads** it before planning; it does *not* write it directly — the SCRIBE step appends to the orchestrator's own `.opencode/lessons/<branch-slug>.md` shard (one terse deduped line per lesson, plus a line naming the critic if one gated the change), and the loop folds the shards into this canonical file (`swarm_aggregate_lessons`, called from `compact_lessons`, `lib/autoloop.sh:583-587`). `compact_lessons` then caps it (`LESSONS_MAX_LINES`, 200) and archives the overflow. |
 | `.opencode/project-facts.md` | per-repo | Stable facts — stack, key paths, the gate command, the GitNexus `repo:` scoping rule — seeded at bootstrap and appended as the loop learns. |
-| `~/.config/ace/host-lessons/<os>.md` | cross-project | Lessons the rat-hole supervisor records, so a host-level trap solved in one repo is avoided in the next. |
+| `${ACE_CONFIG_DIR}/lessons.md` | cross-project | The **shared lessons store**, merged with the per-repo file into one view for prompts (`lessons_view`). Promotion into it is manual and human-approved — see [configuration.md → Lessons stores](configuration.md#lessons-stores). |
+| `~/.config/ace/host-lessons/<os>.md` | cross-project | Host-level traps, so one solved in one repo is avoided in the next. **Nothing in ACE writes this file** — see below. |
+
+> [!WARNING]
+> **`host-lessons/<os>.md` is read-only in practice.** The only reference to it in the codebase is a *read* in `ace brain` (`lib/scaffold.sh:2686-2687`); no supervisor or loop path ever writes it. Earlier revisions of this page said the rathole supervisor records lessons there — it does not. The supervisor's only host-level write is the rathole queue at `~/.config/ace/ace-fixme.log` (`lib/autoloop.sh:52`, written at `:1041-1042`). If you want host lessons, author the file by hand; ACE will read and file it, but will never populate it.
 
 Two more mechanisms:
 
 - **Warning dedup** — CI warnings harvested into `ROADMAP.md` are fingerprinted (message only; timestamps and branch stripped), so the same warning is never re-queued.
-- **`ace brain`** — an optional bridge that files host + repo lessons into gbrain so they are searchable across everything (brain-first). It is the one built-in way lessons cross project boundaries.
+- **`ace brain`** — an optional bridge that files host + repo lessons into gbrain so they are searchable across everything (brain-first).
 
 The loop improves its **decisions** through these notes, but it does not rewrite its own source. Fixes to ACE itself come from the self-triage pass below.
 

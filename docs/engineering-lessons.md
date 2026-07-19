@@ -23,6 +23,9 @@ Treat §A as a checklist you can automate and §B as the part you cannot.
 
 Each of these is a *shape* you can grep for. One-line fix, and what it actually broke.
 
+> [!NOTE]
+> **Seven of these are now enforced**, not just documented: `tests/bash-traps.sh` gates A1 · A2 · A4 · A5 · A6 · A8 · A11 on every PR. **A3 · A7 · A9 · A10 · A12 are enforced by nothing** — read for those yourself. Coverage boundary and escape hatches: [testing.md](testing.md#bash-traps--what-the-static-gate-does-and-does-not-cover).
+
 ### A1 — `local a=X b=$a`
 
 **Fix:** split into two `local` statements.
@@ -129,6 +132,8 @@ Wire it into CI **in the same commit**. A suite existed, passed locally against 
 
 > [!WARNING]
 > This is live in the repo right now. `tests/hygiene-selftest.sh`, `tests/scorecard-selftest.sh` and `tests/reanalyze-selftest.sh` are in **no workflow** (verified against `.github/workflows/*.yml`). They are suites, not gates, until someone wires them.
+>
+> Nightly `flake-check` does *invoke* all three (`tests/flake-check.sh:25-26`), which is not the same thing: it only asserts each one decides **consistently**, so a stably-RED suite passes flake-check while failing. Do not mistake that for coverage.
 
 ### B3 — verify from `git archive HEAD`, never the working tree
 
@@ -210,7 +215,7 @@ Lessons are only durable if the next run reads them. Three stores, three scopes:
 | Store | Scope | Written by |
 |-------|-------|-----------|
 | `.opencode/lessons.md` | one project | The loop appends one terse deduped line per task. `compact_lessons` caps it at `LESSONS_MAX_LINES` (default **200**) and archives the overflow. In a swarm each worker writes its own `.opencode/lessons/<branch>.md` shard and the coordinator aggregates into the canonical file. |
-| `~/.config/ace/host-lessons/<os>.md` | one machine, all projects | The rathole supervisor, so a host-level trap solved in one repo is avoided in the next. |
+| `~/.config/ace/host-lessons/<os>.md` | one machine, all projects | **Nobody — you, by hand.** No ACE code path writes this file; it is only ever *read* (`ace brain`, `lib/scaffold.sh:2686-2687`). Earlier revisions credited the rathole supervisor; the supervisor writes the rathole queue (`~/.config/ace/ace-fixme.log`) instead. B11 applied to this table. |
 | `${ACE_CONFIG_DIR}/lessons.md` | all projects on the machine | The **shared lessons store** — see [configuration.md](configuration.md#lessons-stores). |
 
 `ace brain` files the host + repo lessons into gbrain when it is present.
@@ -223,13 +228,15 @@ See [configuration.md](configuration.md#lessons-stores) for the paths and preced
 
 Because this page will be cited as authority, here is what rests on what.
 
-**Verified against the code in this repo** (file:line cited inline): A1, A2, A3, A4 (incl. the ~215 KB measurement), A5, A7 (incl. the `active_s=0` symptom), A8, A10, A12 (incl. the 83 ms/frame measurement), B2's live warning, B9, and every path/default in *Where lessons are stored* except the shared store.
+**Verified against the code in this repo** (file:line cited inline): A1, A2, A3, A4 (incl. the ~215 KB measurement), A5, A7 (incl. the `active_s=0` symptom), A8, A10, A12 (incl. the 83 ms/frame measurement), B2's live warning, B9, and every path/default in *Where lessons are stored*.
+
+**Corrected since first publication** (this page got it wrong, which is worth recording rather than quietly editing): the *Where lessons are stored* table credited `~/.config/ace/host-lessons/<os>.md` to the rathole supervisor. Nothing writes that file — it is read-only in practice. A6 above notes this page's traps are most often committed while writing the page up; so, apparently, are its unverified attributions.
 
 **From the audit record, not currently cited to a line of code:** A6, A9, A11, the "34 of 152" and "100% of specs" counts, and all of §B and §C. These are findings about work that has since been fixed, reverted, or that concerns process rather than a surviving artifact.
 
-**Verified in the code as of this writing:** the shared lessons store is implemented — `ACE_LESSONS_SHARED` (`lib/core.sh:186`, defaulting to `${ACE_CONFIG_DIR}/lessons.md`, XDG-aware), with `lessons_shared_init` / `lessons_view` / the compaction and promotion helpers alongside it, a read-only mirror of `lessons_view` in `lib/autoloop.sh` (the loop cannot source `core.sh` without running its EXIT trap), and the store documented to agents in the generated `AGENTS.md` (`lib/install.sh`). Promotion from a project store to the shared one is deliberately NOT automatic: lessons are DATA that must never be executed, so ACE only ever queues candidates.
+**Verified in the code as of this writing:** the shared lessons store is implemented — `ACE_LESSONS_SHARED` (`lib/core.sh:186`, defaulting to `${ACE_CONFIG_DIR}/lessons.md`, XDG-aware), with `lessons_shared_init` / `lessons_view` / the compaction and promotion helpers alongside it, a read-only mirror of `lessons_view` in `lib/autoloop.sh` (the loop cannot source `core.sh` without running its EXIT trap), and the store documented to agents in the generated `AGENTS.md` (`lib/install.sh`). Promotion from a project store to the shared one is deliberately NOT automatic: lessons are DATA that must never be executed, so ACE only ever queues candidates. Note the rough edge: `lessons_promote_shared` (`lib/core.sh:303`) has **no `ace` subcommand** — you must source `lib/core.sh` and call it directly. The manual approval is the design; the missing entry point is not.
 
-Also **not claimed**: there is no bash-traps lint gate wired into `.github/workflows/ci.yml` as of this writing. When one lands, §A becomes partly mechanical; until then it is a reading checklist.
+**Since shipped:** the bash-traps lint gate now exists and is a hard step in `ci.yml`'s `lint` job (`tests/bash-traps.sh`; `.github/workflows/ci.yml:25-26`). §A is therefore *partly* mechanical — **A1, A2, A4, A5, A6, A8 and A11 only** (`tests/bash-traps.sh:197`). **A3, A7, A9, A10 and A12 are detected by nothing** and remain a reading checklist; A4's detector is narrowed to bounded producers piped into `grep -q` and does not flag the `printf "$var" | grep -q` form. Ten known-real sites are on its shrinking BASELINE register (`tests/bash-traps.sh:56-67`) — tracked defects, not exemptions. See [testing.md](testing.md#bash-traps--what-the-static-gate-does-and-does-not-cover) for the full coverage boundary before you rely on a green run.
 
 ---
 
