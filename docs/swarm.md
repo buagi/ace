@@ -61,7 +61,7 @@ Parallel flows — SWARM (1 = single loop · 2-5 = parallel workers, path-disjoi
 | `1` | the classic single-flow [autorun loop](autorun.md) |
 | `2`+ | a swarm of that many workers |
 
-The choice is **sticky** — it's saved to `SWARM_MAX` in `~/.config/ace/config.env`, so the next run defaults to it. When you pick ≥2, ACE starts the detached coordinator and drops you into the dashboard.
+The choice is **sticky** — it's saved to `SWARM_MAX` in `~/.config/ace/config`, so the next run defaults to it. When you pick ≥2, ACE starts the detached coordinator and drops you into the dashboard.
 
 ```bash
 ace autorun                     # pick parallelism at the prompt
@@ -214,7 +214,7 @@ If a worker or the coordinator's planning step hits a Claude/OpenAI usage cap, t
 
 ## Config knobs
 
-All optional — the defaults are tuned. Set them in the environment or `~/.config/ace/config.env`.
+All optional — the defaults are tuned. Set them in the environment or in `~/.config/ace/config` (extensionless — that is the only config file ACE reads or writes).
 
 | Knob | Default | What it does |
 |---|---|---|

@@ -135,17 +135,21 @@ sequenceDiagram
     Hermes->>You: Approve merge? reply "ace approve tok yes/no"
     You->>Loop: ace approve tok yes
     Loop->>Loop: merge on green
-    Note over Loop,You: deny / timeout / no channel: PR stays open, loop stops
+    Note over Loop,You: explicit deny / timeout / no channel: PR stays open, loop stops
 ```
 
-The gate is fail-closed:
+What each outcome does today:
 
 | Reply | Result |
 |---|---|
 | `ace approve <tok> yes` | merge proceeds on green |
 | `ace approve <tok> no` | PR left open, loop stops |
 | no reply within `APPROVAL_TIMEOUT` (default 1 h) | treated as denied, loop stops |
-| no reachable channel | fail-closed, loop stops |
+| no reachable channel (no `hermes` on `PATH`) | PR left open, loop stops |
+| **anything else** (free text, a typo, "no thanks") | ⚠️ **recorded as an approval — the merge proceeds** |
+
+> [!WARNING]
+> **This is not yet a deny-by-default gate.** `ace approve` treats only `no` `n` `deny` `denied` `reject` `rejected` `0` `❌` as a denial; every other decision string — including one an LLM relay paraphrased — becomes a `yes`. Because the chat bot relays your words into this command, a natural-language refusal can merge the PR. **Deny with the exact word `no`.** The deny-default fix is landing; this warning will be replaced when it ships.
 
 The decision is filesystem-backed (`.opencode/approvals/<tok>.{request,decision}`), so you can also run `ace approve` locally if the chat send fails. Without `MERGE_APPROVAL=hermes` the loop self-merges on green per `AUTOMERGE` — see [autorun.md](autorun.md).
 
@@ -196,7 +200,10 @@ The companion `ace-workflow` skill is the operational playbook (headless flags, 
 Command-back gives the bot a host shell, so the allowlist that locks it to you is mandatory.
 
 > [!WARNING]
-> `ace hermes` sets the allowlist up and keeps `GATEWAY_ALLOW_ALL_USERS` off (the default). Scheduled and cron actions require `cron_mode: allow` in `~/.hermes/config.yaml`. Destructive or outward `ace` steps (`deploy`, `vps harden`, `--publish`, `uninstall`) still refuse headlessly without `--confirm`, even from chat.
+> `ace hermes` sets the allowlist up and keeps `GATEWAY_ALLOW_ALL_USERS` off (the default). Scheduled and cron actions require `cron_mode: allow` in `~/.hermes/config.yaml`. Exactly three `ace` steps are `--confirm`-gated headlessly — **`ace deploy`, `ace vps harden`, and `ace uninstall`**. Everything else runs ungated from chat.
+
+> [!CAUTION]
+> **Publishing is NOT confirm-gated.** `ace publish` (and `ace scaffold --publish`) runs `gh repo create --push` with no confirmation prompt, headless or not — so a chat message that reaches it creates a GitHub repository and pushes your code to it immediately. The bot's user allowlist is the only thing standing between a message and a published repo. Keep the allowlist tight, and don't leave a chat session authorized on a host holding code you can't publish.
 
 Full security model and the host-shell threat surface: [remote-control.md](remote-control.md).
 

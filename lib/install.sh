@@ -257,14 +257,14 @@ ensure_container_engine() {
   esac
 }
 
-# ensure_visual_extras — OPTIONAL terminal eye-candy, never required: chafa (renders the lib/art sprite
+# ensure_visual_extras — OPTIONAL terminal eye-candy, never required: figlet/toilet (the wordmark
 # via kitty/sixel/half-blocks) + figlet/toilet (gothic ACE wordmark). ACE auto-detects and uses them only
 # when present; the banner degrades to a truecolor half-block emblem + block wordmark otherwise. Offer is
 # confirm-gated (default no) and a no-op on immutable hosts (layering needs a reboot). ACE_VISUAL_EXTRAS=0 skips.
 ensure_visual_extras() {
   [ "${ACE_VISUAL_EXTRAS:-1}" = 0 ] && return 0
-  local missing=() t; for t in chafa figlet toilet; do have "$t" || missing+=("$t"); done
-  if [ ${#missing[@]} -eq 0 ]; then ok "Visual extras: chafa + figlet + toilet present."; return 0; fi
+  local missing=() t; for t in figlet toilet; do have "$t" || missing+=("$t"); done
+  if [ ${#missing[@]} -eq 0 ]; then ok "Visual extras: + figlet + toilet present."; return 0; fi
   info "Optional visual extras missing: ${missing[*]} — ACE works without them (half-block emblem + block wordmark)."
   case "$ACE_DISTRO" in
     arch)   confirm "Install ${missing[*]} via 'sudo pacman -S --needed ${missing[*]}'?" N \

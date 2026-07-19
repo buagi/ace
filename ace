@@ -10,9 +10,9 @@ for m in ui core dash architecture install scaffold gitflow vps audit consistenc
 detect_distro
 log_init
 activate_paths 2>/dev/null || true
-# appearance: env ACE_THEME/ACE_NO_ANIM/ACE_ART win; else fall back to stored prefs
+# appearance: env ACE_THEME/ACE_NO_ANIM win; else fall back to stored prefs
 apply_theme "${ACE_THEME:-$(config_get THEME 2>/dev/null || true)}"
-: "${ACE_NO_ANIM:=$(config_get NO_ANIM 2>/dev/null || true)}"; : "${ACE_ART:=$(config_get ART 2>/dev/null || true)}"; ACE_ART="${ACE_ART:-auto}"
+: "${ACE_NO_ANIM:=$(config_get NO_ANIM 2>/dev/null || true)}"
 
 # ----------------------------------------------------------------- doctor / status
 drow() {
@@ -69,9 +69,9 @@ doctor() {
     fi
   fi
   hr
-  local vx=""; for t in chafa figlet toilet freeze ansitoimg; do have "$t" && vx="$vx ${C_GREEN}$t✓${C_RESET}" || vx="$vx ${C_GREY}$t✗${C_RESET}"; done
+  local vx=""; for t in figlet toilet freeze ansitoimg; do have "$t" && vx="$vx ${C_GREEN}$t✓${C_RESET}" || vx="$vx ${C_GREY}$t✗${C_RESET}"; done
   local cap=8color; [ "$ACE_TC" = 1 ] && cap=truecolor || { [ "$ACE_COLOR" = 1 ] && cap=256color || cap=no-color; }
-  drow info "appearance" "theme=${_ACE_THEME:-warp} · $cap · art=${ACE_ART:-auto} · extras:$vx"
+  drow info "appearance" "theme=${_ACE_THEME:-warp} · $cap · extras:$vx"
   drow info "hermes/chat" "target=$(hermes_to) · snap=$(have freeze && echo freeze || { have ansitoimg && echo ansitoimg || echo 'none (ace install)'; }) · hermes=$(have hermes && echo wired || echo absent)"
   local prof; prof="$(config_get MODEL_PROFILE)"
   printf '\n%s\n' "${C_GREY}profile: ${prof:-unset}  •  dry-run: $ACE_DRY_RUN  •  log: $ACE_LOG_FILE${C_RESET}"

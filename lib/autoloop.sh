@@ -91,7 +91,21 @@ _stat(){ # phase wall budget act  → per-worker snapshot the dash reads for the
     "${SWARM_WORKER:-solo}" "${SWARM_FEATURE:-}" "${SWARM_HASH:-}" "$1" "${AGENT:-}" "$2" "$3" "$4" "$(date +%s)" \
     > "$SWARM_DIR/status/${SWARM_WORKER:-solo}.stat" 2>/dev/null || true
 }
+# Colour policy for the loop's OWN narration. The auto-loop is the most-redirected component in the
+# product — it runs under nohup, as N swarm workers into per-worker logs, gets tailed by `ace dash`, and
+# is captured wholesale by the eval harness — so hardcoded ANSI escapes ended up baked into every one of
+# those files (and into anything that greps them). Resolve the decision ONCE, at source time, honouring
+# the two standard signals: NO_COLOR set to anything at all (no-color.org) and a non-TTY stdout.
+# ACE_FORCE_COLOR=1 wins over both, so the dashboards/snapshots that deliberately capture colour off-TTY
+# keep working. Same contract as lib/ui.sh:9 — one rule for the whole product.
+ACE_LOOP_COLOR=0
+{ [ -t 1 ] || [ "${ACE_FORCE_COLOR:-0}" = 1 ]; } && [ -z "${NO_COLOR:-}" ] && ACE_LOOP_COLOR=1
+if [ "$ACE_LOOP_COLOR" = 1 ]; then _LC_HDR=$'\033[1;35m'; _LC_RST=$'\033[0m'
+else _LC_HDR=''; _LC_RST=''; fi
+
 _wtag(){ # stable per-worker colour (any N) so workers are eye-trackable in tail/split
+  # plain tag when colour is off — a redirected swarm log stays greppable instead of carrying escapes
+  [ "$ACE_LOOP_COLOR" = 1 ] || { printf '[worker %s · %s] ' "${SWARM_WORKER#w}" "${SWARM_FEATURE:-?}"; return; }
   local wc; case "${SWARM_WORKER#w}" in 1) wc='38;2;176;114;230';; 2) wc='38;2;212;160;74';; 3) wc='38;2;63;185;106';;
     4) wc='38;2;208;80;70';; 5) wc='38;2;90;190;210';; 6) wc='38;2;110;150;230';;
     *) wc="$(awk -v n="${SWARM_WORKER#w}" 'BEGIN{ h=n*137.508; h=h-int(h/360)*360; s=0.55; v=0.92; c=v*s; hp=h/60;
@@ -102,7 +116,7 @@ _wtag(){ # stable per-worker colour (any N) so workers are eye-trackable in tail
   esac
   printf '\033[%sm[worker %s · %s]\033[0m ' "$wc" "${SWARM_WORKER#w}" "${SWARM_FEATURE:-?}"; }
 say(){ local tag=""; [ -n "${SWARM_WORKER:-}" ] && tag="$(_wtag)"
-  printf '\n\033[1;35m[auto-loop %s]\033[0m %b%s\n' "$(date +%H:%M:%S)" "$tag" "$*"; _ev "${_LVL:-info}" "$*"; }
+  printf '\n%s[auto-loop %s]%s %b%s\n' "$_LC_HDR" "$(date +%H:%M:%S)" "$_LC_RST" "$tag" "$*"; _ev "${_LVL:-info}" "$*"; }
 # dashboard signal: which agent the bash loop is currently driving (best-effort — the 4 critics run INSIDE
 # opencode and are invisible to this loop, so only orchestrator/implementer/verifier/conflict light up).
 # `ace loop dash` reads .opencode/.agents to colour the grid. Fail-soft; never affects the loop.
@@ -584,14 +598,14 @@ claude_limit_hit(){ grep -qiE 'usage limit|rate.?limit|quota|too many requests|4
 handle_claude_limit(){
   [ "$(orch_provider)" = deepseek ] && return 1   # not on Claude -> not a subscription cap, let it surface
   [ -n "$ORCH_MODEL_OVERRIDE" ]     && return 1   # already delegated to DeepSeek -> a real failure
+  # ON_CLAUDE_LIMIT is defaulted to `wait` at the top of this file (column-0 assignment, runs on every
+  # source) and the `:-` form catches an explicitly-empty value too — so it is NEVER empty here. The old
+  # `if [ -z "$action" ]` arm and the `read -r a </dev/tty` prompt inside it were dead in every code path.
+  # Deleted rather than "revived" by dropping the `:-wait` default: this loop is autonomous and normally
+  # runs under nohup / as a swarm worker / from Hermes with no human at the terminal, and `wait` is the
+  # documented default (configuration.md, getting-started.md, swarm.md, README). A prompt reachable from a
+  # stray inherited TTY would block an unattended overnight run on the one event it exists to ride out.
   local action="$ON_CLAUDE_LIMIT"
-  if [ -z "$action" ]; then
-    if [ -t 0 ]; then
-      printf '\n[auto-loop] Claude limit hit. [w]ait for reset / [c]ancel & save / [d]elegate to DeepSeek? '
-      local a; read -r a </dev/tty || a=w
-      case "$a" in c*) action=cancel;; d*) action=deepseek;; *) action=wait;; esac
-    else action=wait; fi   # unattended default: ride it out
-  fi
   case "$action" in
     cancel)   say "saving (all work is committed per-PR) + stopping. Resume later: ace resume."; exit 0 ;;
     deepseek) ORCH_MODEL_OVERRIDE="$DEEPSEEK_OVERSEER"; WAITED=0; say "delegating overseer -> DeepSeek ($ORCH_MODEL_OVERRIDE) for the rest of this run."; return 0 ;;
@@ -736,7 +750,10 @@ drive(){
   CURRENT_PHASE="$(printf '%s' "$1" | awk '{print $1}' | tr -d ':' | tr 'A-Z' 'a-z')"; export CURRENT_PHASE
   _ev accent "→ $1"
   say "→ opencode ($AGENT): $1"; mkdir -p .opencode; write_state "$1"
-  local base="${OPENCODE_TIMEOUT:-1800}" budget="${OPENCODE_TIMEOUT:-1800}" tries=0 rtries=0 rc kp rdiag task="$2"
+  # No `:-1800` fallback: OPENCODE_TIMEOUT is set unconditionally at the top of this file, so the fallback
+  # was unreachable AND stale — it claimed 30m where the real default is 7200s (2h, per configuration.md).
+  # One number, one place; a second literal here can only ever be a lie waiting to be read as the truth.
+  local base="$OPENCODE_TIMEOUT" budget="$OPENCODE_TIMEOUT" tries=0 rtries=0 rc kp rdiag task="$2"
   local dstart lbl mc mb; dstart=$(date +%s); lbl="$(printf '%s' "$1" | tr ',\n' '; ' | cut -c1-60)"; printf '0 0' > .opencode/.step-budget
   while :; do
     # ACTIVE-WORK budget: run opencode in the background and PAUSE the budget clock while a known-slow
@@ -811,7 +828,9 @@ drive(){
           [ -n "${SWARM_WORKER:-}" ] && [ -n "${SWARM_DIR:-}" ] && : > "$SWARM_DIR/provider-capped" 2>/dev/null
           : > .opencode/.capped; kill_tree "$op" TERM; sleep 3; kill_tree "$op" KILL; break
         fi
-        if [ "$charged" -ge "$budget" ] || [ "$(( now - start ))" -ge "${OPENCODE_WALL_MAX:-10800}" ]; then \
+        # bare $OPENCODE_WALL_MAX: it is set unconditionally at the top of this file, so the old `:-10800`
+        # could never fire and understated the real 16200s (4.5h) ceiling documented in configuration.md.
+        if [ "$charged" -ge "$budget" ] || [ "$(( now - start ))" -ge "$OPENCODE_WALL_MAX" ]; then \
           : > .opencode/.timedout; kill_tree "$op" TERM; sleep 3; kill_tree "$op" KILL; break; fi
       done ) & kp=$!
     # S5 shared prefix cache (swarm): the crew SYSTEM prompt + tool schemas come from the shared, STATIC

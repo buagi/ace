@@ -1,7 +1,22 @@
 #!/usr/bin/env bash
 # architecture.sh — the "first screen": architecture diagram + on-demand explainers.
 
+# ---------------------------------------------------------------- agent count (ONE source of truth)
+# Every screen that quotes "the N-agent crew" derives N from here instead of hardcoding it. Hardcoding is
+# exactly how this drifted: the same rig was advertised as 9, 10, 11 AND 12 agents across five files.
+# $ACE_AGENTS (install.sh) lists every CONFIGURABLE agent; `debater` is deliberately absent from it because
+# it always runs with an explicit --model override (DEBATE_MODEL_A/B), so a MODEL_debater knob would be a
+# no-op. It still SHIPS and still counts on screen — hence total = configurable + 1.
+_agent_counts() {  # echoes "<configurable> <total>"
+  local n; n="$(printf '%s\n' ${ACE_AGENTS:-} | grep -c .)"
+  # install.sh not sourced (e.g. a test sourcing a single lib) — fall back to today's shipped roster
+  # rather than rendering "0 agents". Keep this literal in step with ACE_AGENTS if the roster changes.
+  [ "${n:-0}" -gt 0 ] 2>/dev/null || n=11
+  printf '%s %s' "$n" "$((n + 1))"
+}
+
 show_architecture() {
+  local n_all; n_all="$(_agent_counts | cut -d' ' -f2)"
   banner
   cat <<ART
 ${C_BOLD}The loop you're installing${C_RESET}    ${C_GREY}(two nested loops)${C_RESET}
@@ -20,10 +35,11 @@ ${C_BOLD}The loop you're installing${C_RESET}    ${C_GREY}(two nested loops)${C_
   └─────────────────────────────────────────────────────────────────┘
         │ each ROADMAP item = one fresh session
         ▼
-  ${C_DIM}INNER — the 10-agent build (one feature)${C_RESET}
+  ${C_DIM}INNER — the ${n_all}-agent build (one feature)${C_RESET}
   ┌───────────────────────────────────────────────────────────────────┐
   │ ${C_BOLD}orchestrator${C_RESET}  (Claude Opus ${C_GREY}· Sonnet/GPT/DS${C_RESET}; plans, never edits)    │
   │   1. PLAN     break into small testable tasks (GitNexus impact)    │
+  │       └─ ${C_CYAN}researcher${C_RESET}     drafts the spec (high-risk only)           │
   │   2. BRANCH   git checkout -b feat/<slug>                          │
   │   3. PER TASK                                                      │
   │       ├─ ${C_CYAN}implementer${C_RESET}    context-pass, then builds to Done          │
@@ -33,6 +49,8 @@ ${C_BOLD}The loop you're installing${C_RESET}    ${C_GREY}(two nested loops)${C_
   │       ├─ fix loop    on red/changes, retry then stop               │
   │       └─ commit      on PASS + all 4 critics APPROVE ──▶ re-index  │
   │   4. PUBLISH  push branch · open PR · ${C_CYAN}conflict_resolver${C_RESET} on conflict │
+  │   5. PROMOTE  ${C_CYAN}launch_readiness_reviewer${C_RESET} GO/NO-GO before the VPS    │
+  │   ${C_GREY}opt-in${C_RESET}      ${C_CYAN}debater${C_RESET} ×2 — cross-model spec/diff debate            │
   └───────────────────────────────────────────────────────────────────┘
 
   ${C_GREY}context stays lean: each subagent runs in its own session; only short${C_RESET}
@@ -43,9 +61,10 @@ ART
 }
 
 explain_menu() {
+  local n_all; n_all="$(_agent_counts | cut -d' ' -f2)"
   while true; do
     menu "Learn more (on demand)" \
-      "The nine agents::orchestrator / implementer / test_engineer / verifier / 4 critics / conflict_resolver" \
+      "The $n_all agents::orchestrator / researcher / implementer / test_engineer / verifier / 4 critics / conflict_resolver / launch_readiness / debater" \
       "The autorun loop::objectives -> roadmap -> CI self-heal -> merge -> deploy" \
       "The tiered gate::fast pre-commit vs container pre-push/CI" \
       "Code intelligence::GitNexus · Serena · Context7 — who updates when" \
@@ -62,10 +81,14 @@ explain_menu() {
 }
 
 explain_agents() {
-  box "The nine agents (DeepSeek reasoningEffort=max by default)" \
+  local n_cfg n_all; read -r n_cfg n_all <<<"$(_agent_counts)"
+  box "The $n_all agents — $n_cfg configurable (DeepSeek reasoningEffort=max by default)" \
     "${C_BOLD}orchestrator${C_RESET} (primary) — plans, writes per-task specs, drives the loop." \
     "  Write-denied: never edits; only runs git/gh. Runs on Claude Opus by default (your Claude" \
     "  plan), or Sonnet / OpenAI GPT-5 / DeepSeek (no sub) via 'ace keys' → orchestrator brain." \
+    "${C_BOLD}researcher${C_RESET} (subagent) — read-only; invoked ONCE per HIGH-RISK/[value] feature" \
+    "  BEFORE implementation to draft the spec body in a FRESH context (keeps the expensive" \
+    "  orchestrator context clean). Never writes — the implementer lands the spec it returns." \
     "${C_BOLD}implementer${C_RESET} (subagent) — the only agent that edits. Does a CONTEXT PASS first" \
     "  (GitNexus impact up/down + Serena callers + neighbors), then builds to the" \
     "  Definition of Done, then self-reviews its own diff before returning." \
@@ -84,6 +107,15 @@ explain_agents() {
     "  + ARCHITECTURE.md: mission, audience, values, philosophy, scale, delivery." \
     "${C_BOLD}conflict_resolver${C_RESET} (subagent) — on a conflicting PR, merges main in and reconciles" \
     "  BOTH sides' intent (no --ours/--theirs, no reverts to old); escalates UNRESOLVABLE." \
+    "${C_BOLD}launch_readiness_reviewer${C_RESET} (subagent) — runs ONCE before promoting to the live VPS," \
+    "  not per-diff. Checks the OPERATIONAL things a diff review can't see: a TESTED restore," \
+    "  a documented rollback, prod/staging separation, money reconciliation, LLM spend caps." \
+    "  NO-GO blocks the promotion; './ci.sh --launch' runs the mechanical subset." \
+    "${C_BOLD}debater${C_RESET} (×2, opt-in) — the ${n_all}th agent, and the one you CANNOT pick a model for:" \
+    "  it is always launched with an explicit per-side --model override (DEBATE_MODEL_A/B), so" \
+    "  it is absent from the per-agent picker by design. Two DIFFERENT models argue a spec or a" \
+    "  diff (defender vs challenger, both read-only) and report only what BOTH sides accept." \
+    "  Off by default — turn it on in Settings → Cross-model debate." \
     "" \
     "A commit needs verifier PASS AND the risk-gated critics' APPROVE (LOW-risk = the" \
     "engineering reviewer; HIGH-risk = all four critics). Each agent runs in its OWN" \
@@ -93,6 +125,7 @@ explain_agents() {
     "criteria (reach the root need) · PRE-MORTEM at implement + review (assume it broke in prod — why?)."
 }
 explain_autoloop() {
+  local n_all; n_all="$(_agent_counts | cut -d' ' -f2)"
   box "The autorun loop (ace autorun / autoloop)" \
     "Chains the whole pipeline and runs unattended until the feature cap:" \
     "  ${C_BOLD}0. preflight${C_RESET} confirm the right repo+branch and that any pending PR belongs to" \
@@ -100,7 +133,7 @@ explain_autoloop() {
     "  ${C_BOLD}1. plan${C_RESET}     roadmap empty? the planner decomposes the top OBJECTIVE into" \
     "             ROADMAP tasks (two-tier brain: OBJECTIVES.md = north star, you edit;" \
     "             ROADMAP.md = task queue, the loop fills + ticks)." \
-    "  ${C_BOLD}2. build${C_RESET}    a FRESH opencode session builds the next roadmap item (10-agent" \
+    "  ${C_BOLD}2. build${C_RESET}    a FRESH opencode session builds the next roadmap item ($n_all-agent" \
     "             inner loop) — context never piles up across features." \
     "  ${C_BOLD}3. self-heal${C_RESET} push PR ▸ watch CI; on red it pulls 'gh run --log-failed'," \
     "             feeds it to opencode, fixes the ROOT cause (no band-aids), re-watches." \

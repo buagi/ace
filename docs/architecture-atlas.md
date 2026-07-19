@@ -56,8 +56,8 @@ The generator is a per-project script, **`scripts/atlas-refresh.sh`**, that ACE 
 
 Because it's derived from `git ls-files`, only **committed** files appear — the map reflects what's actually in the repo, not scratch work.
 
-> [!NOTE]
-> **Optional richer roles.** With `ATLAS_NARRATIVE=1`, a single read-only "cartographer" agent pass fills the **Role** column of the Module map with a grounded phrase per module (using `ATLAS_AGENT`). Off by default → the skeleton is pure, deterministic, and free.
+> [!WARNING]
+> **`ATLAS_NARRATIVE` is currently unsupported.** It was designed to let one read-only agent pass fill the **Role** column of the Module map with a grounded phrase per module, but the agent it asks for (`ATLAS_AGENT`, default `cartographer`) is **not in the shipped 12-agent crew** — so setting `ATLAS_NARRATIVE=1` silently does nothing and you get the deterministic skeleton either way. It becomes usable only if you define a `cartographer` agent yourself in `~/.config/opencode/opencode.json`, or point `ATLAS_AGENT` at an agent that does exist.
 
 ---
 
@@ -74,15 +74,15 @@ Because it's derived from `git ls-files`, only **committed** files appear — th
 
 ## Config knobs
 
-Set in the environment or `~/.config/ace/config.env`.
+Set in the environment or in `~/.config/ace/config` (extensionless — that is the only config file ACE reads or writes).
 
 | Var | Default | What it does |
 |-----|---------|--------------|
 | `ATLAS` | `1` | `0` disables atlas generation entirely (the generator exits immediately). |
 | `MAP_EVERY` | `3` | refresh every N merged features in the loop. |
 | `ATLAS_FORCE` | `0` | `1` overrides the swarm-worker skip and the unchanged-signature skip (this is what `ace atlas` sets). |
-| `ATLAS_NARRATIVE` | `0` | `1` adds the grounded Role narrative (one read-only agent pass). |
-| `ATLAS_AGENT` | *cartographer* | which agent runs the narrative pass when it's on. |
+| `ATLAS_NARRATIVE` | `0` | ⚠️ **unsupported — a no-op.** See the warning above: the default `ATLAS_AGENT` is not a shipped agent, so the pass never produces anything. |
+| `ATLAS_AGENT` | `cartographer` | which agent would run the narrative pass. **No agent by this name ships with ACE** — you must define one (or name an existing agent) for `ATLAS_NARRATIVE` to do anything. |
 
 ---
 

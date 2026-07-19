@@ -126,7 +126,9 @@ agent_models_menu() {
     opts+=("Apply → rewrite OpenCode config::write + install plugins + login")
     opts+=("← back::")
     banner   # screen clears the previous (no scroll-back clutter)
-    menu "Settings · Models & agents (which model each runs)" "${opts[@]}"
+    # Title states BOTH numbers: this list renders only the configurable agents, so a bare "12 agents"
+    # here would contradict the 11 rows below it (the drift the settings screen used to ship).
+    menu "Settings · Models & agents ($total of $((total + 1)) — debater is model-pinned)" "${opts[@]}"
     n="$MENU_CHOICE"
     if [ "$n" -le "$total" ]; then set_agent_model "$(printf '%s\n' $ACE_AGENTS | sed -n "${n}p")"
     elif [ "$n" = "$((total+1))" ]; then model_presets_menu
@@ -207,11 +209,15 @@ model_profile_menu() {
 }
 
 settings_menu() {
+  # counts come from _agent_counts (architecture.sh → $ACE_AGENTS) so this label can never drift from the
+  # roster the picker actually renders. The screen used to promise "12 agents" and then list 11, because
+  # `debater` ships but is NOT model-configurable (it always runs with an explicit --model override).
+  local n_cfg n_all; read -r n_cfg n_all <<<"$(_agent_counts)"
   while true; do
     banner   # screen clears the previous (no scroll-back clutter)
     menu "ACE — Settings" \
       "Providers & keys::DeepSeek · Anthropic · OpenAI · OpenRouter · Context7" \
-      "Models & agents::which model each of the 12 agents runs" \
+      "Models & agents::$n_all agents ($n_cfg configurable — debater is model-pinned)" \
       "Model profile::DeepSeek effort (max/high/balanced)" \
       "Cross-model debate::spec/review toggles · defender/challenger models · rounds" \
       "Appearance::theme · animation · pixel art" \
@@ -229,29 +235,28 @@ appearance_menu() {
   local cap; while true; do
     if [ "$ACE_TC" = 1 ]; then cap="truecolor"; elif [ "$ACE_COLOR" = 1 ]; then cap="256-color"; else cap="no-color"; fi
     banner
-    menu "Appearance  ($cap · theme=${_ACE_THEME:-warp} · anim=$([ "${ACE_NO_ANIM:-}" = 1 ] && echo off || echo on) · art=${ACE_ART:-auto})" \
+    menu "Appearance  ($cap · theme=${_ACE_THEME:-warp} · anim=$([ "${ACE_NO_ANIM:-}" = 1 ] && echo off || echo on))" \
       "Theme: warp::violet (default)" \
       "Theme: blood::crimson / red" \
       "Theme: void::indigo-cyan (dark sci-fi)" \
       "Animation: $([ "${ACE_NO_ANIM:-}" = 1 ] && echo 'off → turn on' || echo 'on → turn off')::one-time intro reveal" \
-      "Pixel art (chafa): ${ACE_ART:-auto}::auto ⇄ off (sixel/kitty sprite vs half-blocks)" \
       "← back::"
     case "$MENU_CHOICE" in
       1) config_set THEME warp;  apply_theme warp ;;
       2) config_set THEME blood; apply_theme blood ;;
       3) config_set THEME void;  apply_theme void ;;
       4) if [ "${ACE_NO_ANIM:-}" = 1 ]; then ACE_NO_ANIM=0; config_set NO_ANIM ""; else ACE_NO_ANIM=1; config_set NO_ANIM 1; fi; _ACE_BANNER_DONE=0 ;;
-      5) if [ "${ACE_ART:-auto}" = off ]; then ACE_ART=auto; config_set ART auto; else ACE_ART=off; config_set ART off; fi ;;
-      6) return ;;
+      5) return ;;
     esac
   done
 }
 
 # ---------------------------------------------------------------- thematic top-level submenus
 setup_menu() {
+  local n_all; n_all="$(_agent_counts | cut -d' ' -f2)"
   banner   # screen clears the previous (no scroll-back clutter)
   menu "Setup / install" \
-    "Full guided setup::host tools · keys · 10-agent config · git" \
+    "Full guided setup::host tools · keys · $n_all-agent config · git" \
     "Host tools only::fnm/node · uv · bun · jq · opencode · Go" \
     "Connect Git + GitHub::identity · gh login · credentials" \
     "(Re)write OpenCode config::agents + models + MCP" \

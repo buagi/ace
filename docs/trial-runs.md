@@ -32,7 +32,7 @@ SPEC_DEBATE=0 REVIEW_DEBATE=0 MAX_FEATURES=3 ace autorun --yes
 | # | Check | Metric | Pass line | Read it |
 |---|-------|--------|-----------|---------|
 | 1 | Spec gate runs on `[value]` features | # specs written to `.opencode/specs/` | ≥1 per value feature | `ls .opencode/specs/` |
-| 2 | Deterministic lint gates before dispatch | `SPECGAP` count trends ↓ across re-spec | 0 gaps at dispatch (or ≤`SPECFIX_MAX` rounds) | coordinator/loop log `planning: spec-lint …` |
+| 2 | Deterministic lint gates before dispatch | `SPECGAP` count trends ↓ across re-spec | 0 gaps at dispatch after the 2 re-spec rounds (the count is fixed by the pipeline, not a knob) | coordinator/loop log `planning: spec-lint …` |
 | 3 | Per-increment **slice** reaches the implementer | slice files present | 1 per dispatched increment | `ls .opencode/cache/spec-slice.*.md` |
 | 4 | **Solo == swarm** pipeline (unification) | same gate lines appear in a `par=1` run | present | run once with 1 flow, once with ≥2 |
 | 5 | Dashboard **phase tags** live, never static | phase label changes across research→spec-gate→implement | tags observed, spinner animates | `ace dash` during the run |

@@ -42,6 +42,9 @@ flowchart TD
 | Healthcheck fails | `STOP_ON_DEPLOY_FAIL=1` (default) | halt the loop → `ace resume` |
 | Healthcheck fails | `STOP_ON_DEPLOY_FAIL=0` | log + continue |
 
+> [!IMPORTANT]
+> **The health check gates the record, not the other way round.** `DEPLOY_LAST_TAG` is written only *after* the check passes, so a release that deploys but fails to come up healthy is never marked shipped. That is what makes a retry work: with `DEPLOY_GATE=release`, the next `ace deploy` still sees the tag as undeployed and ships it again, instead of short-circuiting on "already deployed" and leaving the broken version live.
+
 ## What — `deploy_kind`
 
 From `.opencode/profile.yaml` (derived from the project shape):

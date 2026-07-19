@@ -64,8 +64,8 @@ loop_dash() {
           [ "$COLS" -lt 64 ] && COLS=64; [ "$ROWS" -lt 20 ] && ROWS=20; }
   _dsz
   local -a LOG=()
-  local cyc=0 feat=0 fixes=0 plans=0 branch="—" ci="idle" ovr="deepseek" paused=0 logoff=0
-  local phlabel="starting…" phkey=idle runlive=0    # live phase tag (shared inference) + is-a-run-live flag
+  local cyc=0 feat=0 branch="—" ci="idle" ovr="deepseek" paused=0
+  local phlabel="starting…" runlive=0    # live phase tag (shared inference) + is-a-run-live flag
   # braille spinner keyed on the render frame — an "it's alive" cue that moves every frame even if the log is
   # momentarily silent (a long think/build), so the solo dash never reads as hung. Mirrors the swarm cockpit.
   _dspin(){ local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏); printf '%s' "${f[$(( (${frame:-0}/3) % 10 ))]}"; }
@@ -89,8 +89,9 @@ loop_dash() {
     if [ -f "$f" ]; then
       v="$(grep -E '^branch=' "$f" 2>/dev/null | cut -d= -f2-)"; branch="${v:-$branch}"
       v="$(grep -E '^features=' "$f" 2>/dev/null | cut -d= -f2-)"; feat="${v:-0}"
-      v="$(grep -E '^fixes=' "$f" 2>/dev/null | cut -d= -f2-)"; fixes="${v:-0}"
-      v="$(grep -E '^plans=' "$f" 2>/dev/null | cut -d= -f2-)"; plans="${v:-0}"
+      # NOTE: loop-state.env also carries fixes= and plans= (autoloop write_state). They are deliberately
+      # NOT parsed here — the chip row has no slot for them, so parsing cost two greps per refresh frame
+      # for values nothing rendered. Add the parse back only together with the chip that displays it.
       v="$(grep -E '^overseer=' "$f" 2>/dev/null | cut -d= -f2-)"; ovr="${v:-$ovr}"
       v="$(grep -E '^ci=' "$f" 2>/dev/null | cut -d= -f2-)"; ci="${v:-$ci}"
     fi
@@ -108,7 +109,9 @@ loop_dash() {
     # live PHASE tag (shared with the swarm cockpit) + is-the-loop-live: a fresh log or an alive pid means a run
     # is going, so we show the tagged phase (research · spec-gate · implementing · verifying · reviewing · merging)
     # instead of the idle tagline — the user always sees WHICH phase is happening, never a static screen.
-    IFS=$'\t' read -r phlabel phkey < <(dash_phase_from_log "$lf")
+    # dash_phase_from_log emits "label<TAB>phasekey"; the solo dash renders only the label, so the key goes
+    # to `_` (it must still be READ — dropping the field would fold the tab + key into $phlabel).
+    IFS=$'\t' read -r phlabel _ < <(dash_phase_from_log "$lf")
     local _lp; _lp="$(sed -n 's/^pid=//p' "$f" 2>/dev/null | head -1)"
     if { [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null; } \
        || { [ -f "$lf" ] && [ "$(( $(date +%s) - $(stat -c %Y "$lf" 2>/dev/null || echo 0) ))" -lt "${DASH_LIVE_WINDOW:-180}" ]; }; then
