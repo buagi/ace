@@ -36,3 +36,5 @@ jobs:
         run: bash tests/prompt-contracts.sh
       - name: swarm selftests (claim store · leasing · fencing · plan-lint · RED-main)
         run: bash tests/swarm-selftests.sh
+      - name: merge-approval gate (deny-by-default · undelivered request · token uniqueness)
+        run: bash tests/approval-selftest.sh

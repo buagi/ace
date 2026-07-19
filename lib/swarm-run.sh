@@ -638,17 +638,238 @@ swarm_run() {
   swarm_post coordinator idle "swarm stopped — all workers finished their current tasks" 2>/dev/null || true
   echo "swarm: all workers finished — coordinator stopped"; swarm_status
 }
+# ---- kill-safety helpers (stop / Ctrl-C path) --------------------------------
+# KS-7: every pid we signal must be a REAL, positive pid. `kill 0` (which is what `kill "${_RPID:-0}"`
+# degrades to when the reaper pid is unset) signals the ENTIRE PROCESS GROUP — under setsid that is the
+# coordinator itself plus every worker and their opencode subtrees — pre-empting the ordered shutdown
+# below with an unordered fleet-wide signal. pid 1 (init) is refused for the same class of reason.
+_swarm_pid_ok() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ] 2>/dev/null; }
+_swarm_alive()  { _swarm_pid_ok "${1:-}" && kill -0 "$1" 2>/dev/null; }
+# KS-3: signal the process TREE, LEAVES FIRST. opencode spawns MCP servers, language servers and builds;
+# the moment their leader dies they re-parent to init and survive, still holding the output pipe open.
+# Walking children before the leader means nothing is re-parented out from under us mid-walk. Mirrors
+# kill_tree() in lib/autoloop.sh:686 and _dash_killtree() in lib/dash.sh:18 — same job, same shape.
+_swarm_killtree() {
+  local p="${1:-}" s="${2:-TERM}" k
+  _swarm_pid_ok "$p" || return 0
+  for k in $(pgrep -P "$p" 2>/dev/null); do _swarm_killtree "$k" "$s"; done
+  kill -"$s" "$p" 2>/dev/null || true
+}
+# read a pidfile, emit the pid only if it is plausible (so callers never branch on garbage)
+# _swarm_pid_is <pid> <substring> — verify a pidfile-derived pid REALLY is the process we recorded, BEFORE
+# signalling it. Pids get recycled: a stale wN.loop.pid or .oppid can name an unrelated live process, and
+# because the stop path now kills TREE-WISE that would take an innocent bystander AND its children with it.
+# The old name-matched `pkill -f` could not do that, so trusting a pidfile is strictly MORE blast radius and
+# has to earn it. Refuse ONLY on positive evidence of a mismatch: if the cmdline cannot be read at all
+# (no /proc, no ps, or the process already exited) we allow, so this can never silently skip a real kill.
+_swarm_pid_is() {
+  local p="${1:-}" want="${2:-}" cl=""
+  [ -n "$p" ] && [ -n "$want" ] || return 1
+  if [ -r "/proc/$p/cmdline" ]; then cl="$(tr "\0" " " < "/proc/$p/cmdline" 2>/dev/null)"
+  else cl="$(ps -o args= -p "$p" 2>/dev/null)"; fi
+  [ -n "$cl" ] || return 0
+  case "$cl" in *"$want"*) return 0 ;; *) return 1 ;; esac
+}
+
+_swarm_pidof() { local p; p="$(cat "${1:-/nonexistent}" 2>/dev/null)"; _swarm_pid_ok "$p" && printf '%s' "$p"; }
+
 _swarm_trap() {
   trap - INT TERM
   printf '\n%sswarm: stopping — workers preserving in-flight WIP on their branches, then terminating…%s\n' "${_GOLD:-}" "${_R:-}" >&2
-  kill "${_RPID:-0}" 2>/dev/null                              # reaper
-  [ -n "${_DWPID:-}" ] && kill "$_DWPID" 2>/dev/null          # drain watchdog
-  pkill -TERM -f 'scripts/auto-loop.sh' 2>/dev/null || true   # worker loops → cleanup() commits WIP + kills opencode
-  sleep 4                                                     # let those cleanup traps finish (the WIP commit)
-  pkill -KILL -f 'scripts/auto-loop.sh' 2>/dev/null || true; pkill -KILL -f 'opencode run' 2>/dev/null || true
-  local w; for w in ${_WPIDS:-}; do kill -KILL "$w" 2>/dev/null; done
-  echo "swarm: stopped (in-flight WIP preserved as commits on the worker branches)." >&2
+  local sweep="${SWARM_STOP_SWEEP:-1}"        # 0 = skip the repo-wide pkill sweeps (used by the selftest, which must stay hermetic)
+  _swarm_killtree "${_RPID:-}"  TERM          # reaper         (KS-7: never a bare `kill 0`)
+  _swarm_killtree "${_DWPID:-}" TERM          # drain watchdog
+
+  # ── B5: THE ORDER BELOW IS LOAD-BEARING — DO NOT REARRANGE ──────────────────────────────────────
+  # Each worker's auto-loop sits in a FOREGROUND `opencode run … | tee` pipeline (lib/autoloop.sh:848).
+  # Bash does not run a trap handler while a foreground command is running: it DEFERS the handler until
+  # that command returns. So the loop's cleanup() — the thing that actually commits the in-flight WIP —
+  # CANNOT run while its opencode is alive, no matter how many SIGTERMs it receives. The old code TERMed
+  # the loops, slept 4s, then `pkill -KILL`ed them; SIGKILL is neither deferrable nor trappable, so
+  # cleanup() never ran, the WIP commit never happened, and we printed "WIP preserved" anyway.
+  # lib/dash.sh:229-235 documents and works around this exact bash behaviour for the solo loop.
+  #
+  # The fix is a two-step interleave and BOTH steps are required, in THIS order:
+  #   1. TERM the loop LEADERS — the signal becomes pending, cleanup() is armed. Doing this AFTER step 2
+  #      would be worse, not better: an un-signalled loop reacts to a dead opencode by starting a new one.
+  #   2. Kill each worker's opencode TREE — the pipeline returns, and bash immediately runs the deferred
+  #      cleanup(), which commits the WIP to the worker branch and tears down the rest of its subtree.
+  local f p
+  for f in "${SWARM_DIR:-/nonexistent}"/w*.loop.pid; do        # step 1 (nullglob is off → an unmatched glob arrives literally, hence the -f test)
+    [ -f "$f" ] || continue
+    p="$(_swarm_pidof "$f")"
+    [ -n "$p" ] && _swarm_pid_is "$p" 'auto-loop.sh' && { kill -TERM "$p" 2>/dev/null || true; }
+  done
+  [ "$sweep" != 0 ] && { pkill -TERM -f 'scripts/auto-loop.sh' 2>/dev/null || true; }   # fallback: a loop whose pidfile write lost
+  for f in "${WT_ROOT:-/nonexistent}"/*/.opencode/.oppid; do   # step 2 — unblock the deferred traps
+    [ -f "$f" ] || continue
+    p="$(_swarm_pidof "$f")"
+    [ -n "$p" ] && _swarm_pid_is "$p" opencode && _swarm_killtree "$p" TERM   # TERM, not KILL: let opencode flush its session state
+  done
+
+  # Give those deferred cleanup traps time to FINISH the WIP commit. Poll rather than sleep a fixed 4s,
+  # and escalate ONLY what is still alive — a loop that is mid-`git commit` must not be SIGKILLed just
+  # because a hard-coded budget expired. cleanup() itself spends ~2s in sleeps before it commits.
+  local grace="${SWARM_STOP_GRACE:-20}" waited=0 live
+  case "$grace" in ''|*[!0-9]*) grace=20 ;; esac
+  while [ "$waited" -lt "$grace" ]; do
+    live=0
+    for f in "${SWARM_DIR:-/nonexistent}"/w*.loop.pid; do
+      [ -f "$f" ] || continue
+      _swarm_alive "$(_swarm_pidof "$f")" && { live=1; break; }
+    done
+    [ "$live" = 0 ] && break
+    sleep 1; waited=$((waited+1))
+  done
+
+  # escalate to SIGKILL — survivors only, tree-wise. `forced=1` means at least one loop outlived its
+  # grace window, so its WIP is NOT guaranteed: say so instead of claiming preservation (the audit's
+  # fail-open reporting theme — the stop message must describe what actually happened).
+  local forced=0 w
+  for f in "${SWARM_DIR:-/nonexistent}"/w*.loop.pid; do
+    [ -f "$f" ] || continue
+    p="$(_swarm_pidof "$f")"
+    _swarm_alive "$p" && _swarm_pid_is "$p" 'auto-loop.sh' && { forced=1; _swarm_killtree "$p" KILL; }
+  done
+  for f in "${WT_ROOT:-/nonexistent}"/*/.opencode/.oppid; do
+    [ -f "$f" ] || continue
+    p="$(_swarm_pidof "$f")"
+    _swarm_alive "$p" && _swarm_pid_is "$p" opencode && _swarm_killtree "$p" KILL
+  done
+  if [ "$sweep" != 0 ]; then
+    pkill -KILL -f 'scripts/auto-loop.sh' 2>/dev/null || true
+    pkill -KILL -f 'opencode run' 2>/dev/null || true
+  fi
+  for w in ${_WPIDS:-}; do _swarm_alive "$w" && _swarm_killtree "$w" KILL; done   # run_worker supervisor subshells
+
+  # KS-6 / KS-5: this coordinator is about to exit — drop its pidfile and the operator control files.
+  # dash_auto (lib/dash.sh:30) and _coord_up (lib/swarm-dash.sh:245) treat a coordinator.pid whose pid
+  # answers `kill -0` as "a swarm is running", so a file left behind routes `ace dash` into the cockpit
+  # of a long-dead swarm as soon as the pid is RECYCLED. Leftover control.{pause,drain,kill-wN} likewise
+  # sabotage the next start. swarm_run's clean-exit tail (:637) already does exactly this; the Ctrl-C
+  # path did not — that asymmetry WAS the bug. *.loop.pid go too: their owners are gone.
+  [ -n "${SWARM_DIR:-}" ] && rm -f "$SWARM_DIR/coordinator.pid" "$SWARM_DIR"/control.* "$SWARM_DIR"/*.loop.pid 2>/dev/null
+  if [ "$forced" = 1 ]; then
+    echo "swarm: stopped — ⚠ at least one worker had to be force-killed after ${grace}s; its in-flight WIP may NOT have been committed." >&2
+  else
+    echo "swarm: stopped (in-flight WIP preserved as commits on the worker branches)." >&2
+  fi
   exit 130
+}
+
+# ---- kill-safety selftest (hermetic, ~5s, no network, no credits) ------------
+# Proves the four properties the Ctrl-C path silently lost. It stands up a FAKE worker whose "opencode"
+# is a sleep tree and whose cleanup trap is armed behind a FOREGROUND pipeline — the exact bash shape
+# that made the old trap's SIGKILL-first ordering skip the WIP commit — then fires _swarm_trap and
+# asserts what actually happened rather than what the stop message claimed.
+swarm_killsafety_selftest() {
+  local d ok=1 lp op kid i
+  d="$(mktemp -d)" || return 1
+  SWARM_DIR="$d/state"; WT_ROOT="$d/wt"
+  mkdir -p "$SWARM_DIR" "$WT_ROOT/w1-deadbeef/.opencode"
+
+  # KS-7 unit assertions: the pid guard is what stops `kill 0` from signalling the whole process group.
+  _swarm_pid_ok ""     && { echo "[killsafety] empty pid accepted (kill 0 → whole process group)"; ok=0; }
+  _swarm_pid_ok 0      && { echo "[killsafety] pid 0 accepted (kill 0 → whole process group)"; ok=0; }
+  _swarm_pid_ok 1      && { echo "[killsafety] pid 1 (init) accepted"; ok=0; }
+  _swarm_pid_ok abc    && { echo "[killsafety] non-numeric pid accepted"; ok=0; }
+  _swarm_pid_ok 4321   || { echo "[killsafety] a normal pid was rejected"; ok=0; }
+
+  # stand-in for scripts/auto-loop.sh. Two properties are load-bearing and both mirror the real loop:
+  #   1. cleanup() "preserves WIP"  (here: writes $WIPMARK)   — lib/autoloop.sh:687
+  #   2. it is armed while the process blocks in a FOREGROUND pipeline, so bash DEFERS the handler until
+  #      the pipeline returns — which only happens once the "opencode" tree dies. lib/autoloop.sh:848.
+  # The "opencode" is a shell owning a grandchild sleep, so the test also covers tree-kill (KS-3): a bare
+  # `kill $oppid` would leave the grandchild running.
+  cat > "$d/auto-loop.sh" <<'FAKELOOP'
+#!/usr/bin/env bash
+cleanup(){ trap - INT TERM; printf 'trap\n' > "$WIPMARK"; exit 0; }
+trap cleanup INT TERM
+{ bash -c 'sleep 300 & printf "%s\n" "$!" > "$KIDF"; wait' & printf '%s\n' "$!" > "$OPPID"; wait "$!"; } 2>&1 | cat >/dev/null
+# Reached ONLY when no signal was ever pending. Writing a DIFFERENT marker is what makes the ordering
+# testable: bash runs a deferred handler the instant the foreground pipeline returns, so if the loop was
+# TERMed first (correct) the marker says `trap`; if the opencode tree was killed with no signal pending
+# (the reversed order) the loop falls through to here and the marker says `fallthrough`. The old fixture
+# called cleanup() unconditionally on this line, so BOTH paths wrote the same value and the assertion
+# could not tell them apart — the ordering, which is the entire substance of B5, was untested.
+# Reached only when NO signal was pending when the pipeline returned. A REAL auto-loop does not exit here —
+# it treats a dead opencode as "step finished" and starts the NEXT lap (a fresh opencode). Modelling that is
+# what makes the ordering testable: killing the opencode tree BEFORE signalling the loop just makes the loop
+# spawn another one, so the stop never converges. Record it and stay alive like the real loop would.
+printf 'fallthrough\n' > "$WIPMARK"
+printf 'restarted\n' >> "$RESTARTF"
+bash -c 'sleep 300' & printf '%s\n' "$!" > "$OPPID"; wait "$!"
+FAKELOOP
+
+  ( export WIPMARK="$d/wip" RESTARTF="$d/restarts" KIDF="$d/kid" OPPID="$WT_ROOT/w1-deadbeef/.opencode/.oppid"
+    exec bash "$d/auto-loop.sh" ) & lp=$!
+  echo "$lp" > "$SWARM_DIR/w1.loop.pid"
+  echo $$   > "$SWARM_DIR/coordinator.pid"          # KS-6 subject
+  : > "$SWARM_DIR/control.pause"; : > "$SWARM_DIR/control.drain"; : > "$SWARM_DIR/control.kill-w1"   # KS-5 subjects
+
+  for i in 1 2 3 4 5 6 7 8 9 10; do                 # wait for the fake tree to be fully up before signalling
+    [ -s "$WT_ROOT/w1-deadbeef/.opencode/.oppid" ] && [ -s "$d/kid" ] && break; sleep 0.5
+  done
+  op="$(cat "$WT_ROOT/w1-deadbeef/.opencode/.oppid" 2>/dev/null)"; kid="$(cat "$d/kid" 2>/dev/null)"
+  if ! _swarm_alive "$op" || ! _swarm_alive "$kid"; then
+    echo "[killsafety] fixture failed to start (oppid='$op' child='$kid')"; kill -9 "$lp" 2>/dev/null; rm -rf "$d"; return 1
+  fi
+
+  # fire the trap in a subshell — it ends in `exit 130` by design. SWARM_STOP_SWEEP=0 keeps it hermetic
+  # (no repo-wide pkill that could reach a developer's real loop); the pidfile/.oppid paths do the work.
+  ( _RPID=""; _DWPID=""; _WPIDS=""; SWARM_STOP_SWEEP=0 SWARM_STOP_GRACE=10 _swarm_trap ) >/dev/null 2>&1
+  wait "$lp" 2>/dev/null
+
+  # (B5) the deferred cleanup trap actually ran → WIP was preserved, not just claimed
+  # ORDER: a restart means the opencode tree was killed while no signal was pending — the reversed interleave.
+  [ -s "$d/restarts" ] && { echo "[killsafety] B5: ORDER WRONG — loop was left un-signalled when its opencode died, so it started a NEW lap instead of stopping"; ok=0; }
+  case "$(cat "$d/wip" 2>/dev/null)" in
+    trap) : ;;
+    fallthrough) echo "[killsafety] B5: ORDER WRONG — the opencode tree was killed with no signal pending, so the loop fell through instead of running its deferred cleanup trap"; ok=0 ;;
+    *) echo "[killsafety] B5: the loop's deferred cleanup trap never ran — WIP was NOT committed"; ok=0 ;;
+  esac
+  # (a/KS-3) the whole child tree is gone, grandchild included
+  _swarm_alive "$lp"  && { echo "[killsafety] loop leader $lp survived the stop"; ok=0; }
+  _swarm_alive "$op"  && { echo "[killsafety] KS-3: 'opencode' $op survived the stop"; ok=0; }
+  _swarm_alive "$kid" && { echo "[killsafety] KS-3: orphaned grandchild $kid survived the stop"; ok=0; }
+  # (b/KS-6) coordinator.pid removed — else a recycled pid routes `ace dash` to a dead swarm
+  [ -e "$SWARM_DIR/coordinator.pid" ] && { echo "[killsafety] KS-6: coordinator.pid left behind"; ok=0; }
+  # (c/KS-5) control.* cleaned so the next start isn't sabotaged
+  ls "$SWARM_DIR"/control.* >/dev/null 2>&1 && { echo "[killsafety] KS-5: control.* left behind"; ok=0; }
+  ls "$SWARM_DIR"/*.loop.pid >/dev/null 2>&1 && { echo "[killsafety] stale worker pidfile left behind"; ok=0; }
+
+  kill -9 "$kid" "$op" "$lp" 2>/dev/null   # belt-and-braces: never leak fixture processes out of a FAILED run
+  rm -rf "$d"
+  # ── scenario 2: a TERM-DEAF worker must be force-killed AND reported honestly ────────────────────
+  # The fixture above always obeys TERM, so the grace/escalate branch — and the honest "WIP may NOT have
+  # been committed" message that replaced the unconditional "WIP preserved" claim — had ZERO coverage.
+  # That message is the audit's dominant theme (a gate reporting success it cannot vouch for), so it needs
+  # its own proof: a worker that traps and IGNORES TERM, forcing the escalation path.
+  local d2 out2 ok2=1
+  d2="$(mktemp -d)" || return 1
+  mkdir -p "$d2/sw" "$d2/wt/w1-deaf/.opencode"
+  cat > "$d2/auto-loop.sh" <<'DEAF'
+#!/usr/bin/env bash
+trap '' INT TERM          # deliberately deaf: models a loop wedged mid-step
+sleep 300
+DEAF
+  ( exec bash "$d2/auto-loop.sh" ) & local dp=$!
+  disown "$dp" 2>/dev/null || true      # the shell's "Killed" job notice would otherwise pollute test output
+  echo "$dp" > "$d2/sw/w1.loop.pid"
+  sleep 0.3
+  out2="$( ( _RPID=""; _DWPID=""; _WPIDS=""; SWARM_DIR="$d2/sw" WT_ROOT="$d2/wt" \
+             SWARM_STOP_SWEEP=0 SWARM_STOP_GRACE=2 _swarm_trap ) 2>&1 )"
+  _swarm_alive "$dp" && { echo "[killsafety] a TERM-deaf worker survived the stop (never escalated to KILL)"; ok2=0; kill -9 "$dp" 2>/dev/null; }
+  case "$out2" in
+    *"may NOT have been committed"*) : ;;
+    *"WIP preserved"*) echo "[killsafety] FAIL-OPEN: a force-killed worker was reported as 'WIP preserved'"; ok2=0 ;;
+    *) echo "[killsafety] force-kill path produced no honest stop message: $out2"; ok2=0 ;;
+  esac
+  rm -rf "$d2"
+  [ "$ok2" = 1 ] || ok=0
+
+  [ "$ok" = 1 ] && { echo "[killsafety] PASS ✓"; return 0; }
+  echo "[killsafety] FAIL ✗" >&2; return 1
 }
 
 # ---- sandbox: full end-to-end proof on a throwaway repo, zero credits ---------
@@ -857,6 +1078,7 @@ case "${1:-}" in
   split)      swarm_dash_split ;;       # OPTIONAL: real tmux panes (independent scrollback/mouse per worker) — needs tmux
   cockpit)    DASH_FEEDS=0 swarm_dash ;; # boxes-only cockpit (no inline feeds) — used inside the tmux split's top pane
   sandbox)    swarm_sandbox ;;
+  killsafety-selftest) swarm_killsafety_selftest ;;   # hermetic proof of the stop/Ctrl-C kill path (run by tests/swarm-selftests.sh)
   worker)     run_worker "${2:-1}" ;;
   watch)      swarm_watch ;;
   pause)      swarm_init; : > "$SWARM_DIR/control.pause"; echo "paused — workers hold before claiming (resume: ace swarm resume)" ;;

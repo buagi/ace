@@ -256,21 +256,45 @@ hermes_notify(){
   [ "${HERMES_SNAP:-0}" = 1 ] && ace snap --to "${HERMES_TO:-telegram}" >/dev/null 2>&1 || true
 }
 
-# request_approval <kind> <summary> -> 0 approved · 1 denied/timeout · 2 no chat channel (caller decides).
+# request_approval <kind> <summary> -> 0 approved · 1 denied/timeout · 2 unreachable human (caller decides).
 # Notifies chat + polls .opencode/approvals/<token>.decision, which `ace approve` writes when you reply.
+# rc 2 means "the question never reached a human" — no hermes binary OR the send failed. Both are the SAME
+# situation for the caller (nobody can answer), so both must return 2 and stop the loop straight away.
 request_approval(){
   command -v hermes >/dev/null 2>&1 || return 2
   mkdir -p .opencode/approvals 2>/dev/null
-  local tok; tok="$(date +%s)$$"; tok="a${tok: -8}"
+  # Token must be unique per REQUEST. The old form (last 8 chars of "$(date +%s)$$") is dominated by the
+  # PID, so for a given long-lived loop process it repeats about every ~100s — a fresh request could then
+  # collide with a leftover <tok>.decision from an EARLIER request and be "answered" instantly by a reply
+  # nobody gave for this merge. Epoch + PID + $RANDOM, re-rolled if anything with that name already exists.
+  local tok _i
+  for _i in 1 2 3 4 5; do
+    tok="a$(date +%s)-$$-$RANDOM"
+    [ -e ".opencode/approvals/$tok.request" ] || [ -e ".opencode/approvals/$tok.decision" ] || break
+  done
+  rm -f ".opencode/approvals/$tok.decision" 2>/dev/null || true   # never inherit a stale answer
   printf 'kind=%s\nsummary=%s\nbranch=%s\nrequested=%s\n' "$1" "$2" "$(branch 2>/dev/null)" "$(date -Is)" > ".opencode/approvals/$tok.request" 2>/dev/null
-  hermes send --to "${HERMES_TO:-telegram}" --subject "ACE approval" "🔔 Approve: $1
+  # TEST the send. A swallowed failure (gateway down, bad HERMES_TO, channel not authenticated) used to
+  # leave us polling for APPROVAL_TIMEOUT (1h by default) for an answer to a question NOBODY EVER SAW, and
+  # then report it as the human failing to respond. Route it into the rc-2 "unreachable human" path so the
+  # caller stops immediately with the true reason. Fail-closed AND fast.
+  if ! hermes send --to "${HERMES_TO:-telegram}" --subject "ACE approval" "🔔 Approve: $1
 $2
-Reply:  ace approve $tok yes   |   ace approve $tok no   (or just: approve / deny)" </dev/null >/dev/null 2>&1 || true
+Reply:  ace approve $tok yes   |   ace approve $tok no   (a decision is required; anything not recognised as 'yes' is a DENY)" </dev/null >/dev/null 2>&1; then
+    # Drop the request file: we are about to stop, and a leftover .request would make a later bare
+    # `ace approve yes` answer this dead token instead of a live one.
+    rm -f ".opencode/approvals/$tok.request" 2>/dev/null || true
+    say "⛔ approval request could NOT be delivered to ${HERMES_TO:-telegram} (hermes send failed) — no usable chat channel."
+    return 2
+  fi
   say "⏳ awaiting chat approval ($tok): $1"
   local waited=0 to="${APPROVAL_TIMEOUT:-3600}" iv="${APPROVAL_POLL:-15}" d
   while [ "$waited" -lt "$to" ]; do
     if [ -f ".opencode/approvals/$tok.decision" ]; then
       d="$(cat ".opencode/approvals/$tok.decision" 2>/dev/null)"; rm -f ".opencode/approvals/$tok.request" ".opencode/approvals/$tok.decision"
+      # Exact literal `yes` only — that is the sole approving string `ace approve` ever writes, and this
+      # is the last checkpoint before a merge to main. Everything else (incl. a truncated/partial write
+      # if the file was read mid-update) is a DENY.
       case "$d" in yes) say "✅ approved ($tok)."; return 0 ;; *) say "❌ denied ($tok)."; return 1 ;; esac
     fi
     sleep "$iv"; waited=$((waited+iv))
@@ -1302,7 +1326,9 @@ while :; do
       # MERGE_APPROVAL=hermes: ask in chat before each merge (human-in-the-loop; no blind auto-merge).
       if [ "${MERGE_APPROVAL:-}" = hermes ]; then
         request_approval "merge PR on $(branch)" "$(gh pr view --json title,url -q '.title + " — " + .url' 2>/dev/null || branch)"; _ra=$?
-        if [ "$_ra" = 2 ]; then say "MERGE_APPROVAL=hermes but no chat channel — leaving the PR open for manual review. Stopping."; break
+        # rc 2 = the question never reached a human (no hermes binary, or the send itself failed). Not a
+        # deny and not a timeout — there is nobody to wait for, so stop NOW rather than burn an hour.
+        if [ "$_ra" = 2 ]; then say "MERGE_APPROVAL=hermes but the approval request could not be delivered (no chat channel / send failed) — leaving the PR open for manual review. Fix the Hermes channel (hermes gateway status · HERMES_TO), then \`ace resume\`. Stopping."; break
         elif [ "$_ra" != 0 ]; then say "merge not approved in chat — leaving the PR open. Stopping."; break; fi
       fi
       _mt=$(date +%s); merge_if_ready; mrc=$?; phase_metric merge "$(branch)" $(( $(date +%s) - _mt )) "$mrc"

@@ -22,6 +22,21 @@ for t in $tests; do
   fi
 done
 
+# Kill-safety lives in the COORDINATOR (lib/swarm-run.sh), not lib/swarm.sh, so it needs its own entry
+# point — but it belongs in the same gate: it guards the stop/Ctrl-C path (deferred-trap ordering, so
+# in-flight WIP is really committed and not just claimed; process-TREE kill; coordinator.pid + control.*
+# cleanup). Hermetic and fast: throwaway SWARM_DIR, a fake worker, no network, no credits.
+SR="$ROOT/lib/swarm-run.sh"
+for t in killsafety-selftest; do
+  if out="$(bash "$SR" "$t" 2>&1)"; then
+    printf '  \033[0;32m✓\033[0m %s\n' "$t"
+  else
+    printf '  \033[0;31m✗ %s\033[0m\n' "$t"
+    printf '%s\n' "$out" | sed 's/^/      /'
+    fail=1
+  fi
+done
+
 if [ "$fail" = 0 ]; then
   echo "[swarm-selftests] all passed ✓"
 else

@@ -1,7 +1,7 @@
 ---
 name: ace
 description: "Drive ACE from chat as a step-by-step conductor — list options, one menu at a time, no assumptions, no auto-setup. Scaffold/loop/deploy/everything ACE does, via Telegram/Discord/Signal."
-version: 2.3.0
+version: 2.4.0
 author: Hermes Agent
 license: AGPL-3.0-or-later
 platforms: [linux, macos]
@@ -56,10 +56,19 @@ time**, and only run `ace` once the user has chosen every step. You are NOT an a
    confirm and the `--confirm` flag. Never pass `--confirm` until the user says yes to that exact step.
 7. **Report concretely** after each run: what ran, the result (files, branch, PR, CI, deploy/health),
    and the next menu.
-8. **Approval requests** — if a message arrives like `🔔 Approve: merge PR … — reply: ace approve <tok>
-   yes|no`, the loop (running `MERGE_APPROVAL=hermes`) is **paused waiting for you**. Relay it to the
-   user, and when they reply approve/✅ or deny/❌, run `ace approve <tok> yes` (or `… no`) in that
-   project's workdir. `ace approve yes` (no token) answers the newest pending request.
+8. **Approval requests — the merge gate. Deny-by-default; never infer a yes.** If a message arrives like
+   `🔔 Approve: merge PR … — reply: ace approve <tok> yes|no`, the loop (running `MERGE_APPROVAL=hermes`)
+   is **paused waiting for you**. Relay it to the user with `clarify(question="Merge <PR>?",
+   choices=["✅ approve","❌ deny"])`, then run `ace approve <tok> yes|no` in that project's workdir.
+   - Pass **`yes` only** when the user gave an unambiguous, explicit approval (tapped ✅ approve, or said
+     yes/approve/ok/merge it). **Anything else is `no`** — a refusal, "not now", "hold off", a question, a
+     new instruction, silence, or a reply you are not certain about. This is the only human check before a
+     merge to `main`: a wrong `no` costs one more message, a wrong `yes` ships unreviewed code.
+   - **Never paraphrase the user into the decision slot** and never invent one. `ace approve` is
+     fail-closed — it rejects a missing decision and records any word it doesn't recognise as a **deny** —
+     so a guessed relay does not merge, it just wastes the user's turn. Pass the literal `yes` or `no`.
+   - If the user is ambiguous, **ask again** — do not run `ace approve` at all until they are clear.
+   - `ace approve yes` / `ace approve no` (no token) answers the newest pending request.
 
 ### Menu convention — use `clarify` for tappable buttons
 Deliver every menu/choice with the **`clarify` tool** (`question` + `choices[]`) so the user **taps**, not
