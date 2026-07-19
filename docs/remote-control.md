@@ -17,7 +17,7 @@ Four layers — use as many as you want:
 
 | Layer | Direction | Command | Gives you |
 |---|---|---|---|
-| Notify | push | `ace hermes` | milestone texts: `started · merged · deployed · CI-red · rathole · stopped` |
+| Notify | push | `ace hermes` | milestone texts: `started · merged · deploying · CI-red · rathole · blocked · stopped` |
 | Command-back | pull | `ace hermes` → enable | run any command on the host from chat |
 | Service | — | `ace loop …` | the loop as a detachable systemd unit (start/stop from chat) |
 | Keep awake | — | `ace awake` | machine stays reachable while you are away |
@@ -39,7 +39,7 @@ This only chooses **where** ACE sends — the channel must already be bound and 
 
 `ace hermes` can wire this for you, behind a "this grants a host shell — proceed?" confirm. It:
 
-- adds Hermes's `terminal` toolset to your channel, and
+- adds Hermes's command-back toolsets to your channel's bundle in `~/.hermes/config.yaml` — `terminal`, `code_execution`, `file`, `web` (plus `cronjob` when the bundle already exists), not `terminal` alone, and
 - sets `<CHANNEL>_ALLOWED_USERS` to your id, so only you can command the bot.
 
 Once on, you message the bot in plain language and it runs commands on the host:
@@ -47,7 +47,7 @@ Once on, you message the bot in plain language and it runs commands on the host:
 > "ace loop status" · "tail the loop log" · "restart the myapp loop" · "git -C ~/proj log --oneline -5"
 
 > [!WARNING]
-> The `terminal` toolset is a full host shell. The allowlist is your only guard — keep it locked to your id, and keep the gateway's `GATEWAY_ALLOW_ALL_USERS` off (default). Name the project in your message: the bot's shell starts in `~/.hermes`, so "the myapp loop" tells it where to `cd`.
+> The `terminal` toolset is a full host shell, and `code_execution` / `file` widen that further. The allowlist is your only guard — keep it locked to your id, and keep the gateway's `GATEWAY_ALLOW_ALL_USERS` off (default). Name the project in your message: the bot's shell starts in `~/.hermes`, so "the myapp loop" tells it where to `cd`.
 
 ## Run the loop as a service
 
@@ -60,10 +60,14 @@ ace loop stop       # SIGTERM → clean-shutdown trap (no orphans)
 ace loop update     # git pull ACE + the project, then `ace loop restart` to apply
 ```
 
+`ace loop update` refuses to touch the project when its tree is dirty — it warns and updates only ACE, so commit or stash first if you want the project moved too.
+
 A systemd user service survives terminal-close and sleep, so a chat command can start or stop it cleanly. Bare `ace loop` (no subcommand) stays the interactive launcher; the run-config lives in `<project>/.opencode/loop.env`.
 
 > [!IMPORTANT]
-> The service inherits none of your shell env, so `ace loop start` captures the launch-time policy into `loop.env`. Set knobs on the command itself (`HERMES_KANBAN=1 MERGE_APPROVAL=hermes HERMES_TO=signal:+1… ace loop start`), or edit `loop.env` and `ace loop restart`.
+> The service inherits none of your shell env, so `ace loop start` captures the launch-time policy into `loop.env` — but **only on the first start, when `loop.env` does not yet exist**. Once the file is there, later `ace loop start` / `restart` calls read it and ignore your shell env entirely, so `HERMES_KANBAN=1 MERGE_APPROVAL=hermes … ace loop start` silently has no effect on an already-configured project. To change policy after the first start, edit `<project>/.opencode/loop.env` (or delete it to have the next `ace loop start` re-capture) and then `ace loop restart`.
+>
+> The keys it captures are `AUTOMERGE`, `LOCAL_CI_FALLBACK`, `MAX_FEATURES`, `DEPLOY`, `VERIFY`, `HERMES_NOTIFY`, `HERMES_TO`, `HERMES_KANBAN`, `HERMES_SNAP`, `MERGE_APPROVAL`, `APPROVAL_TIMEOUT` (plus `HERMES_SUBJECT` / `SELF_IMPROVE` when set). Anything else — `DEPLOY_GATE`, `STOP_ON_DEPLOY_FAIL`, `LAUNCH_GATE` — is not captured and must come from global ACE config.
 
 ### Watch it live — `ace loop dash`
 
@@ -73,9 +77,12 @@ A full-screen truecolor dashboard: the ACE wordmark, a status bar (`cycle · ci 
 |---|---|
 | `q` | quit the view |
 | `p` | pause / resume the view |
-| `x` | kill the loop and its opencode subtree, then quit |
+| `x` | kill the loop and its opencode subtree, then quit — asks for a `y` to confirm first |
 
 `ace loop dash --demo` plays a scripted cycle so you can see it without a live loop.
+
+> [!NOTE]
+> `ace loop dash` (and bare `ace dash`) auto-detects the flow: if a swarm is live it opens the swarm cockpit instead of the solo view described here. See [swarm.md](swarm.md).
 
 > [!NOTE]
 > The grid lights the agents the loop can observe — orchestrator · implementer · verifier · conflict. The critics run inside opencode's own session, so they show their collective phase, not individually.
@@ -135,7 +142,9 @@ hermes cron create 'every 30m' --name ace-loop-digest --no-agent \
   --script ace-loop-digest.sh --deliver signal:+15551234567
 ```
 
-Manage it: `hermes cron list` · `pause` · `resume` · `remove`. Cron requires `cron_mode: allow` in `~/.hermes/config.yaml`. `ace hermes` can register this digest for you.
+Manage it: `hermes cron list` · `pause` · `resume` · `remove`. Cron requires `cron_mode: allow` in `~/.hermes/config.yaml` — a Hermes-side setting ACE neither writes nor checks.
+
+`ace hermes` offers to register this digest for you, but it does **not** write the script: it only prompts when `~/.hermes/scripts/ace-loop-digest.sh` already exists. Create the script above first, then re-run `ace hermes`.
 
 To schedule a recurring **autorun** (not just a status digest), `ace schedule` is the shortcut — it registers a Hermes cron that (re)starts this repo's loop on your channel:
 
@@ -167,6 +176,8 @@ Command-back exposes a host shell over chat. Three controls stand between it and
 | Per-channel allowlist | `<CHANNEL>_ALLOWED_USERS=<your id>` | only your id can command the bot |
 | Gateway-wide allow-all | `GATEWAY_ALLOW_ALL_USERS=false` (default) | strangers are denied |
 | Cron gate | `cron_mode: allow` \| `deny` | enables or forbids scheduled/autonomous actions |
+
+Only the first row is something ACE touches — `ace hermes` writes `<CHANNEL>_ALLOWED_USERS`. `GATEWAY_ALLOW_ALL_USERS` and `cron_mode` are Hermes-side settings that ACE never reads, writes, or verifies: they protect you only because of Hermes's defaults, so confirm them yourself in `~/.hermes`.
 
 > [!WARNING]
 > With command-back on, the allowlist is mandatory — it is the only thing between a host shell and anyone who can message the bot. `ace hermes` sets `<CHANNEL>_ALLOWED_USERS` to your id; verify with `ace hermes` or your Hermes config.

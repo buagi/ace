@@ -52,12 +52,12 @@ The generator is a per-project script, **`scripts/atlas-refresh.sh`**, that ACE 
 1. **Find the workspaces** — `git ls-files 'package.json' '**/package.json'` (tracked manifests only; `node_modules` excluded).
 2. **Build the dependency graph** — for each `package.json`, read its name and its **internal** dependencies (workspace `@scope/*` packages), producing a name → deps map.
 3. **Render the three views** — one pass turns that graph into the System map (subgraph per layer + internal edges), the Data flow (layer aggregation + direction), and the Module map (the table).
-4. **Fallback** — a repo that isn't a JS/TS workspace falls back to mapping its **source directories** (`.ts/.py/.go/.rs/.java/…`) instead, so you still get a map.
+4. **Fallback** — a repo that isn't a JS/TS workspace falls back to mapping its **source directories** (`.ts/.py/.go/.rs/.java/…`) instead, so you still get a map. Be aware the fallback only fills the **System map** honestly: the Data flow degrades to a single `sources → <repo>` node and the Module map to a placeholder row. Only a pnpm/`workspaces` monorepo gets all three views populated.
 
-Because it's derived from `git ls-files`, only **committed** files appear — the map reflects what's actually in the repo, not scratch work.
+Because it's derived from `git ls-files`, only **tracked** files appear (committed, or staged as new) — the map reflects what's actually in the repo, not scratch work.
 
 > [!WARNING]
-> **`ATLAS_NARRATIVE` is currently unsupported.** It was designed to let one read-only agent pass fill the **Role** column of the Module map with a grounded phrase per module, but the agent it asks for (`ATLAS_AGENT`, default `cartographer`) is **not in the shipped 12-agent crew** — so setting `ATLAS_NARRATIVE=1` silently does nothing and you get the deterministic skeleton either way. It becomes usable only if you define a `cartographer` agent yourself in `~/.config/opencode/opencode.json`, or point `ATLAS_AGENT` at an agent that does exist.
+> **`ATLAS_NARRATIVE` is currently unsupported.** It was designed to let one read-only agent pass fill the **Role** column of the Module map with a grounded phrase per module, but the agent it asks for (`ATLAS_AGENT`, default `cartographer`) is **not in the shipped 12-agent crew** — so setting `ATLAS_NARRATIVE=1` silently does nothing and you get the deterministic skeleton either way (the generator still *attempts* the call and discards the failure, so it can cost up to the 300s turn timeout before falling back). It becomes usable only if you define a `cartographer` agent yourself in `~/.config/opencode/opencode.json`, or point `ATLAS_AGENT` at an agent that does exist.
 
 ---
 
@@ -74,7 +74,7 @@ Because it's derived from `git ls-files`, only **committed** files appear — th
 
 ## Config knobs
 
-Set in the environment or in `~/.config/ace/config` (extensionless — that is the only config file ACE reads or writes).
+Set in the environment or in `~/.config/ace/config` (extensionless — that is the only config file ACE reads or writes; the path honours `XDG_CONFIG_HOME`, so it is really `${XDG_CONFIG_HOME:-$HOME/.config}/ace/config` — `lib/core.sh:4-6`).
 
 | Var | Default | What it does |
 |-----|---------|--------------|

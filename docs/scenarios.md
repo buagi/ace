@@ -22,6 +22,9 @@ Concrete command sequences for the jobs you'll actually run. Run `ace` from insi
 4. Write your goals: `cd <project> && $EDITOR OBJECTIVES.md`
 5. Start the hands-off loop: `ace autorun`
 
+> [!NOTE]
+> `ace autorun` stops after **`MAX_FEATURES` features, which defaults to 3** (`lib/autoloop.sh:29`) — it is hands-off, not open-ended. Set `MAX_FEATURES=0` for unlimited, as scenario 5 does. The cross-model debate gates (`SPEC_DEBATE` / `REVIEW_DEBATE`) are **off unless you set them to 1**; see [trial-runs.md](trial-runs.md).
+
 ## 2. New Go service → ship a container and hardened binaries
 
 1. Scaffold and choose Go — the wizard captures architecture, delivery, and hardening: `ace scaffold`
@@ -37,6 +40,9 @@ See [go-stack.md](go-stack.md) for the Go toolchain and release details.
 1. `cd my-repo`
 2. Backfill the machinery — additive; never touches `src/`, history, or your VPS: `ace upgrade`
 3. Set goals and start: `$EDITOR OBJECTIVES.md && ace autorun`
+
+> [!IMPORTANT]
+> Being additive cuts both ways: if the repo already has `.git/hooks/pre-commit` or a custom `core.hooksPath`, `ace upgrade` writes `.githooks/` but **leaves your hooks active** and only prints how to switch (`lib/scaffold.sh:3506-3527`). Until you run `git config core.hooksPath .githooks`, commits and pushes are not going through `ci.sh`. Check with `git config --get core.hooksPath`.
 
 ## 4. Choose the overseer brain (cost vs quality)
 

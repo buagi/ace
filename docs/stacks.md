@@ -19,7 +19,7 @@ Every stack gets the same baseline, regardless of language:
 
 | Piece | What it is |
 |-------|-----------|
-| Git hooks | pre-commit (fast `ci.sh`) and pre-push (`--container`) |
+| Git hooks | pre-commit (fast `ci.sh`, blocks on RED) and pre-push (`ci.sh --container`, which blocks on RED but **allows** the push if it exceeds its time budget, deferring to CI) |
 | `.opencode/` context | profile, standards, agents, memory |
 | Autorun loop | the build/gate/merge/deploy loop |
 | Tiered `ci.sh` | fast host gate + `--container` parity |
@@ -30,9 +30,12 @@ The workflow's **codemap** job is identical across stacks — it is emitted once
 > [!NOTE]
 > The **deploy** job is emitted only for a service (`deploy_kind=service`, the Node/Python default). Config-only projects, `container:false` projects, and `deploy=none` projects get no deploy job.
 
+> [!WARNING]
+> `gen_ci_workflow` currently hard-codes which stacks may deploy: outside Go, only `node` and `python` can reach `deploy_kind=service` — any other stack is forced to `none` regardless of its `STACK_DEPLOY` entry. A newly registered stack therefore gets no CI deploy job until that list is widened.
+
 ## The stack registry
 
-Near the top of `scaffold_project` in `lib/scaffold.sh`:
+At the top of `lib/scaffold.sh`, above `scaffold_project`:
 
 ```bash
 STACK_ORDER="node python config go"                       # menu order
@@ -46,7 +49,7 @@ Everything keys on the stack **name** (`node`/`python`/`go`/…), never a menu n
 
 ## How to add a new stack
 
-Adding a stack (say, Rust) touches four places, all small.
+Adding a stack (say, Rust) touches four places, all small. `ace stack` lists what is registered today, and `ace stack add rust` prints the four snippets to paste — the steps below are the same four.
 
 ### 1. Register it
 
@@ -67,9 +70,9 @@ Mirror `gen_node`/`gen_go`. Emit:
 - a tiered `ci.sh` — fast host gate plus `--container` parity, including the no-stubs depth gate for `.rs`;
 - a call to `gen_project_agents "$name" "<one-line stack description>"`.
 
-### 3. Add a CI case in `gen_ci_workflow`
+### 3. Add a CI case — two `case` arms
 
-One `case` arm emits the per-stack **build-test** and **security** jobs — for Rust, `cargo build/test/clippy` plus `cargo audit`.
+The per-stack **build-test** and **security** jobs are emitted by a `case` arm in `_ci_build_security_jobs` — for Rust, `cargo build/test/clippy` plus `cargo audit`. A second arm in `gen_ci_workflow` sets that stack's `install` / `build` / `test` / `typecheck` commands and its health path; without it the stack falls through to the `echo skip` default.
 
 The shared jobs come from helpers you do not touch:
 

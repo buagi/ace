@@ -40,7 +40,7 @@ ACE and Hermes own different things, and this split is where setup trips people 
 | You want to… | Owned by | Where / how |
 |---|---|---|
 | Bind the bot to a channel + authorize who may use it (token, channel **id**, allowed users) | Hermes | `~/.hermes/.env` via `hermes gateway`, then restart the gateway |
-| Enable command-back (the bot runs `ace …` on the host) for a platform | Hermes | per-platform toolset in `~/.hermes/config.yaml` (`ace hermes` offers it); gated by `approvals: mode: manual` |
+| Enable command-back (the bot runs `ace …` on the host) for a platform | Hermes | per-platform toolsets in `~/.hermes/config.yaml` (`ace hermes` offers it) — see the gating caveat under [Security model](#security-model) |
 | Choose **where** ACE sends notifications | ACE | `HERMES_TO` (a single target string) — set via `ace hermes` |
 | Turn notifications on for a run | ACE | `HERMES_NOTIFY=1 ace autorun --yes` |
 | Ask before merge from chat | ACE | `MERGE_APPROVAL=hermes` (+ `ace approve`) |
@@ -78,7 +78,7 @@ Verify each side separately:
 - `hermes gateway` or a test `hermes send` confirms the Hermes-side channel.
 
 > [!NOTE]
-> Command-back is per-platform. Enabling it adds the `terminal` toolset to that platform's bundle in `config.yaml`, so a platform without it can receive notifications and chat but cannot execute `ace`. A common split: command-back on Signal, notifications to Telegram. Either way, execution is gated by `approvals: mode: manual`.
+> Command-back is per-platform. Enabling it adds the `terminal`, `code_execution`, `file` and `web` toolsets to that platform's bundle in `config.yaml` (plus `cronjob` when the bundle already exists), so a platform without them can receive notifications and chat but cannot execute `ace`. A common split: command-back on Signal, notifications to Telegram. Note that ACE adds no per-command approval prompt of its own — see [Security model](#security-model) for what is and is not gated.
 
 ## Command surface
 
@@ -102,10 +102,11 @@ The autorun loop texts you curated milestones via `hermes send`:
 |---|---|
 | started | an autorun begins |
 | merged | a PR lands on `main` |
-| deployed | a merged `main` reaches the VPS |
+| deploying | a deploy of merged `main` **starts** — it is not a success signal; there is no ping for a deploy that completed healthily, only for one that failed (see `blocked`) |
 | CI-red | CI fails and the loop starts auto-fixing |
 | rathole | the loop stops after exhausted fix-retries |
 | blocked | a deploy/health-check fails or a provider limit halts the run |
+| review | a PR is green and ready but `AUTOMERGE=0`, so the loop stops instead of merging |
 | stopped | the loop ends |
 
 Opt in per run:
@@ -174,14 +175,14 @@ ace schedule '0 9 * * 1-5'     # weekday 9am: (re)start this repo's loop, delive
 ace schedule 'every 6h'        # manage via: hermes cron list · remove ace-autorun-<slug>
 ```
 
-`ace hermes` also offers a periodic digest — a Hermes cron posting `ace loop status` every N minutes, silent when idle (no spam). See [remote-control.md](remote-control.md).
+`ace hermes` also offers a periodic digest — a Hermes cron posting `ace loop status` every N minutes, silent when idle (no spam). It only offers this when you have already written `~/.hermes/scripts/ace-loop-digest.sh` yourself; ACE does not create the script. See [remote-control.md](remote-control.md).
 
 ## Kanban mirror — `HERMES_KANBAN=1`
 
 One-way and ACE-authoritative: the loop mirrors `ROADMAP.md` onto a Hermes kanban board (`- [ ]` → card, `- [x]` → done) after planning and each merge, for chat-visible progress. It is best-effort and idempotent by content hash.
 
 > [!IMPORTANT]
-> ACE stays the executor — do not also run Hermes `kanban swarm` on the same repo. Set the knob on the launch command (`HERMES_KANBAN=1 ace autorun --yes`); for the detached service, `ace loop start` persists it into `.opencode/loop.env`.
+> ACE stays the executor — do not also run Hermes `kanban swarm` on the same repo. Set the knob on the launch command (`HERMES_KANBAN=1 ace autorun --yes`); for the detached service, `ace loop start` persists it into `.opencode/loop.env` — but only on the *first* start, when that file does not yet exist. On a project that already has a `loop.env`, prefixing the knob does nothing; edit the file and `ace loop restart`. See [remote-control.md](remote-control.md).
 
 ## Brain bridge — `ace brain`
 
@@ -199,14 +200,16 @@ The Hermes `ace` skill (`~/.hermes/skills/autonomous-ai-agents/ace/`) turns the 
 - assembles the exact `ace … --flags` line, confirms, then runs it headless;
 - never auto-sets-up — every gate is your choice.
 
-The companion `ace-workflow` skill is the operational playbook (headless flags, Go pre-flight, host lessons). Both are plain skill files under `~/.hermes/skills/` — edit to taste. ACE re-syncs the `ace` skill to the installed CLI version on every install, update, and `ace hermes`, so it cannot drift.
+ACE re-syncs this `ace` skill from its own source (`lib/hermes-ace-skill.md`), stamped with the installed CLI version, on `ace install`, `ace update`, and `ace hermes` — so it cannot drift. The flip side: **do not hand-edit it.** The next sync overwrites your copy (it is backed up once to `SKILL.md.acebak.<epoch>` first). Cloned Hermes profiles under `~/.hermes/profiles/*/skills/` are refreshed the same way. With no `hermes` on `PATH` the sync is a silent no-op.
+
+A companion `ace-workflow` skill is sometimes referenced as the operational playbook, but ACE does **not** ship, generate, or sync it — nothing by that name exists in this repo. If you have one, it is hand-maintained on the Hermes side and ACE will never update it.
 
 ## Security model
 
 Command-back gives the bot a host shell, so the allowlist that locks it to you is mandatory.
 
 > [!WARNING]
-> `ace hermes` sets the allowlist up and keeps `GATEWAY_ALLOW_ALL_USERS` off (the default). Scheduled and cron actions require `cron_mode: allow` in `~/.hermes/config.yaml`. Exactly three `ace` steps are `--confirm`-gated headlessly — **`ace deploy`, `ace vps harden`, and `ace uninstall`**. Everything else runs ungated from chat.
+> `ace hermes` sets the per-channel allowlist (`<CHANNEL>_ALLOWED_USERS`) — that is the one control ACE actually writes. `GATEWAY_ALLOW_ALL_USERS` and `cron_mode: allow` are Hermes-side settings ACE never reads, writes, or verifies; they protect you only via Hermes's defaults, so check them yourself. Exactly three `ace` steps are `--confirm`-gated headlessly — **`ace deploy`, `ace vps harden`, and `ace uninstall`**. Everything else runs ungated from chat: there is no per-command approval layer on the ACE side.
 
 > [!CAUTION]
 > **Publishing is NOT confirm-gated.** `ace publish` (and `ace scaffold --publish`) runs `gh repo create --push` with no confirmation prompt, headless or not — so a chat message that reaches it creates a GitHub repository and pushes your code to it immediately. The bot's user allowlist is the only thing standing between a message and a published repo. Keep the allowlist tight, and don't leave a chat session authorized on a host holding code you can't publish.
@@ -236,7 +239,7 @@ Nothing breaks.
 | `APPROVAL_TIMEOUT=3600` | seconds to wait for a chat approval before treating it as denied |
 
 > [!NOTE]
-> `ace loop start` captures the launch-time env (channel, opt-ins, approval mode) into `.opencode/loop.env`, because a systemd service inherits none of your shell env. See [configuration.md](configuration.md).
+> `ace loop start` captures the launch-time env (channel, opt-ins, approval mode) into `.opencode/loop.env`, because a systemd service inherits none of your shell env — but it writes that file only when it does not already exist. Later runs read it and ignore your shell env. See [remote-control.md](remote-control.md) and [configuration.md](configuration.md).
 
 ## See also
 

@@ -7,9 +7,10 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | preview: log what each step would do, change nothing |
-| `--watch` | live-refresh mode (`ace graph`, `ace loop dash`) |
+| `--watch` | live-refresh mode — **`ace graph` only**. The dashboards already refresh live and ignore it; `ace watch` is a *command* (an alias of `ace dash`), not this flag |
 | `--yes` / `-y` | assume-yes; auto-answer proceed-prompts with their safe default (headless) |
 | `--confirm` | unlock a gated destructive op when non-interactive |
+| `--json` | machine-readable output where a command supports it (`ace scorecard` · `ace reanalyze report`) |
 | `--version` / `-V` | print the version |
 | `--help` / `-h` | print usage |
 
@@ -32,6 +33,7 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | `ace git` | git identity + `gh` login + credential helper |
 | `ace status` / `doctor` | health check (tools · keys · `gh` · VPS · profile) ending in a **Readiness report** — a plain-language "✓ ready now / ⚠ needs setup (with the fix) / ◦ optional" summary + a single READY/NOT-READY verdict. Also printed at the end of `ace install`. |
 | `ace logs` | tail the latest run/install log (`~/.config/ace/logs/`). |
+| `ace firecrawl up\|down\|status` | ACE-managed **local** research crawler (self-hosted Firecrawl container, loopback-only, no cloud key). Optional — with it down, research falls back to `webfetch`. **`up` must precede `ace opencode`**: the MCP is enabled/disabled by a reachability probe at config-generation time, so starting the crawler afterwards leaves the MCP off for the whole run |
 | `ace arch` | print the architecture overview and what-lives-where |
 | `ace demo` | paced, **zero-credit** feature walkthrough for recording (`DEMO_AUTO=1` hands-free; see [demo/RECORDING.md](demo/RECORDING.md)) |
 | `ace update` | update host tooling (`opencode` · `bun` · node · `uv`) |
@@ -92,7 +94,12 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 | `ace debate trend` | effectiveness **over time** + a conclusion (IMPROVING / REGRESSING / FLAT) from the history log. |
 | `ace debate diagnose` | **manual improvement**: the false positives + false negatives from the last score, with transcripts + tuning hints. |
 | `ace debate autotune <KNOB=value> [--stub]` | **automatic improvement** (opt-in): A/B a config knob on the sandbox, keep it only if F1↑ and cost not↑. `--stub` runs the A/B offline as a plumbing check (no credits, not a measurement). `ace debate autotune --propose-prompt` suggests a debater-prompt change for a human PR (never auto-applied). |
-| `ace debate testproject [dir]` | materialize the labeled sandbox into a runnable throwaway project (watch the debate fire in a real autorun). |
+| `ace debate testproject [dir]` / `selftest` | materialize the labeled sandbox into a runnable throwaway project (watch the debate fire in a real autorun) · `selftest` = offline engine check (no credits). |
+
+> [!IMPORTANT]
+> **Inside the loop the debate is OFF by default.** `SPEC_DEBATE` and `REVIEW_DEBATE` both default to `0`, so a plain `ace autorun` / `ace swarm start` runs no debate at all — set them to `1` (env, or Settings → Cross-model debate) to enable it. `ace reanalyze` is the one exception: it turns `SPEC_DEBATE` on for its own plan-only pass.
+>
+> It is **fail-open**, not fail-closed: with `DEBATE_MODEL_B` unset the debate is *skipped with a warning* and the run continues — a green run is therefore not evidence that a debate happened. `DEBATE_MODEL_B` needs a provider prefix (`openrouter/vendor/model`) plus `OPENROUTER_API_KEY`.
 
 > [!NOTE]
 > `ace stats` (token/cost telemetry) is distinct from `ace loop stats` (per-run timing post-mortem, listed under [Remote control](#remote-control)).
@@ -103,10 +110,13 @@ Parallel loops: N path-disjoint workers, each self-merging. See [swarm.md](swarm
 
 | Command | Does |
 |---------|------|
-| `ace swarm start\|stop` | start/stop the parallel workers |
-| `ace swarm dash\|split` | live cockpit (per-worker pipeline + agents + feed + event bus); `split` = tmux columns |
+| `ace swarm start [fg]\|stop` | start/stop the parallel workers — `start` detaches and drops into the cockpit; `start fg` runs the coordinator in the foreground |
+| `ace swarm dash\|watch\|split` | live cockpit (per-worker pipeline + agents + feed + event bus); `split` = tmux columns |
 | `ace swarm pause\|resume\|drain\|kill wN` | control workers — `drain` = finish current work, then stop |
-| `ace swarm sandbox\|selftest\|policy\|wire` | free DRY demo · coordination tests · conflict-policy table · per-project wiring |
+| `ace swarm status\|stats\|tail\|logs` | read-only: worker state · per-run stats · tail the swarm log (`tail [n]`, default 40) |
+| `ace swarm preflight` | preview the DECISION·SETUP·STATE table shown before a live start — no run |
+| `ace swarm spec-lint [dir]` | run the deterministic spec-lint over `.opencode/specs/` (default) or a given dir |
+| `ace swarm sandbox\|selftest\|policy\|policy-selftest\|wire` | free DRY demo · coordination tests · conflict-policy table · policy tests · per-project wiring (`wire check\|apply`) |
 
 ## Remote control
 

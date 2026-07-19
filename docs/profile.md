@@ -2,14 +2,16 @@
 
 The editable source of truth that captures what a project is and how it ships. The autorun loop and agents read it to ground their work.
 
-Scaffolding a code project (Node, Python, or Go) — or running `ace profile` in any repo — opens an architecture-decision wizard that writes two files:
+Scaffolding a code project (Node, Python, or Go) — or running `ace profile` in any repo — opens an architecture-decision wizard whose two output files are:
 
 | File | Role |
 |------|------|
 | `.opencode/profile.yaml` | structured, machine-read by the loop and agents |
 | `ARCHITECTURE.md` | the human-readable prose face, regenerated from the profile |
 
-Edit either by hand, or re-run `ace profile` to update them. A re-run reads the existing values as defaults (pre-filled) and bumps `updated:`.
+It also seeds `OBJECTIVES.md` and points `AGENTS.md` at the profile on the same pass.
+
+Edit either by hand, or re-run `ace profile` to update them. A re-run reads the existing values as defaults (pre-filled), preserves `created:`, and bumps `updated:`.
 
 > [!NOTE]
 > The Config stack skips the wizard — config-only projects are not loop targets. They keep flag- and default-driven values.
@@ -43,7 +45,7 @@ Hardening and build targets come last because they are suggested from earlier an
 ```yaml
 schema: 1
 name: <slug>
-language: go            # go | node | python  (detected on a standalone `ace profile`)
+language: go            # go | node | python | config  (detected on a standalone `ace profile`)
 # --- architecture ---
 shape: api              # api | cli | cli-web | worker | library
 domain: "<one-line description>"
@@ -83,7 +85,7 @@ The loop reads these as **defaults**; the matching env var still overrides per r
 | `auto_merge: false` | loop opens ONE PR and stops for review (does not keep building) | `AUTOMERGE=0` |
 | `ci_cd: none` | skip the GitHub Actions workflow; forces `merge_gate` off remote → `local` | — |
 | `git: false` | skip git setup entirely | — |
-| `gitflow: false` | drop the gitflow guards, but **still activate the local `./ci.sh` gate** via `core.hooksPath` | — |
+| `gitflow: false` | at **scaffold** time: drop the gitflow guards, but still activate the local `./ci.sh` gate via `core.hooksPath` (`lib/scaffold.sh:164`). On `ace upgrade` (adopting an existing repo) activation is conditional — it is skipped, with a warning, if the repo has no `ci.sh` or already has its own `.git/hooks/pre-commit` (`lib/scaffold.sh:3510-3520`) | — |
 
 > [!NOTE]
 > `merge_gate: local` generalizes the loop's existing "local gate vouches when remote CI is blocked" path: the local VPS-parity container build becomes the merge authority by policy. The default stays `remote` so existing repos don't change behavior.

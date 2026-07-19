@@ -996,7 +996,7 @@ Don't default to "a couple of asserts". Choose the test TYPE per what the code i
 | Critical user flow | One end-to-end test, sparingly |
 
 - REUSE, don't re-roll setup: shared helpers live in the test-support module (Go: internal/testutil · Node: tests/ · Python: tests/conftest.py) — fake clock, factories/builders, fixtures, golden/ data. Extend them; never copy setup between tests.
-- Coverage is a SIGNAL, not a target: ci.sh reports coverage of the changed code — close obvious gaps, never write tests just to move a %. Mutation-test high-stakes packages when unsure a suite is strong.
+- Coverage is a SIGNAL, not a target: where the stack reports it at all, ci.sh reports WHOLE-PROJECT coverage, never a changed-code number (Go: always · Node: only under COVERAGE=1 · Python: only if pytest-cov is installed). Do not read that total as a verdict on your diff — judge your change by whether its happy, error and edge paths are exercised. Close obvious gaps, never write tests just to move a %. Mutation-test high-stakes packages when unsure a suite is strong.
 - Tests ship in the SAME commit/PR as the code they cover — never a test-only PR. On high-risk / logic-dense changes the loop adds an INDEPENDENT adversarial test_engineer pass.
 
 ## Decisions

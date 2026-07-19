@@ -61,7 +61,7 @@ See [autorun.md](autorun.md) for what the loop does each lap.
 | `gpt` | OpenAI GPT-5 | — | OpenAI |
 | `deepseek` | DeepSeek V4 | running without any subscription | none |
 
-ACE ships **12 agents** — the orchestrator plus 11 subagents. The subagents *default* to DeepSeek V4, but they are not locked there: `ace keys` is just the quick path to the overseer, and any of the 11 configurable agents can be pointed at another provider with `MODEL_<agent>=<provider>/<model>` in `ace settings` (the 12th, `debater`, is model-pinned via `DEBATE_MODEL_A`/`_B`). See [agents.md](agents.md).
+ACE ships **12 agents** — the orchestrator plus 11 subagents. The subagents *default* to DeepSeek V4, but they are not locked there: `ace keys` is just the quick path to the overseer, and any of the 11 configurable agents can be pointed at another provider with `MODEL_<agent>=<provider>/<model>` in `ace settings` (the 12th, `debater`, is not in that list — it is model-pinned via `DEBATE_MODEL_A`/`_B`, and the cross-model debate it runs is **off by default**: `SPEC_DEBATE`/`REVIEW_DEBATE` both default to `0`). See [agents.md](agents.md).
 
 - The default (`opus`) and the other Claude/OpenAI brains need `opencode auth login` (Anthropic or OpenAI). Use **oauth** to bill your subscription, or supply an API key — then run `ace opencode`.
 - Pick `deepseek` to run without any subscription.
@@ -76,7 +76,7 @@ ACE ships **12 agents** — the orchestrator plus 11 subagents. The subagents *d
 | `bash` · `git` · `curl` | everything else is installed user-local by `ace install` |
 | Container engine | podman or docker, for the `./ci.sh --container` parity gate |
 | DeepSeek API key | required (Context7 key optional) |
-| Claude Pro/Max | required unless you select the `deepseek` brain (default overseer is Claude Opus) |
+| Claude Pro/Max | required for the default overseer (Claude Opus) and for `sonnet`. Not needed if you select `gpt` (needs OpenAI instead) or `deepseek` (needs nothing beyond the DeepSeek key) |
 
 Tested on Fedora Silverblue/Kinoite and Arch.
 

@@ -455,6 +455,9 @@ spec_gate_solo(){
   # 2) optional quality layer on the (now lint-GREEN) specs — both default OFF, fail-open. SPEC_DEBATE (cross-model
   # dialogue) subsumes the single-shot SPEC_RUBRIC — when both are on, the debate wins. Solo parity with the coordinator.
   local extra=""
+  # C1: a check that did NOT run must say so. SPEC_DEBATE defaults to 0, so the common case was a silent
+  # branch -- a full run would complete green having debated nothing, with no line anywhere admitting it.
+  [ "${SPEC_DEBATE:-0}" = 1 ] || say "spec-debate: DISABLED (SPEC_DEBATE=0) — specs are NOT being cross-model debated."
   if [ "${SPEC_DEBATE:-0}" = 1 ]; then
     local _dsh deb; _dsh="$(dirname "$_SWARM_SH")/debate.sh"
     say "spec-debate: cross-model dialogue on the lint-green HIGH-risk spec(s) — each turn can take minutes; per-turn progress follows."
@@ -1207,6 +1210,7 @@ merge_if_ready(){
   # lock so a multi-minute debate never stalls sibling workers. Agreed [blocker]/[major] findings HOLD the merge
   # for a fix (surfaced + on the bus); [minor] and any failure are advisory. FAIL-OPEN (no key / dead debate /
   # no engine ⇒ proceed). Skipped for ACE's own plan/fix branches (chore/*) — those aren't features to critique.
+  [ "${REVIEW_DEBATE:-0}" = 1 ] || say "review-debate: DISABLED (REVIEW_DEBATE=0) — this diff gets NO cross-model adversarial review."
   if [ "${REVIEW_DEBATE:-0}" = 1 ] && [ -f "${_SWARM_SH%swarm.sh}debate.sh" ]; then
     case "$(branch)" in chore/*|main|master) : ;; *)
       local _rev _blk

@@ -12,7 +12,7 @@
 | `cmd/<name>/main.go` | a `net/http` service: `GET /healthz` (200) + `GET /`. Reads `PORT` (default 3000) so the existing VPS deploy + healthcheck work unchanged. |
 | `internal/server/` | handler + `httptest` test |
 | `Containerfile` | multi-stage: `golang` build (`CGO_ENABLED=0 -trimpath -ldflags '-s -w'`) → `test` stage (`go vet && go test`) → final `gcr.io/distroless/static:nonroot` (tiny, runs everywhere) |
-| `ci.sh` | tiered: fast host gate (`gofmt -l` · `go vet` · `staticcheck` · `go build` · `go test -race` + env-integrity + no-stubs), and `./ci.sh --container` for VPS parity via `podman --target test` |
+| `ci.sh` | tiered: fast host gate (`gofmt -l` · `go vet` · `staticcheck` · `go build` · `go test` + env-integrity + no-stubs), and `./ci.sh --container` for VPS parity via `podman --target test`. Two caveats: `staticcheck` is skipped (not failed) when it isn't on `PATH`, and `-race` is used only when a C compiler is present — otherwise tests run without the race detector |
 | `opencode.json` | project-scoped, adds the gopls MCP (below) |
 | `scripts/release.sh` | the hardened-binary path (below) |
 | `.opencode/profile.yaml` | the architecture profile — see [profile.md](profile.md) |
@@ -34,7 +34,7 @@ The wizard's **shape** drives the skeleton, the deploy kind, and the CI:
 - `artifact` ships binaries on a `v*` tag (no per-merge deploy);
 - `none` is a no-op.
 
-To actually ship an `artifact` release, cut a tag with `ace release --tag vX.Y.Z`. That pushes a `v*` tag, which is the trigger for the CI release job that builds and publishes the binaries. (`ace release` on its own only builds into `dist/` locally.)
+To actually ship an `artifact` release, cut a tag with `ace release --tag vX.Y.Z`. That pushes a `v*` tag, which is the trigger for the CI release job that builds and publishes the binaries. It refuses on a dirty working tree, a missing `origin`, an existing tag, or a name that doesn't start with `v`, and asks for confirmation before pushing. (`ace release` on its own only builds into `dist/` locally.)
 
 > [!NOTE]
 > The loop never auto-tags, so shipping a release is always an explicit step.
@@ -66,11 +66,11 @@ It exposes Go-native tools so the agents navigate and reason about Go with first
 
 ## Hardened release binaries
 
-`ace release` (an alias for `scripts/release.sh`) cross-compiles fully-static binaries for the targets and hardening recorded in the [profile](profile.md). It builds inside a pinned `golang` container by default (reproducible, no host Go needed); `--host` builds on the host.
+`ace release` (an alias for `scripts/release.sh`) cross-compiles fully-static binaries for the targets and hardening recorded in the [profile](profile.md). It builds inside a pinned `golang` container by default (reproducible, no host Go needed) — that path requires `podman` specifically and errors out pointing at `--host` if it's absent; `--host` builds on the host.
 
 ```bash
 ace release                 # container build, profile-driven
-ace release --host          # build on the host (needs Go + garble on PATH)
+ace release --host          # build on the host (needs Go on PATH; garble too for HARDENING=strong)
 HARDENING=strong TARGETS="linux/amd64 linux/arm64" UPX=1 ace release   # env overrides
 VERSION=v1.2.3 SIGN=minisign ace release                               # stamp + sign the checksums
 ```
@@ -84,6 +84,9 @@ Set in the profile, or override with `HARDENING=…`:
 | `none` | plain `go build` |
 | `standard` | `-trimpath -ldflags '-s -w -buildid='` — strips symbols, DWARF, paths, build-id |
 | `strong` | the above plus [garble](https://github.com/burrowers/garble) `-literals -tiny` — obfuscates identifiers + string literals |
+
+> [!IMPORTANT]
+> `strong` degrades rather than fails. If `garble` is missing and `go install mvdan.cc/garble@latest` doesn't land it, the build falls back to a plain stripped (`standard`-grade) binary, prints a WARN plus a closing NOTE, and still exits 0. Check the release output before treating a `strong` artifact as obfuscated. `UPX=1` degrades the same way when `upx` isn't installed.
 
 ### Env overrides
 
@@ -115,7 +118,7 @@ git tag v0.1.0 && git push --tags     # → CI builds + attaches hardened binari
 
 ## Toolchain
 
-Installed by `ace install`, all no-root under `~/.local`:
+Installed by `ace install`, all no-root: Go itself as a pinned, sha256-verified tarball into `~/.local/go`, `upx` into `~/.local/bin`, and the four `go install` tools into `~/go/bin`. The `go install` ones are best-effort — a failure is swallowed, so the gate skips or degrades rather than erroring (see the `ci.sh` and `strong` caveats above).
 
 | Tool | Role |
 |------|------|
