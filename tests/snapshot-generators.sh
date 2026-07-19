@@ -18,8 +18,14 @@ source "$ROOT/lib/ui.sh"; source "$ROOT/lib/core.sh" 2>/dev/null || true; source
 detect_distro >/dev/null 2>&1 || true
 # Determinism: plain image tags (no registry digest), fixed profile timestamps.
 pin_image() { printf '%s' "$1"; }
+# Hermetic: gen_node ends with `confirm "Run 'pnpm install' now"` (scaffold.sh:614) and confirm()
+# auto-answers the coded default Y when non-interactive — so snapshotting node used to perform a REAL
+# ~130MB network install on every run. Stub the BINARY rather than confirm(): the generator still takes
+# the identical branch (so the captured output is unchanged), it just no-ops instead of hitting the network.
+SNAPBIN="$(mktemp -d)"; printf '#!/bin/sh\nexit 0\n' > "$SNAPBIN/pnpm"; chmod +x "$SNAPBIN/pnpm"
+PATH="$SNAPBIN:$PATH"; export PATH
 
-WORK="$(mktemp -d)"; OUT="$(mktemp -d)"; trap 'rm -rf "$WORK" "$OUT"' EXIT
+WORK="$(mktemp -d)"; OUT="$(mktemp -d)"; trap 'rm -rf "$WORK" "$OUT" "$SNAPBIN"' EXIT
 norm() { sed -E 's/^(created|updated): .*/\1: <ts>/'; }   # strip non-deterministic timestamps
 
 capture() { # <label> <relpath-in-project>  -> $OUT/<label>
@@ -54,6 +60,23 @@ d="$WORK/go/app"; mkdir -p "$d"
     capture "go-$(printf '%s' "$rel" | tr '/' '_')" "$rel"
   done
 )
+
+# --- node + python skeletons ---
+# These were unsnapshotted for a long time, which is exactly how the generator bugs in the python ci.sh
+# (byte-compiling .venv, unquoted word-splitting) and the missing brownfield exclusions survived unnoticed:
+# only the Go arm above was ever diffed. ci.sh is the highest-churn/highest-risk emission of the three, so
+# it is captured alongside the Containerfile (base image + build steps) and .gitignore (loop transients).
+for s in node python; do
+  d="$WORK/skel-$s/app"; mkdir -p "$d"
+  ( cd "$d"
+    PROFILE_SHAPE=api; PROFILE_LANG="$s"   # real `ace scaffold --stack <s>` sets these; match it (this dir is empty)
+    write_profile app api "demo" internal low "mission" "reliability" "fail-closed" true github-actions true remote false standard "linux/amd64, linux/arm64" >/dev/null 2>&1
+    "gen_$s" app >/dev/null 2>&1
+    for rel in ci.sh Containerfile .gitignore; do
+      capture "$s-$(printf '%s' "$rel" | tr '/' '_')" "$rel"
+    done
+  )
+done
 
 # --- compare or update ---
 if [ "$UPDATE" = 1 ]; then

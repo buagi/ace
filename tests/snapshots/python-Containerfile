@@ -1,0 +1,13 @@
+FROM python:3.13-slim AS build
+WORKDIR /src
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+FROM build AS test
+RUN python -m pytest -q
+# --- runtime image (used only by 'ace deploy' for a service; the ./ci.sh gate builds --target test) ---
+FROM build AS final
+EXPOSE 8000
+# EDIT: your service's entrypoint. This scaffold is a library — point CMD at your app/server module,
+# e.g. CMD ["python", "-m", "myservice"]  or  CMD ["uvicorn", "myservice.app:app", "--host", "0.0.0.0"].
+CMD ["python", "-c", "raise SystemExit('set the CMD in the Containerfile final stage to run your service')"]

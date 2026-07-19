@@ -958,7 +958,9 @@ swarm_waittest() {
   local got; got="$(swarm_inbox w1 50 | grep -c waiting)"
   echo "[waittest] w2 wait -> $r after $((t1-t0))s  (expect ok, ~4s)"
   echo "[waittest] directed 'waiting' msg in w1 inbox: $got  (expect >=1)"
-  [ "$r" = ok ] && [ "$got" -ge 1 ] && echo "[waittest] PASS ✓" || echo "[waittest] FAIL ✗"
+  # Must RETURN non-zero on failure like every sibling selftest: `ace swarm selftest` aggregates
+  # exit codes, so merely PRINTING "FAIL ✗" here let a broken wait/notify path pass the whole gate.
+  [ "$r" = ok ] && [ "$got" -ge 1 ] && echo "[waittest] PASS ✓" || { echo "[waittest] FAIL ✗"; return 1; }
 }
 
 # coloured, worker-tagged bus tail: [ts] [wN] type: body — type & worker colour-coded.
