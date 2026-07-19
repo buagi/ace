@@ -224,10 +224,10 @@ classify_failure_mode(){
   # scan both logs for the MODE; at rc 0 we run ONE narrow exit-0 check on the run log with a STRONG signal.
   if [ "$rc" != 0 ]; then
     blob="$( { tail -c 20000 "$log" 2>/dev/null; tail -c 20000 "$ilog" 2>/dev/null; } )"
-    if printf '%s' "$blob" | grep -qiE 'timed out after 120000 ?ms|streamtext.*timeout|tool call timed out'; then mode="tool/bash-timeout (120s AI-SDK step ceiling)"; action="OVERSIZED inner step -> split (E1) / move the build out of the inner loop"
-    elif printf '%s' "$blob" | grep -qiE 'contextoverflow|context (window )?(exceeded|overflow)|compaction failed'; then mode="context-overflow / compaction"; action="OVERSIZED -> split (E1); check D2 compaction / limit.input"
-    elif printf '%s' "$blob" | grep -qiE 'steps? (cap|limit|budget) (hit|reached|exceeded)|max.?steps (cap|limit|hit|reached|exceeded)|force.?summariz'; then mode="steps-cap hit"; action="OVERSIZED -> split (E1) or raise the steps cap (E4)"
-    elif printf '%s' "$blob" | grep -qiE 'connection (closed|reset)|econnreset|provider .*(timeout|error)|deepseek .*(closed|timeout)|(status|code|http)[^0-9]{0,8}(429|50[234]|529)\b|too many requests|overloaded'; then mode="provider timeout/limit"; action="backoff + retry (fresh run, lossless via E2)"
+    if grep -qiE 'timed out after 120000 ?ms|streamtext.*timeout|tool call timed out' <<<"$blob"; then mode="tool/bash-timeout (120s AI-SDK step ceiling)"; action="OVERSIZED inner step -> split (E1) / move the build out of the inner loop"
+    elif grep -qiE 'contextoverflow|context (window )?(exceeded|overflow)|compaction failed' <<<"$blob"; then mode="context-overflow / compaction"; action="OVERSIZED -> split (E1); check D2 compaction / limit.input"
+    elif grep -qiE 'steps? (cap|limit|budget) (hit|reached|exceeded)|max.?steps (cap|limit|hit|reached|exceeded)|force.?summariz' <<<"$blob"; then mode="steps-cap hit"; action="OVERSIZED -> split (E1) or raise the steps cap (E4)"
+    elif grep -qiE 'connection (closed|reset)|econnreset|provider .*(timeout|error)|deepseek .*(closed|timeout)|(status|code|http)[^0-9]{0,8}(429|50[234]|529)\b|too many requests|overloaded' <<<"$blob"; then mode="provider timeout/limit"; action="backoff + retry (fresh run, lossless via E2)"
     elif [ "$rc" = 124 ] || [ "$rc" = 130 ]; then mode="outer wrapper timeout (kill)"; action="raise the wall budget or split (E1); checkpoint+resume (E2)"
     else return 1; fi
   elif printf '%s' "$(tail -c 20000 "$log" 2>/dev/null)" | grep -qiE '\b(fatal|panic|unhandled (exception|rejection)|segmentation fault)\b|traceback \(most recent call|^Error:|uncaughtexception'; then
@@ -446,7 +446,7 @@ spec_gate_solo(){
   # 1) deterministic gaps → bounded re-spec FIRST, so the quality layer below sees lint-CLEAN specs. (Freshly
   # re-derived specs — e.g. a REANALYZE pass — almost always start with a gap; debating BEFORE this step skipped
   # every one of them, so the debate never ran on its own output. Re-spec first fixes that.)
-  if printf '%s\n' "$slint" | grep -q '^SPECGAP'; then
+  if grep -q '^SPECGAP' <<<"$slint"; then
     say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') spec gap(s) — bounded re-spec before the quality gate."
     SPECLINT_REPORT="$(printf '%s\n' "$slint" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" sync_objectives
     specs="$(_solo_specs)"
@@ -459,7 +459,7 @@ spec_gate_solo(){
     local _dsh deb; _dsh="$(dirname "$_SWARM_SH")/debate.sh"
     say "spec-debate: cross-model dialogue on the lint-green HIGH-risk spec(s) — each turn can take minutes; per-turn progress follows."
     for sp in $specs; do
-      printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue   # still gappy after re-spec → skip
+      grep -q "^SPECGAP $(basename "$sp" .md) " <<<"$slint" && continue   # still gappy after re-spec → skip
       # stderr is NOT noise here: debate.sh puts its whole per-turn narration there (challenger/defender
       # thinking, reply size + seconds, per-round accepted/disputed counts) plus every FAIL-OPEN reason it
       # can return on ("DEBATE_MODEL_B unset — skipping", "challenger returned NOTHING"). Only the SPECGAP
@@ -471,18 +471,18 @@ spec_gate_solo(){
     done
   elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
     for sp in $specs; do
-      printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue
+      grep -q "^SPECGAP $(basename "$sp" .md) " <<<"$slint" && continue
       rub="$(REPO="$PWD" bash "$_SWARM_SH" spec-rubric "$sp" 2>/dev/null)" || true
       [ -n "$rub" ] && extra="$(printf '%s\n%s' "$extra" "$rub")"
     done
   fi
   # 3) debate/rubric-surfaced gaps (SPECGAP <slug> DEBATE:…) → one more bounded re-spec
-  if printf '%s\n' "$extra" | grep -q '^SPECGAP'; then
+  if grep -q '^SPECGAP' <<<"$extra"; then
     say "spec-$([ "${SPEC_DEBATE:-0}" = 1 ] && echo debate || echo rubric): $(printf '%s\n' "$extra" | grep -c '^SPECGAP') agreed gap(s) — one more re-spec before working the queue."
     SPECLINT_REPORT="$(printf '%s\n' "$extra" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")" sync_objectives
     slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $(_solo_specs) 2>/dev/null)"
   fi
-  printf '%s\n' "$slint" | grep -q '^SPECGAP' \
+  grep -q '^SPECGAP' <<<"$slint" \
     && say "spec-lint: $(printf '%s\n' "$slint" | grep -c '^SPECGAP') gap(s) remain — proceeding (fail-open)."
   return 0
 }

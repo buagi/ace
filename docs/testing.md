@@ -50,7 +50,26 @@ Two rules from it bind directly on this page:
 bash tests/agent-goldens.sh              # critic verdict schema + behavioural invariants + the researcher golden
 bash tests/spec-rubric-goldens.sh --calibrate   # rubric JSON schema + label agreement → GO/HOLD for SPEC_RUBRIC=1
 bash tests/spec-debate-goldens.sh --calibrate    # cross-model debate verdict agreement → GO/HOLD for *_DEBATE=1
+bash tests/flake-check.sh --runs 10       # every Tier-1 suite N times; fails on any nondeterministic verdict
 ```
+
+### `flake-check` — the gate that watches the gates
+
+Tier 1 runs each suite **once**, so a suite that fails a few percent of the time merges green and then reds
+somebody else's unrelated PR, where it reads as *"your change broke it"*. `flake-check` runs each suite N times
+and fails any suite that doesn't decide the same way every time. It distinguishes **flaky** (mixed exit codes)
+from **stable RED** (a real failure) — conflating the two sends people hunting a race that isn't there.
+
+It exists because it caught one: `prompt-contracts` shipped a `printf "$body" | grep -qF` under `set -o
+pipefail`, which returns 141 when grep exits before printf finishes writing — **2 failures in 60 runs**, invisible
+to single-run CI. Deliberately **empirical, not static**: the static rule for that shape was prototyped and
+measured at 95 repo-wide hits (58 even when tightened to unbounded variables), nearly all safe because the data
+sits far below the 64 KB pipe buffer. An error-level gate at that false-positive rate gets switched off, and a
+switched-off gate protects nothing. Running the suites repeatedly costs minutes and catches the whole class —
+SIGPIPE races, clock/timezone dependence, ordering, temp-path collisions, concurrency.
+
+Run it by hand before merging anything that touches a test harness. Its own selftest asserts it fires on a
+known-flaky fixture and does *not* misreport a stable-red one.
 
 | Golden | Asserts |
 |--------|---------|

@@ -30,6 +30,12 @@ jobs:
           bash tests/spec-debate-goldens.sh --calibrate   # flake guard
       - name: debate effectiveness (precision/recall/F1 vs the labeled sandbox; logs the over-time trend)
         run: bash tests/debate-effectiveness.sh   # --score on committed seed .out (offline); --capture is staged below
+      # Per-PR CI runs each suite ONCE, so a suite that fails a few percent of the time merges clean and then
+      # reds an unrelated PR, where it reads as "your change broke it". This runs each suite repeatedly and
+      # fails on any that does not decide the same way every time. It caught a live 2-in-60 SIGPIPE flake in
+      # prompt-contracts that single-run CI had passed green.
+      - name: flake check (each suite N times; fails on nondeterminism)
+        run: bash tests/flake-check.sh --runs 10
       # --- Live capture (uncomment once opencode + provider keys are provisioned as repo secrets) ---
       # Refreshes tests/snapshots/agents/*.txt from real critic runs, then re-checks + reports spend.
       # - name: capture real critic verdicts + track spend

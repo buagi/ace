@@ -602,7 +602,7 @@ _swarm_plan_sync() {
       }
       # 1) deterministic gaps → re-spec FIRST, so the quality layer below sees lint-CLEAN specs (a freshly re-derived
       # spec almost always starts with a gap; debating BEFORE this skipped every one → the debate never ran).
-      if printf '%s\n' "$_slint" | grep -q '^SPECGAP' && [ "${SWARM_RESLICE:-1}" != 0 ]; then
+      if grep -q '^SPECGAP' <<<"$_slint" && [ "${SWARM_RESLICE:-1}" != 0 ]; then
         _sgn="$(printf '%s\n' "$_slint" | grep -c '^SPECGAP')"
         echo "  planning: spec-lint found $_sgn spec gap(s) — re-spec before the quality gate"
         swarm_post coordinator needs-attention "spec-lint: $_sgn spec gap(s) — re-spec before dispatch" "" 2>/dev/null || true
@@ -616,7 +616,7 @@ _swarm_plan_sync() {
         local _rsp _deb
         while IFS= read -r _rsp; do
           [ -n "$_rsp" ] || continue
-          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue   # still gappy after re-spec → skip
+          grep -q "^SPECGAP $(basename "$_rsp" .md) " <<<"$_slint" && continue   # still gappy after re-spec → skip
           # NO 2>/dev/null: debate.sh narrates every turn on stderr (lib/debate.sh:110-152) and reports its
           # fail-open skips there too ("DEBATE_MODEL_B unset", "challenger returned NOTHING"). Discarding it
           # three lines after promising per-turn progress made a silently-skipped debate look identical to a
@@ -629,19 +629,19 @@ _swarm_plan_sync() {
         local _rsp _rub
         while IFS= read -r _rsp; do
           [ -n "$_rsp" ] || continue
-          printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue
+          grep -q "^SPECGAP $(basename "$_rsp" .md) " <<<"$_slint" && continue
           _rub="$(cd "$REPO" && swarm_spec_rubric "$_rsp" 2>/dev/null)" || true
           [ -n "$_rub" ] && _extra="$(printf '%s\n%s' "$_extra" "$_rub")"
         done < <(_specf)
       fi
       # 3) debate/rubric-agreed gaps → one more re-spec
-      if printf '%s\n' "$_extra" | grep -q '^SPECGAP' && [ "${SWARM_RESLICE:-1}" != 0 ]; then
+      if grep -q '^SPECGAP' <<<"$_extra" && [ "${SWARM_RESLICE:-1}" != 0 ]; then
         _sgn="$(printf '%s\n' "$_extra" | grep -c '^SPECGAP')"
         echo "  planning: spec-$([ "${SPEC_DEBATE:-0}" = 1 ] && echo debate || echo rubric) agreed $_sgn gap(s) — re-spec before dispatch"
         swarm_post coordinator needs-attention "spec-debate: $_sgn agreed gap(s) — re-spec before dispatch" "" 2>/dev/null || true
         _respec "$(printf '%s\n' "$_extra" | grep '^SPECGAP' | head -"${SPECFIX_MAX_LINES:-40}")"
       fi
-      printf '%s\n' "$_slint" | grep -q '^SPECGAP' \
+      grep -q '^SPECGAP' <<<"$_slint" \
         && swarm_post coordinator needs-attention "spec-lint: $(printf '%s\n' "$_slint" | grep -c '^SPECGAP') gap(s) remain — dispatching (fail-open)" "" 2>/dev/null || true
       { printf '\n-- spec-lint --\n'; printf '%s\n' "$_slint"; } >> "$SWARM_DIR/batch-plan.txt" 2>/dev/null || true
     fi
