@@ -23,7 +23,7 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
 
 RUNS=8
 SUITES="bash-traps prompt-contracts profile-reader supply-chain cli-dispatch-selftest approval-selftest
-        autoloop-selftest snapshot-generators hygiene-selftest reanalyze-selftest scorecard-selftest"
+        autoloop-selftest snapshot-generators hygiene-selftest reanalyze-selftest scorecard-selftest killorder-selftest"
 # swarm-selftests is intentionally excluded from the default set: it is a battery that shells out to the other
 # suites, so N runs of it multiplies the wall clock while adding no coverage this file does not already have.
 

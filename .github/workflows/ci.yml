@@ -51,3 +51,7 @@ jobs:
         run: bash tests/cli-dispatch-selftest.sh
       - name: autoloop lifecycle (provider-cap detection · step budget · resume never commits to main)
         run: bash tests/autoloop-selftest.sh
+      # The B5 stop-order guarantee: TERM the loop leaders BEFORE killing their opencode trees, or in-flight
+      # WIP is lost while the stop message still claims it was preserved. Pinned by intercepting the SENDS.
+      - name: swarm stop signal ORDER (B5 — leaders TERMed before opencode trees)
+        run: bash tests/killorder-selftest.sh

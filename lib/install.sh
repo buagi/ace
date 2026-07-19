@@ -1062,6 +1062,12 @@ the one-liners that bite your role; this is the full list.
 - A10 Trusting a pidfile and then killing TREE-WISE — a recycled pid takes an innocent process AND its
   children. Verify identity (cmdline) before signalling, and refuse only on positive evidence of mismatch.
 - A11 `cmd; ok "success"` — the `;` claims success the moment `cmd` can fail. Gate the message on the rc.
+- A12 `VAR=x other="$(cmd)"` — with an assignment on the right there is NO command word, so bash treats both
+  as plain assignments and never EXPORTS VAR. The child process sees it unset. Bake it in, or `export`.
+- A13 Sourcing a lib INSIDE a function (or any command substitution) inherits that scope's positional
+  parameters. A lib ending in a `case "${1:-}"` CLI dispatcher then runs a command nobody asked for — here
+  the `*)` usage branch `exit 2`s and kills the subshell before your first line runs. With stderr sent to
+  /dev/null it leaves NO trace and reads as "the code under test did nothing". `set --` before sourcing.
 
 ### B. Fix + review discipline
 - B1 REVERT-PROVE THE TEST. A test that passes either way is worthless. Revert the fix in a temp copy and
