@@ -3329,7 +3329,10 @@ upgrade_repo() {
   if [ -z "$_hp" ] && [ -f .git/hooks/pre-commit ]; then
     warn "you already have .git/hooks/pre-commit — wrote .githooks/ but left yours active. Enable ACE's gate with: git config core.hooksPath .githooks"
   elif [ -z "$_hp" ] || [ "$_hp" = .githooks ]; then
-    install_gitflow_hooks "$root"; ok "local CI gate wired (pre-commit/pre-push ./ci.sh + commit-msg + main-guard)"
+    # `;` here would print "wired" even when the install failed — install_gitflow_hooks now returns 1 on a
+    # partial install (it used to always return 0), so the success claim must be gated on it.
+    if install_gitflow_hooks "$root"; then ok "local CI gate wired (pre-commit/pre-push ./ci.sh + commit-msg + main-guard)"
+    else warn "local CI gate NOT fully wired — commits to main may not be blocked (see the warning above)"; fi
   else
     warn "core.hooksPath='$_hp' (custom) — wrote .githooks/ but left it. Enable ACE's gate with: git config core.hooksPath .githooks"
   fi
