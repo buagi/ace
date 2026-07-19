@@ -61,7 +61,7 @@ See [autorun.md](autorun.md) for what the loop does each lap.
 | `gpt` | OpenAI GPT-5 | — | OpenAI |
 | `deepseek` | DeepSeek V4 | running without any subscription | none |
 
-The 8 worker agents always run on DeepSeek V4; only the overseer is configurable.
+ACE ships **12 agents** — the orchestrator plus 11 subagents. The subagents *default* to DeepSeek V4, but they are not locked there: `ace keys` is just the quick path to the overseer, and any of the 11 configurable agents can be pointed at another provider with `MODEL_<agent>=<provider>/<model>` in `ace settings` (the 12th, `debater`, is model-pinned via `DEBATE_MODEL_A`/`_B`). See [agents.md](agents.md).
 
 - The default (`opus`) and the other Claude/OpenAI brains need `opencode auth login` (Anthropic or OpenAI). Use **oauth** to bill your subscription, or supply an API key — then run `ace opencode`.
 - Pick `deepseek` to run without any subscription.

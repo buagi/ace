@@ -59,16 +59,6 @@ apply_theme() {
 }
 apply_theme "${ACE_THEME:-warp}"
 
-# render_art <name> [height] — render lib/art/<name>.png via chafa (auto picks kitty/sixel/blocks) when
-# available + a TTY + ACE_ART!=off. Returns 0 if it drew; non-zero ⇒ caller draws its own fallback.
-ACE_ART_DIR="${ACE_DIR:-.}/lib/art"
-render_art() {
-  local name="$1" h="${2:-14}"; local png="$ACE_ART_DIR/$name.png"
-  [ "${ACE_ART:-auto}" != off ] && [ "$ACE_COLOR" = 1 ] && [ -t 1 ] \
-    && command -v chafa >/dev/null 2>&1 && [ -f "$png" ] || return 1
-  chafa --size "x${h}" --animate off "$png" 2>/dev/null
-}
-
 # _gradient — colour stdin char-by-char across the theme gradient (truecolor only; else pass-through).
 _gradient() {
   if [ "$ACE_TC" != 1 ]; then cat; return; fi
@@ -184,16 +174,26 @@ _wordmark() {
     printf '%s\n'   "    the forge never sleeps · the loop is eternal"
   fi
 }
+# Agents shown in the header. Derived from the ONE source of truth (_agent_counts in architecture.sh →
+# $ACE_AGENTS + the model-pinned `debater`), never typed: this header said 9 while every other screen said
+# 10, 11 or 12, which is precisely the drift a literal guarantees. ui.sh is sourced before architecture.sh,
+# but this runs at RENDER time when the whole lib set is loaded; the literal covers only a test/snapshot
+# that sources ui.sh on its own.
+_ui_agent_total() {
+  if type _agent_counts >/dev/null 2>&1; then _agent_counts | cut -d' ' -f2; else printf '12'; fi
+}
 # mockup status bar — a chip row (● dot · label · value) reflecting live system state.
+# Renders in BOTH modes: the no-colour form is a plain one-liner (no escapes), because a piped/NO_COLOR
+# run must still get the version + distro line that ui.sh's header promises.
 _statusbar() {
-  [ "$ACE_COLOR" = 1 ] || { printf '    v%s · %s · 12 agents\n' "${ACE_VERSION:-?}" "${ACE_DISTRO_PRETTY:-?}"; return; }
+  [ "$ACE_COLOR" = 1 ] || { printf '    v%s · %s · %s agents\n' "${ACE_VERSION:-?}" "${ACE_DISTRO_PRETTY:-?}" "$(_ui_agent_total)"; return; }
   local R="$C_RESET" g="$C_GREEN" y="$C_YELLOW" a="$C_ACCENT"
   local kc="$g" ks=ok; [ -z "${DEEPSEEK_API_KEY:-}" ] && { kc="$y"; ks="run keys"; }
   local hc="$g" hs=ok; command -v gh >/dev/null 2>&1 || { hc="$y"; hs="install"; }
   _chip(){ printf '%s●%s %s%s%s %s%s%s' "$2" "$R" "$C_GREY" "$3" "$R" "${4:-$C_STEEL}" "$5" "$R"; }
   printf '   %s    %s    %s    %s    %s\n' \
     "$(_chip d "$kc" key "$kc" "$ks")" "$(_chip d "$hc" gh "$hc" "$hs")" \
-    "$(_chip d "$a" agents "$C_STEEL" 9)" "$(_chip d "$g" overseer "$C_STEEL" "$(orch_model_short)")" \
+    "$(_chip d "$a" agents "$C_STEEL" "$(_ui_agent_total)")" "$(_chip d "$g" overseer "$C_STEEL" "$(orch_model_short)")" \
     "$(_chip d "$a" ver "$C_STEEL" "v${ACE_VERSION:-?}")"
 }
 
@@ -207,11 +207,18 @@ banner() {
   fi
   hr
   _wordmark
-  [ "$ACE_COLOR" = 1 ] && _statusbar
+  # unconditional: _statusbar self-selects its plain vs chip-row form. Gating it on ACE_COLOR=1 made the
+  # plain form dead code and silently dropped the version/distro line from every piped / NO_COLOR run —
+  # exactly the runs (logs, CI capture, agent transcripts) where knowing the ACE version matters most.
+  _statusbar
   hr
   _ACE_BANNER_DONE=1
 }
 # the ace-of-spades card bleeding in — kept as the boot splash (renders _emblem_color with drips)
+# banner() only reaches this under ACE_TC=1 (⇒ ACE_COLOR=1), so the plain arm below never fires from
+# there BY DESIGN: an animated splash must not spew into a pipe or a log. The arm is the degradation
+# contract for anything that calls _splash_spade directly (menus/demos) — deliberately kept, not dead
+# weight. The version/distro line that a no-colour run DOES need comes from _statusbar in banner().
 _splash_spade() {
   [ "$ACE_COLOR" = 1 ] || { _emblem_plain; return; }
   local f; for f in '⛧· ·' '·⛧· ' ' ·⛧·' '· ·⛧'; do

@@ -11,7 +11,7 @@ for f in ace lib/*.sh tests/*.sh; do bash -n "$f"; done   # syntax — hard gate
 shellcheck -S error -e SC1090,SC1091 ace lib/*.sh tests/*.sh
 bash tests/profile-reader.sh        # profile.yaml parse + required fields + delivery coherence
 bash tests/snapshot-generators.sh   # generated .gitignore / CI config snapshots stay locked
-bash tests/supply-chain.sh          # pinned installs + SHA-pinned actions + allowlist
+bash tests/supply-chain.sh          # pinned installs + sha256-verified downloads + curl|sh allowlist
 bash tests/prompt-contracts.sh      # 12 agents · valid opencode.json · every load-bearing prompt clause
 bash tests/swarm-selftests.sh       # claim store · leasing · fencing · plan-lint · spec-lint/slice/rubric · RED-main
 ```

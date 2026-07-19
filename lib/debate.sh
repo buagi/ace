@@ -233,7 +233,7 @@ ace_debate_testproject(){
 
 # no-network selftest: the guard + fail-open contract (never makes a call in these paths).
 ace_debate_selftest(){
-  local d ok=1 out; d="$(mktemp -d)" || return 1
+  local d ok=1 out rc; d="$(mktemp -d)" || return 1
   ( cd "$d"
     # HERMETIC: point ACE_CONFIG at an empty file so `_dcfg` never reads the user's real ~/.config/ace/config —
     # otherwise `DEBATE_MODEL_B=''` falls back (via `:-`) to a configured challenger and the "empty B / LOW-risk"
@@ -253,7 +253,12 @@ ace_debate_selftest(){
     out="$(PATH="$PWD/bin:$PATH" DEBATE_MODEL_A=stub DEBATE_MODEL_B=openrouter/stub DEBATE_MIN=1 DEBATE_MAX=1 DEBATE_HARD_MAX=1 DEBATE_TIMEOUT=3 DEBATE_WALL_MAX=10 ace_debate spec hi.md 2>&1)"
     printf '%s' "$out" | grep -q 'unbound variable' && { echo "[debate] transcript setup crashed under set -u: $out"; ok=0; }
     [ -f .opencode/cache/spec-debate-hi.md ] || { echo "[debate] no transcript written — debate never reached the round loop"; ok=0; }
-    out="$(ace_debate bogus x 2>/dev/null)"; [ "$?" = 2 ] || true   # bad mode ⇒ usage rc 2 (not asserted on output)
+    # bad mode ⇒ usage rc 2. This WAS `[ "$?" = 2 ] || true`, which asserted nothing: the trailing `|| true`
+    # discarded the comparison and `ok` was never touched, so a regression in the usage path passed silently.
+    # rc 2 is a real contract — `ace` dispatch distinguishes "bad usage" (2) from "debate failed" (1).
+    # Stash $? in its own var before anything else runs, then fail the selftest properly.
+    out="$(ace_debate bogus x 2>/dev/null)"; rc=$?
+    [ "$rc" = 2 ] || { echo "[debate] bad mode must exit 2 (got rc=$rc, out: $out)"; ok=0; }
     [ "$ok" = 1 ] && echo "[debate] PASS ✓" || { echo "[debate] FAIL ✗"; exit 1; }
   ) || ok=0
   rm -rf "$d"; [ "$ok" = 1 ]

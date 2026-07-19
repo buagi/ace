@@ -71,7 +71,10 @@ Even headless, the loop **stops rather than merge** on anything unsafe:
 
 ### Human approval per merge
 
-To require a human OK before each merge, launch with `MERGE_APPROVAL=hermes` (the conductor's "ask me before each merge" option). The loop pauses before every merge, pings your chat, and waits for `ace approve <tok> yes`. A deny, a timeout, or no channel leaves the PR open and stops. This is the only thing that inserts a mid-loop confirmation; everything else runs unattended.
+To require a human OK before each merge, launch with `MERGE_APPROVAL=hermes` (the conductor's "ask me before each merge" option). The loop pauses before every merge, pings your chat, and waits for `ace approve <tok> yes`. An explicit deny, a timeout, or no channel leaves the PR open and stops. This is the only thing that inserts a mid-loop confirmation; everything else runs unattended.
+
+> [!WARNING]
+> Deny with the **exact word `no`**. `ace approve` records any decision it does not recognise as a denial (`no` `n` `deny` `denied` `reject` `rejected` `0` `❌`) as an **approval**, so a paraphrased refusal relayed from chat merges the PR. The deny-by-default fix is landing; until then treat this as a checkpoint you drive, not a safety boundary. Details: [hermes.md](hermes.md#approvals-from-chat--human-in-the-loop-merges).
 
 > [!NOTE]
 > The Hermes conductor still echoes the assembled `ace … --yes` line and asks you to confirm it once before launching — that is the chat skill being deliberate, not ACE blocking. After that, the loop is unattended unless you chose `MERGE_APPROVAL=hermes`.

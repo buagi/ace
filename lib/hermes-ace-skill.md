@@ -20,10 +20,12 @@ metadata:
 
 # ACE — chat conductor
 
-ACE is a user-local bash rig that wires **OpenCode** into a 10-agent crew (8 workers on DeepSeek V4, overseer on Claude Opus by default — or Sonnet/GPT-5/DeepSeek)
-(orchestrator · implementer · test_engineer · verifier · 4 critics: reviewer/ux_reviewer/standards_keeper/alignment_reviewer
-· conflict_resolver). It scaffolds projects, runs a self-healing build→CI→review→merge→deploy loop, and
-deploys — all driven by **flags/env, no TTY needed**.
+ACE is a user-local bash rig that wires **OpenCode** into a 12-agent crew (workers on DeepSeek V4, overseer on Claude Opus by default — or Sonnet/GPT-5/DeepSeek)
+(orchestrator · researcher · implementer · test_engineer · verifier · 4 critics: reviewer/ux_reviewer/standards_keeper/alignment_reviewer
+· conflict_resolver · launch_readiness_reviewer · debater). 11 of the 12 are model-configurable; `debater`
+is model-pinned (the debate engine always launches it with an explicit per-side `--model` override, so it
+is excluded from the per-agent picker by design). It scaffolds projects, runs a self-healing
+build→CI→review→merge→deploy loop, and deploys — all driven by **flags/env, no TTY needed**.
 
 Your job over chat is to be a **CONDUCTOR**: present what the user can do, then walk **one decision at a
 time**, and only run `ace` once the user has chosen every step. You are NOT an autopilot.

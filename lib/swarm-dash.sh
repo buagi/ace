@@ -78,8 +78,6 @@ _dash_roadmap(){ local rm="$REPO/ROADMAP.md" src d t
     t=$(grep -cE '^[[:space:]]*- \[[ xX]\] ' "$rm" 2>/dev/null)   # missing file → empty → the ${d:-0}/${t:-0} default below covers it
   fi
   echo "${d:-0} ${t:-0}"; }
-_last_event_for(){ [ -s "$SWARM_DIR/events.jsonl" ] || return 0
-  grep -F "\"worker\":\"$1\"" "$SWARM_DIR/events.jsonl" 2>/dev/null | tail -1 | jq -r '.msg // ""' 2>/dev/null | cut -c1-70; }
 # 3-state bar: done (█, solid) · IN-FLIGHT (▓, the items workers are on right now) · remaining (░).
 # The in-flight segment moves as items are claimed/merged, so the bar reflects live activity — not
 # just the rare full-merge jumps that made it look static.

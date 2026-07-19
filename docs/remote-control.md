@@ -90,7 +90,12 @@ ace approve <tok> yes     # release the merge   (ace approve yes = newest pendin
 ace approve <tok> no      # leave the PR open and stop
 ```
 
-Deny, a timeout (`APPROVAL_TIMEOUT`, default 1 h), or no reachable channel all leave the PR open and stop — fail-closed. Without `MERGE_APPROVAL=hermes`, the loop self-merges on green per `AUTOMERGE`, which defaults from the profile's `auto_merge` (env overrides); `AUTOMERGE=0` opens one PR and stops for review. Full round-trip in [hermes.md](hermes.md).
+An explicit deny, a timeout (`APPROVAL_TIMEOUT`, default 1 h), or no reachable channel (in practice: no `hermes` binary on `PATH`) all leave the PR open and stop the loop.
+
+> [!WARNING]
+> **The decision itself is not yet deny-by-default.** `ace approve` recognises only `no` `n` `deny` `denied` `reject` `rejected` `0` `❌` as a denial and records **anything else — including an unrecognised or free-text reply — as an approval**, so a chat answer like "no thanks" or "nope" releases the merge. Deny with the exact word `no`. Treat this gate as a *speed bump you drive*, not a security boundary, until the deny-default lands.
+
+Without `MERGE_APPROVAL=hermes`, the loop self-merges on green per `AUTOMERGE`, which defaults from the profile's `auto_merge` (env overrides); `AUTOMERGE=0` opens one PR and stops for review. Full round-trip in [hermes.md](hermes.md).
 
 ## Stay reachable while away — `ace awake`
 

@@ -40,7 +40,7 @@ See [go-stack.md](go-stack.md) for the Go toolchain and release details.
 
 ## 4. Choose the overseer brain (cost vs quality)
 
-The 10 workers always stay on DeepSeek; only the overseer changes.
+The 11 subagents *default* to DeepSeek; this step changes only the overseer. To move individual agents off DeepSeek, use `ace settings → Models & agents` (`MODEL_<agent>=<provider>/<model>`) — see [agents.md](agents.md).
 
 1. Pick the brain: `ace keys` — `opus` (default) · `sonnet` (long runs) · `gpt` (OpenAI) · `deepseek` (no subscription).
 2. Rewrite the config, then restart opencode so it loads at launch: `ace opencode`

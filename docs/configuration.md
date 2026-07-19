@@ -1,6 +1,6 @@
 # Configuration
 
-Every knob ACE reads: model and provider selection, the autorun loop's environment variables, appearance, and where settings are stored on disk.
+The knobs ACE reads: model and provider selection, the autorun loop's environment variables, the gates, appearance, and where settings are stored on disk. Anything not listed here is either internal or not read at all — if a variable name appears in a doc but not in this file, treat it as unsupported.
 
 ## Precedence
 
@@ -35,6 +35,13 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 | `gpt` | OpenAI GPT-5. |
 | `deepseek` | No subscription required. |
 
+Both dials are stored as plain keys in `~/.config/ace/config` and can be set directly (or per-run as an env prefix) instead of going through the menu:
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `MODEL_PROFILE` | `max` | The profile above (`max` · `high` · `balanced`). Read when the agent config is written — change it, then re-run `ace opencode` to apply. |
+| `ORCH_PROVIDER` | `opus` | The overseer brain alias above (`opus` · `sonnet` · `gpt` · `deepseek`), resolved to a model id. A `MODEL_orchestrator` override wins over it; with neither set the overseer is `anthropic/claude-opus-4-8`. |
+
 ### Providers & per-agent models (`ace settings`)
 
 `ace settings → Models & agents` sets which model each of the 12 agents runs, independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed` · `cross-review`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 11 subagents default to DeepSeek — **the coders (implementer · test_engineer) run `deepseek-v4-pro`; `-flash` is used only for cheap/mechanical roles** (the rathole judge, opencode's `small_model`, and — under the `balanced`/`mixed` presets — the light checks verifier/standards/alignment). To put a coder on flash: `MODEL_implementer=deepseek/deepseek-v4-flash` (cheaper, weaker — measure with Experiment C before adopting).
@@ -63,10 +70,12 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 |-----|---------|--------------|
 | `AUTOMERGE` | profile `auto_merge` | `1` self-merges a PR once the gate is green and mergeable. `0` opens ONE PR and stops for review (does not keep building on the branch). |
 | `MERGE_GATE` | profile `merge_gate` | What authorizes a merge: `remote` (wait for Actions green) · `local` (merge on `./ci.sh --container` green) · `both` (require both). |
-| `MERGE_APPROVAL` | *(empty)* | `hermes` pauses before every merge and waits for a chat `ace approve <tok> yes`. Deny, timeout, or no channel leaves the PR open and stops. Empty = self-merge per `AUTOMERGE`. |
+| `MERGE_APPROVAL` | *(empty)* | `hermes` pauses before every merge and waits for a chat `ace approve <tok> yes`. An explicit deny, a timeout, or no `hermes` binary on `PATH` leaves the PR open and stops the loop. Empty = self-merge per `AUTOMERGE`. **See the caveat below — an ambiguous reply currently records an approval.** |
+| `APPROVAL_TIMEOUT` / `APPROVAL_POLL` | `3600` / `15` | How long the loop waits for a decision, and how often it re-checks `.opencode/approvals/`. Timeout is treated as a denial. |
 | `DEPLOY` | `0` | `1` runs `ace deploy` after each merge. Needs `deploy_kind=service` + a configured VPS, else a no-op with a warning. |
 | `DEPLOY_GATE` | `always` | `release` ships only when `origin/main` carries a new `v*` tag (milestone-gated); the last shipped tag is tracked as `DEPLOY_LAST_TAG` in `~/.config/ace/config`. Mark one with `ace release --tag vX.Y.Z`. |
 | `DEPLOY_FORCE` | `0` | `1` (or `ace deploy --force`) bypasses `DEPLOY_GATE` for one on-demand deploy. |
+| `LAUNCH_GATE` | `1` | Runs the project's `./ci.sh --launch` tier before promoting to the VPS (tested-restore evidence, rollback runbook, SLO/runbook presence). **Fail-closed** — a NO-GO blocks the deploy. If the project has no `--launch` tier the gate is skipped with a warning. `0` disables it. |
 | `STOP_ON_DEPLOY_FAIL` | `1` | A failed in-loop deploy or health check halts the loop. `0` logs and continues. |
 | `VERIFY` | `0` | `1` runs the `ace verify` agent after each deploy and triages live findings into `ROADMAP.md` (advisory — never halts). |
 | `LOCAL_CI_FALLBACK` | `0` | `1` accepts a green local `./ci.sh --container` as the pass + merge when Actions is BLOCKED (a run that fails having executed 0 jobs). |
@@ -74,6 +83,18 @@ Quick path to set just the overseer. For full per-agent control use `ace setting
 
 > [!IMPORTANT]
 > Every gate — including `local` — still pushes a branch and opens a PR, so the loop needs a GitHub `origin` remote. "Local gate" means "don't wait on Actions", not "no remote".
+
+> [!WARNING]
+> **`MERGE_APPROVAL=hermes` is not yet a deny-by-default gate.** The *loop* side is strict — an explicit deny, a timeout, and a missing chat channel all stop it. The *recording* side is not: `ace approve` treats only a short list of tokens (`no` `n` `deny` `denied` `reject` `rejected` `0` `❌`) as a denial and records **anything else — including an unrecognised or free-text reply — as an approval**. So a chat answer like "no thanks", "nope", or "hold off" merges the PR. Until this flips to deny-by-default, reply with the exact word `no` (or run `ace approve <tok> no` locally) to deny, and don't rely on the gate as a security boundary. The deny-default fix is landing; this note will be replaced when it ships.
+
+### Generated-project gates
+
+These are read by the `ci.sh` and git hooks ACE **generates into your project**, not by the `ace` CLI itself — set them in the environment of the run (or the hook) you want to affect.
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `ACE_STRICT_SECURITY` | *(auto)* | Promotes `ci.sh`'s security `[major]` warnings to hard `[blocker]`s. Auto-**on** when the profile's `audience` is `oss-public`/`end-customer`/`enterprise` **and** `auto_merge` is on — an unattended public self-merge has no human to catch a security gap. `1` forces it on, `0` forces it off for a run (the escape hatch when a heuristic grep false-positives). |
+| `PREPUSH_TIMEOUT` | `100` | Seconds the `pre-push` hook gives `./ci.sh --container` before **deferring** to CI (which runs the same gate on the PR) and allowing the push. A RED result still blocks regardless. `0` = no budget, run to completion. |
 
 ### Planning & caps
 
@@ -103,7 +124,7 @@ The human-facing project map — `docs/atlas.md` (system map · data flow · mod
 |-----|---------|--------------|
 | `MAP_EVERY` | `3` | Refresh the atlas every N merged features in the loop (never per-commit, never in a swarm worker). |
 | `ATLAS` | `1` | `0` disables atlas generation entirely (the generator exits immediately). |
-| `ATLAS_NARRATIVE` | `0` | `1` adds a grounded feature-map narrative (read-only cartographer pass on `ATLAS_AGENT`). Off = deterministic skeleton only, zero tokens. |
+| `ATLAS_NARRATIVE` | `0` | ⚠️ **Currently unsupported — a no-op.** It asks for a `cartographer` agent that is not in the shipped crew, so the pass fails silently and you get the deterministic skeleton either way. Leave it at `0` unless you have defined your own agent and pointed `ATLAS_AGENT` at it. |
 | `ATLAS_FORCE` | `0` | `1` overrides the swarm-worker skip and the unchanged-signature skip (what `ace atlas` uses). |
 
 ### Per-step time budget
@@ -187,7 +208,7 @@ The most-used knobs; the full table with defaults is in [swarm.md](swarm.md#conf
 
 | Var | Default | What it does |
 |-----|---------|--------------|
-| `SWARM_MAX` | `2` | Worker count (the `ace autorun` prompt sets this; clamped to `SWARM_CEIL`, default 5). Sticky in `config.env`. |
+| `SWARM_MAX` | `2` | Worker count (the `ace autorun` prompt sets this; clamped to `SWARM_CEIL`, default 5). Sticky in `~/.config/ace/config`. |
 | `SWARM_LIVE` | *(off)* | `1` spends credits on the real loop (set for you by `ace swarm start` / `autorun`; the real loop refuses without it). |
 | `DRY_RUN` | `1` | `1` = simulated edits, zero credits (the sandbox). `0` = real. |
 | `SWARM_SYNC` | `1` | Run the OBJECTIVES → ROADMAP planning sync at start. `0` skips it. |
@@ -268,7 +289,6 @@ Visual only — copy stays plain and technical. Stored in `~/.config/ace/config`
 |-----------|---------|---------|--------------|
 | `THEME` | `ACE_THEME` | `warp` | `warp` (violet) · `blood` (crimson) · `void` (indigo-cyan, dark sci-fi). |
 | `NO_ANIM` | `ACE_NO_ANIM` | *(off)* | `1` disables the one-time intro reveal. |
-| `ART` | `ACE_ART` | `auto` | `auto` renders the `lib/art/ace-emblem.png` sprite at best fidelity (kitty → sixel → blocks) when `chafa` is installed, else a truecolor half-block emblem. `off` forces the half-block emblem. |
 | — | `ACE_FIGLET` | `auto` | Default is the block wordmark. `on` renders the `ACE` wordmark with `figlet`/`toilet` if they're installed. |
 | — | `ACE_FIGFONT` | `future` / `slant` | Font for `ACE_FIGLET=on` (`future` for toilet, `slant` for figlet). |
 | — | `ACE_VISUAL_EXTRAS` | `1` | `0` skips the `ace install` offer to add the optional enhancers. |
@@ -276,7 +296,6 @@ Visual only — copy stays plain and technical. Stored in `~/.config/ace/config`
 | — | `ACE_ALT_SCREEN` | `1` | The menu (`ace`) opens the terminal's alternate-screen buffer so each screen replaces the previous one and the shell scroll-back is restored clean on exit. `0` keeps the old behaviour (screens scroll into history) — set it when recording a menu walkthrough that should stay in the capture. |
 
 > [!NOTE]
-> Optional enhancers are auto-detected if present: `chafa` (pixel art), `figlet`/`toilet` (wordmark). `ace install` offers to install them (confirm-gated, default no; skipped on immutable hosts — layer with `rpm-ostree install` or a toolbox). ACE uses them only when present.
 
 ### Demo tour (`ace demo`)
 
@@ -299,8 +318,10 @@ The planner researches `[value]` features (how comparable products build them + 
 | `FIRECRAWL_API_URL` | `http://127.0.0.1:3002` | the self-hosted endpoint the MCP + reachability gate use; unreachable ⇒ MCP disabled. |
 | `FIRECRAWL_PORT` | `3002` | loopback port the local crawler listens on. |
 | `FIRECRAWL_DIR` | `~/firecrawl` | where the Firecrawl compose lives (`ace firecrawl up` runs `compose up -d` there). |
-| `FIRECRAWL_API_KEY` | *(unset)* | only if your instance enforces auth; not needed for a plain loopback self-host. |
 | `ACE_RESEARCH_MAX_FETCHES` | `6` | shared search+scrape page budget per feature (keeps research bounded). |
+
+> [!NOTE]
+> There is **no** API-key knob. ACE talks to Firecrawl over plain loopback and never sends an auth header, so an instance configured to *require* auth is unreachable to ACE — the MCP auto-disables and research falls back to `webfetch`. Run the self-hosted instance without auth, the way `ace firecrawl up` sets it up.
 
 ### Feature-spec pipeline (Part H)
 
@@ -309,10 +330,11 @@ Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<
 | Var | Default | What it does |
 |-----|---------|--------------|
 | `SPEC_LINT` | `1` | Deterministic pre-dispatch spec gate (`swarm_spec_lint`, 11 checks). `0` disables. No-op on legacy ROADMAP items with no `Spec:` field. |
-| `SPECFIX_MAX` | `2` | Max bounded re-spec rounds a flagged spec gets before the loop proceeds anyway (fail-open). |
+| `SPECFIX_MAX_LINES` | `40` | Cap on how many `SPECGAP` lines are handed to a re-spec round (a `head -N` on the lint report), so one very gappy spec can't flood the re-spec prompt. **Not** a round count — the number of re-spec rounds is fixed at **2** by the pipeline's structure (one after the deterministic lint, one after the debate/rubric layer) and is not configurable. |
 | `SPEC_SLICE` | `1` | Assemble a focused, capped context slice per increment (`.opencode/cache/spec-slice.<slug>.md` — §3 Scope + only that increment's ACs + non-N/A contracts) the implementer reads first. `0` disables. |
 | `SPEC_RUBRIC` | `0` | **Off by default.** An optional one-call LLM rubric that judges a lint-green spec on 7 criteria (only for HIGH-RISK `[value]` features). Enable per project only after calibrating against the goldens. |
-| `SPEC_RUBRIC_MODEL` | *(overseer)* | Which model the rubric runs on. A documented seam only — defaults to the overseer plumbing; stays put until the "prompts before models" boundary lifts (deferred #10). |
+| `SPEC_RUBRIC_MODEL` | `deepseek-v4-pro` | Which model the rubric runs on. It does **not** follow your overseer: the rubric is a direct `curl` to `https://api.deepseek.com/chat/completions` and needs `DEEPSEEK_API_KEY`, so this value must be a **DeepSeek** model id (bare, no provider prefix). Pointing it at a Claude/OpenAI slug will not route. |
+| `SPEC_RUBRIC_TIMEOUT` | `90` | Wall-clock cap (s) on that single rubric call (`curl --max-time`). On timeout the rubric returns nothing and the pipeline proceeds (fail-open). |
 | `SPEC_DEBATE` | `0` | **Off by default.** The heavier alternative to the rubric: a cross-model **debate** on each lint-green HIGH-risk spec (see below). When on, it *subsumes* `SPEC_RUBRIC`. Agreed gaps route into the re-spec channel. |
 | `REVIEW_DEBATE` | `0` | **Off by default.** A cross-model debate over the branch diff *before* a PR self-merges; agreed [blocker]/[major] findings hold the merge for a fix. Fail-open. |
 | `DEBATE_MODEL_A` | *(overseer)* | The **defender** (owns the artifact) — defaults to your overseer model (Claude via subscription, no API key). |

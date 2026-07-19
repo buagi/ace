@@ -2041,8 +2041,14 @@ EOF
 # ever creates one — so without this, `deploy_kind: artifact` projects build to dist/ but never publish.
 release_run() {
   local root; root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; cd "$root" || return 1
-  if [ -n "${ACE_RELEASE_TAG:-}" ] || [ "${1:-}" = --tag ]; then
-    local tag="${ACE_RELEASE_TAG:-${2:-}}"
+  # `--tag` NEVER arrives positionally: ace:289 consumes it into ACE_RELEASE_TAG (exported) and shifts, and
+  # both callers (ace:389 passes only $ACE_ARG/--host, menu.sh:329 passes nothing) can therefore never hand
+  # us a literal "--tag". So the flag is detected purely through the env var.
+  # Test whether the var is SET, not merely non-empty: `ace release --tag` with the value missing exports it
+  # EMPTY, and the old -n test made that silently fall through to the LOCAL BUILD path — the user asked to
+  # ship and got a dist/ build with no diagnostic. Set-but-empty must reach the usage error below.
+  if [ -n "${ACE_RELEASE_TAG+x}" ]; then
+    local tag="$ACE_RELEASE_TAG"
     [ -n "$tag" ] || { err "usage: ace release --tag vX.Y.Z   (pushes a v* tag → fires the CI release job that builds + publishes the binaries)"; return 1; }
     case "$tag" in v[0-9]*) : ;; *) err "tag must look like vX.Y.Z — the CI release job triggers on 'v*'. Got: $tag"; return 1 ;; esac
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { err "not a git repo here."; return 1; }
@@ -2440,7 +2446,7 @@ ace_snap() {
   [ ${#cmd[@]} -eq 0 ] && cmd=(snapcard)
   out="${out:-$(mktemp -u --suffix=.png "${TMPDIR:-/tmp}/ace-snap-XXXX")}"
   local self; self="$(command -v ace 2>/dev/null || echo "$ACE_DIR/ace")"
-  local inner; inner="env ACE_FORCE_COLOR=1 ACE_NO_ANIM=1 ACE_ART=off $(printf '%q ' "$self" "${cmd[@]}")"
+  local inner; inner="env ACE_FORCE_COLOR=1 ACE_NO_ANIM=1 $(printf '%q ' "$self" "${cmd[@]}")"
   # render via freeze (native PNG); subshell-isolated so a freeze crash/segfault stays quiet and falls back
   if command -v freeze >/dev/null 2>&1; then
     # via bash -c (with a trailing ':' to defeat bash's exec-optimization) so a freeze crash is reaped
@@ -2450,7 +2456,7 @@ ace_snap() {
   # fall back to ansitoimg (SVG) → rasterize to PNG, whenever freeze produced nothing
   if [ ! -s "$out" ] && command -v ansitoimg >/dev/null 2>&1; then
     local t svg; t="$(mktemp)"; svg="$(mktemp -u).svg"
-    ACE_FORCE_COLOR=1 ACE_NO_ANIM=1 ACE_ART=off "$self" "${cmd[@]}" >"$t" 2>&1
+    ACE_FORCE_COLOR=1 ACE_NO_ANIM=1 "$self" "${cmd[@]}" >"$t" 2>&1
     ansitoimg "$t" "$svg" >/dev/null 2>&1; rm -f "$t"
     if   command -v magick       >/dev/null 2>&1; then magick "$svg" "$out" >/dev/null 2>&1
     elif command -v rsvg-convert >/dev/null 2>&1; then rsvg-convert "$svg" -o "$out" >/dev/null 2>&1
@@ -3346,7 +3352,9 @@ upgrade_repo() {
   [ -d .github/workflows ] && info "Existing CI workflow left untouched — add a 'pnpm lint' step + a codemap job if you want them in CI."
   hr
   ok "Upgrade complete (additive). Review 'git status', then commit."
-  warn "Restart opencode so it loads the global 10-agent config + AGENTS.md rules."
+  # count from _agent_counts (architecture.sh → $ACE_AGENTS) — a literal here is how this drifted to "10"
+  # while write_opencode_config was already emitting 12 agent blocks.
+  warn "Restart opencode so it loads the global $(_agent_counts | cut -d' ' -f2)-agent config + AGENTS.md rules."
   have pnpm && [ "$node" = 1 ] && confirm "Run pnpm install now (for any new eslint deps)?" Y && spin "pnpm install" pnpm install || true
 }
 
