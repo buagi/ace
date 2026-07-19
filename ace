@@ -14,6 +14,26 @@ activate_paths 2>/dev/null || true
 apply_theme "${ACE_THEME:-$(config_get THEME 2>/dev/null || true)}"
 : "${ACE_NO_ANIM:=$(config_get NO_ANIM 2>/dev/null || true)}"
 
+# ----- debate toggles: config → environment  (ACE_DEBATE_ENV anchor: tests/cli-dispatch-selftest.sh) -----
+# Settings → Cross-model debate persists SPEC_DEBATE/REVIEW_DEBATE with config_set, but EVERY consumer
+# (lib/autoloop.sh spec+merge gates, lib/swarm-run.sh coordinator gate) reads them from the ENVIRONMENT
+# with a built-in default of 0. So the menu used to show ON while every single run skipped the debate — a
+# decorative safety toggle, which is worse than an honest one. Export the stored value once, here, before
+# any flow is dispatched; autoloop_run is a sourced function and swarm-run.sh is a child process, so both
+# inherit it. PRECEDENCE (most specific wins):
+#     env var  >  ~/.config/ace/config  >  the consumer's built-in default (0)
+# An env var that is already set is left untouched, and an absent/empty config key exports nothing, so the
+# consumer's own `${SPEC_DEBATE:-0}` default still applies. Never coerces a value: the config holds 0/1 and
+# a stray value reaches the consumer verbatim, where `= 1` tests treat anything else as off.
+_ACE_DEBATE_FROM_ENV=""   # remembers which keys the ENV already owned, so the menu can say the toggle is overridden
+for _dbk in SPEC_DEBATE REVIEW_DEBATE; do
+  if [ -n "${!_dbk:-}" ]; then _ACE_DEBATE_FROM_ENV="$_ACE_DEBATE_FROM_ENV $_dbk"; continue; fi
+  _dbv="$(config_get "$_dbk" 2>/dev/null || true)"
+  [ -n "$_dbv" ] && export "$_dbk=$_dbv"
+done
+unset _dbk _dbv
+export _ACE_DEBATE_FROM_ENV
+
 # ----------------------------------------------------------------- doctor / status
 drow() {
   local s="$1" n="$2" d="${3:-}"
@@ -192,7 +212,7 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace autorun --explain print the resolved delivery policy (merge_gate/auto_merge/deploy_kind/caps) — no run
   ace resume          resume the loop after an interruption: rescues gate-green work an
                         interrupted run left uncommitted, then continues (same as autorun).
-  ace swarm start|stop|dash|split|pause|resume|drain|kill wN|status|stats|preflight|tail|sandbox|selftest|wire
+  ace swarm start[ fg]|stop|dash|watch|split|pause|resume|drain|kill wN|status|stats|preflight|spec-lint|tail|logs|sandbox|selftest|policy|policy-selftest|wire [check|apply]
                       PARALLEL loops: N path-disjoint workers, each self-merging, with a live cockpit
                       ('ace swarm dash'). 'ace autorun' also gates it (pick 2-5). 'sandbox' = free DRY demo.
                       'preflight' previews the DECISION·SETUP·STATE table shown before a live start.
@@ -223,6 +243,19 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace logs            tail the latest log
   ace firecrawl up|down|status   ACE-managed LOCAL research crawler (loopback-only; boosts feature research)
   ace stats [global|N|task] per-subagent × worker (or 'task' = per-ROADMAP-task) token/cost from the opencode session DB ('global'=all projects, N=last-N-days). ACE_TELEMETRY=0 turns OFF all run logging
+  ace debate spec <spec-file> [slug] | review [base] [slug]
+                      run the cross-model debate standalone (defender = your overseer, challenger =
+                      DEBATE_MODEL_B; needs OPENROUTER_API_KEY). Enable it inside the loop with
+                      SPEC_DEBATE=1 / REVIEW_DEBATE=1, or Settings → Cross-model debate (config).
+  ace debate report | trend [n]      per-debate metrics from .opencode/cache/debate-metrics.jsonl · effectiveness over time
+  ace debate score [--capture|--emit-tsv]  precision/recall/F1 vs the labeled sandbox; --capture runs the live debate first
+  ace debate diagnose                the FPs/FNs behind the score + tuning hints (free, offline)
+  ace debate autotune <KNOB=value> [--stub] | --propose-prompt
+                      opt-in A/B of ONE debate knob on the sandbox, kept only if F1 improves;
+                      --propose-prompt only SUGGESTS a prompt diff (never auto-applied)
+  ace debate testproject [dir] | selftest    materialize the runnable labeled sandbox · engine selftest
+  ace scorecard [--json]  one read-only 8-level report on the last run (research · features · subtasks ·
+                      results · debate · logging · anomalies · edge) ending in a VERDICT (alias: ace measure)
   ace quality         quality leading-indicators: per-critic false-positive rate + retry rate + escaped-bug (-> .opencode/quality-report.md)
   ace reanalyze       re-derive the breakdown of your OPEN features with the full research->spec->slice pipeline (plan-only) then 'ace reanalyze report' shows before->after (also: REANALYZE=1 ace autorun)
   ace hermes          wire loop milestones + command-back to Hermes (-> Signal/Telegram/phone)
@@ -249,6 +282,18 @@ EOF
 # Flags map to ACE_*/PROFILE_* env so any flow runs non-interactively (Hermes drives it step-by-step).
 # Value-taking flags consume the next arg; everything else falls through to cmd / ACE_ARG / ACE_ARG2.
 cmd=""
+# _ace_arg_push — park a SUB-COMMAND MODIFIER flag in the next free positional slot.
+# `ace debate score --capture` / `ace debate autotune KNOB=v --stub` shell out to tests/*.sh harnesses that
+# parse these flags themselves, so the flag has to survive as argv — it is positional, not a global switch.
+# It is pushed into ACE_ARG/2/3 exactly like a bare word, but NEVER into `cmd`: a flag can never BE the
+# command, and letting one land there would turn a typo into "unknown command" instead of "unknown flag".
+# Order matters at the call site: put the modifier AFTER the subcommand (`debate score --capture`).
+_ace_arg_push() {
+  if   [ -z "${ACE_ARG:-}"  ]; then ACE_ARG="$1";  export ACE_ARG
+  elif [ -z "${ACE_ARG2:-}" ]; then ACE_ARG2="$1"; export ACE_ARG2
+  elif [ -z "${ACE_ARG3:-}" ]; then ACE_ARG3="$1"; export ACE_ARG3
+  fi
+}
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) ACE_DRY_RUN=1; export ACE_DRY_RUN ;;
@@ -288,8 +333,17 @@ while [ $# -gt 0 ]; do
     --out)        ACE_OUT="${2:-}"; export ACE_OUT; shift ;;          # snap output path
     --tag)        ACE_RELEASE_TAG="${2:-}"; export ACE_RELEASE_TAG; shift ;;  # ace release --tag vX.Y.Z (cut+push a v* tag → CI release job)
     --host)       ACE_RELEASE_HOST=1; export ACE_RELEASE_HOST ;;  # ace release --host (build on the host, not in a container)
-    --json)       ACE_JSON=1; export ACE_JSON ;;   # machine output for reporters (scorecard/reanalyze) — else the -*) arm would swallow it
-    -*) ;;        # ignore unknown flags
+    --json)       ACE_JSON=1; export ACE_JSON ;;   # machine output for reporters (scorecard/reanalyze)
+    # Sub-command modifiers documented in docs/commands.md + docs/trial-runs.md and parsed by the harness
+    # that finally receives them (tests/debate-effectiveness.sh, tests/debate-autotune.sh). They were never
+    # parsed here, so the old catch-all ate them: `ace debate score --capture` silently scored STALE
+    # snapshots and still printed a GO verdict, and `ace debate autotune --propose-prompt` exited 2.
+    --capture|--stub|--diagnose|--emit-tsv|--propose-prompt) _ace_arg_push "$1" ;;
+    # Everything else starting with '-' is a TYPO, and must be fatal. This arm used to be `-*) ;;` — a
+    # silent swallow, which made `ace autorun -explain` (one missing dash) skip the read-only policy print
+    # and start a REAL autonomous build loop that commits, pushes and merges. Exiting here happens during
+    # PARSING, before any dispatch, so a mistyped flag can never reach a destructive flow.
+    -*) err "unknown flag: $1"; echo; usage; exit 1 ;;
     *) if [ -z "$cmd" ]; then cmd="$1"; elif [ -z "${ACE_ARG:-}" ]; then ACE_ARG="$1"; elif [ -z "${ACE_ARG2:-}" ]; then ACE_ARG2="$1"; elif [ -z "${ACE_ARG3:-}" ]; then ACE_ARG3="$1"; fi ;;
   esac
   shift
@@ -327,12 +381,12 @@ case "${cmd:-menu}" in
                        spec|review) ( cd "$_sr" && bash "$_sl/debate.sh" "$ACE_ARG" "${ACE_ARG2:-}" "${ACE_ARG3:-}" ) ;;
                        report)      ( cd "$_sr" && bash "$_sl/debate.sh" report "${ACE_ARG2:-}" ) ;;
                        score)       ( cd "$ACE_DIR" && bash tests/debate-effectiveness.sh "${ACE_ARG2:-}" ) ;;   # effectiveness (P/R/F1) vs the labeled sandbox
-                       diagnose)    ( cd "$ACE_DIR" && bash tests/debate-effectiveness.sh --diagnose ) ;;   # manual improvement: FPs/FNs + tuning hints
+                       diagnose|--diagnose) ( cd "$ACE_DIR" && bash tests/debate-effectiveness.sh --diagnose ) ;;   # manual improvement: FPs/FNs + tuning hints (flag form now parses, so accept it)
                        autotune)    ( cd "$ACE_DIR" && bash tests/debate-autotune.sh "${ACE_ARG2:-}" "${ACE_ARG3:-}" ) ;;   # automatic: A/B a knob, keep if better (opt-in)
                        trend)       ( cd "$ACE_DIR" && bash "$_sl/debate.sh" trend "${ACE_ARG2:-}" ) ;;   # effectiveness over time + conclusion
                        testproject) bash "$_sl/debate.sh" testproject "${ACE_ARG2:-}" ;;   # materialize the runnable labeled sandbox
                        selftest)    bash "$_sl/debate.sh" selftest ;;
-                       *) echo "usage: ace debate spec <spec-file> [slug]  |  ace debate review [base] [slug]  |  ace debate report  |  ace debate score|trend|diagnose|autotune|testproject   (cross-model dialogue; needs OPENROUTER_API_KEY + DEBATE_MODEL_B)" ;;
+                       *) echo "usage: ace debate spec <spec-file> [slug]  |  review [base] [slug]  |  report  |  trend [n]  |  score [--capture|--emit-tsv]  |  diagnose  |  autotune <KNOB=value> [--stub] | --propose-prompt  |  testproject [dir]  |  selftest   (cross-model dialogue; needs OPENROUTER_API_KEY + DEBATE_MODEL_B)" ;;
                      esac ;;
   loop-service)      loop_service_run "${ACE_ARG:-}" ;;   # internal: systemd ExecStart target
   report|triage)     _sl="$(dirname "$(readlink -f "$0")")/lib"; . "$_sl/report.sh"
@@ -375,7 +429,10 @@ case "${cmd:-menu}" in
                        policy)    ( cd "$_sr" && bash "$_sl/swarm.sh" policy ) ;;
                        policy-selftest) bash "$_sl/swarm.sh" policy-selftest ;;
                        wire)      bash "$_sl/swarm-wire.sh" "${ACE_ARG2:-check}" "$_sr" ;;
-                       *) echo "usage: ace swarm {start[ fg]|stop|dash|split|pause|resume|drain|kill wN|status|stats|tail|sandbox|selftest|policy|wire [check|apply]}" ;;
+                       # Keep this list byte-identical to the `ace swarm …` line in usage() AND to the arms
+                       # above it — help and dispatch drifted in BOTH directions before (spec-lint/logs/
+                       # policy-selftest were in neither, policy missing from usage, preflight missing here).
+                       *) echo "usage: ace swarm {start[ fg]|stop|dash|watch|split|pause|resume|drain|kill wN|status|stats|preflight|spec-lint|tail|logs|sandbox|selftest|policy|policy-selftest|wire [check|apply]}" ;;
                      esac ;;
   awake|caffeinate)  awake_ctl "${ACE_ARG:-status}" ;;
   upgrade|adopt)     upgrade_repo ;;
