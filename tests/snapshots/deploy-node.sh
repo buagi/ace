@@ -17,10 +17,53 @@ for ex in $(git ls-files '*.example' 2>/dev/null); do
 done
 
 # 3) build the runtime (final) image and (re)start the service.
-# The start command lives in the Containerfile's `final` stage (CMD) — set it there for your app.
-IMAGE="localhost/app:latest"
+# The start command lives in the `final` stage of the Containerfile (CMD) — set it there for your app.
+NAME="app"
+IMAGE="localhost/$NAME:latest"
+PREV="localhost/$NAME:prev"
+
+# ROLLBACK GUARD. This block used to overwrite :latest and then 'podman rm -f' the live container with
+# no trap and no previous image kept — so a failing 'podman run' left the host with NO container AND no
+# last-good image to restore, i.e. a hard outage from a routine deploy. Now: keep the current :latest as
+# :prev BEFORE the build overwrites it, and if the new container fails to come up, put :prev back.
+#
+# The rollback target is taken from the image the container is ACTUALLY RUNNING, not from :latest.
+# :latest is overwritten by every build, including a failed deploy's — so re-tagging :latest as :prev
+# would, on the second consecutive failed deploy, overwrite the last-good :prev with the known-bad image
+# and leave nothing to roll back to. The running container is the only image proven to work.
+_LIVE_IMG=$(podman inspect -f '{{if .State.Running}}{{.Image}}{{end}}' "$NAME" 2>/dev/null || true)
+if [ -n "$_LIVE_IMG" ]; then
+  podman tag "$_LIVE_IMG" "$PREV"
+  echo "[deploy] kept the RUNNING image as $PREV (rollback target)"
+elif podman image exists "$PREV" 2>/dev/null; then
+  echo "[deploy] $NAME is not running — keeping the existing $PREV as the rollback target (not overwriting it with an unproven image)"
+else
+  echo "[deploy] no running container and no $PREV — first deploy, nothing to roll back to"
+fi
+
+# Armed only for the window where the old container is already gone but the new one is not up yet.
+# Outside that window a failure leaves the running service untouched, so there is nothing to undo.
+_ROLLBACK_ARMED=0
+_rollback() {
+  [ "$_ROLLBACK_ARMED" = 1 ] || return 0
+  if ! podman image exists "$PREV" 2>/dev/null; then
+    echo "[deploy] DEPLOY FAILED and there is no $PREV image — $NAME is DOWN. Inspect: podman logs $NAME" >&2
+    return 0
+  fi
+  echo "[deploy] DEPLOY FAILED — rolling back to $PREV …" >&2
+  podman rm -f "$NAME" 2>/dev/null || true
+  if podman run -d --name "$NAME" --restart=always --env-file .env -p 3000:3000 "$PREV"; then
+    echo "[deploy] rolled back: $NAME is running the previous image ($PREV)." >&2
+  else
+    echo "[deploy] ROLLBACK ALSO FAILED — $NAME is DOWN. Inspect: podman logs $NAME" >&2
+  fi
+}
+trap _rollback EXIT
+
 echo "[deploy] building $IMAGE (final image) …"
 podman build --target final -t "$IMAGE" -f Containerfile .
-podman rm -f app 2>/dev/null || true
-podman run -d --name app --restart=always --env-file .env -p 3000:3000 "$IMAGE"
+podman rm -f "$NAME" 2>/dev/null || true
+_ROLLBACK_ARMED=1
+podman run -d --name "$NAME" --restart=always --env-file .env -p 3000:3000 "$IMAGE"
+_ROLLBACK_ARMED=0; trap - EXIT
 echo "[deploy] app running on :3000 (set the final-stage CMD if it is not up yet)"

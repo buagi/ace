@@ -10,10 +10,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./... -race -timeout 120s
-      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./... || true
+      # Same brownfield exclusion as ./ci.sh — remote CI must agree with the local gate, or a repo that
+      # commits imported code passes pre-commit and then fails here on somebody else's legacy package.
+      # go list's rc is judged on its own: an empty list must mean "no owned packages", never "go list
+      # blew up". Inlining it in the echo discarded the rc and left an empty GOPKGS that only fails the
+      # next step by luck (and silently narrows 'go test' to the root package in a repo with a root main).
+      - name: Resolve owned packages (excludes brownfield/)
+        run: |
+          # stdout and stderr MUST stay separate:  writes "go: downloading <mod>" to STDERR while
+          # exiting 0 — routine on a cold module cache, i.e. the first CI run of every scaffolded Go repo with
+          # a dependency. Folding it in put that text INTO the package list, and the next step ran
+          #  -> malformed import path. Judge rc; keep stderr for the message.
+          if ! out=$(go list ./... 2>/tmp/golist.err); then
+            echo "::error::'go list ./...' failed — the module does not resolve; refusing to build/vet/test a tree we cannot enumerate"
+            cat /tmp/golist.err; exit 1
+          fi
+          pkgs=$(printf '%s\n' "$out" | grep -v '/brownfield' | tr '\n' ' ')
+          echo "GOPKGS=$pkgs" >> "$GITHUB_ENV"
+          if [ -z "${pkgs// /}" ]; then echo "no Go packages outside brownfield/ — skipping build/vet/test (same as ./ci.sh)"; echo "GOSKIP=1" >> "$GITHUB_ENV"; fi
+      - if: env.GOSKIP != '1'
+        run: go build $GOPKGS
+      - if: env.GOSKIP != '1'
+        run: go vet $GOPKGS
+      - if: env.GOSKIP != '1'
+        run: go test $GOPKGS -race -timeout 120s
+      - if: env.GOSKIP != '1'
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest $GOPKGS || true
   security:
     runs-on: ubuntu-latest
     steps:

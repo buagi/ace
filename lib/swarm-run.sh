@@ -155,8 +155,97 @@ _tick_roadmap() {
   fi
 }
 
+# ---- WIP-branch lifecycle (CROSS-RUN resume) ---------------------------------
+# docs/swarm.md:174 promises "a later run can resume it", so a swarm/*-<hash> branch carrying commits
+# that are NOT on the integration tip is DURABLE STATE, not litter. Exactly three places used to destroy
+# it — the reaper's _clean_hash, the next start's _prune_stale_swarm, and run_worker's own end-of-item
+# cleanup — and each asked the question with its own hardcoded `origin/$MAIN..$b`. One helper now owns
+# the question so a future edit cannot make them disagree again (that disagreement WAS the bug).
+#
+# _wip_base — the ref to measure "ahead of" against. origin/$MAIN is the truth for a live run, but the
+# DRY sandbox has no remote at all; falling back to the local $MAIN keeps the same semantics there
+# instead of silently answering "0 ahead" (which would have re-armed the deletion we are preventing).
+_wip_base() {
+  git -C "$REPO" rev-parse -q --verify "origin/$MAIN" >/dev/null 2>&1 && { printf 'origin/%s' "$MAIN"; return 0; }
+  git -C "$REPO" rev-parse -q --verify "$MAIN"        >/dev/null 2>&1 && { printf '%s' "$MAIN"; return 0; }
+  return 1
+}
+# _wip_ahead BRANCH — 0 (true) when BRANCH carries work that has NOT landed on the integration tip.
+# Fail-CLOSED for a data-loss guard: if we cannot determine the base (no main at all) or cannot read the
+# answer, we report "has WIP" and KEEP the branch. A leaked branch is recoverable; a deleted WIP commit is not.
+#
+# The test is CONTENT-based (`git cherry`), not ancestry-based (`rev-list --count "$base..$b"`). The LIVE
+# merge is `--squash` (lib/autoloop.sh: mflags="--squash --delete-branch"), which lands a branch's content
+# on main WITHOUT making the branch an ancestor of it. An ancestry count therefore answers "1 ahead"
+# forever for every already-merged branch, so all three call sites would KEEP them permanently — and
+# because the item hash is a stable cksum of the ROADMAP line, each leaked branch also stays a live
+# resume candidate for its item, meaning a later re-claim reattaches to work that already shipped. That
+# is the junk-resume churn _prune_stale_swarm exists to prevent. `git cherry` marks upstream-equivalent
+# commits `-` and genuinely-unmerged ones `+`, which is the question we actually mean. (The DRY sandbox
+# merges --no-ff, so no suite exercised the squash case; that is why the ancestry test looked correct.)
+_wip_ahead() {
+  local b="${1:-}" base out rc
+  [ -n "$b" ] || return 1
+  # A ref that does not exist holds no WIP. This must be tested SEPARATELY from the unreadable case below:
+  # callers probe speculative refs (refs/heads/X vs refs/remotes/origin/X for the same branch), and folding
+  # "absent" into the fail-closed "assume WIP" answer would make every such probe report WIP forever.
+  git -C "$REPO" rev-parse -q --verify "$b" >/dev/null 2>&1 || return 1
+  base="$(_wip_base)" || return 0                       # no base to compare → assume WIP, keep it
+  out="$(git -C "$REPO" cherry "$base" "$b" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] || return 0                           # unreadable → assume WIP, keep it
+  [ -n "$out" ] || return 1                             # no commits beyond the base at all
+    # NO PIPELINE HERE. `printf … | grep -q` makes grep exit on the first match while printf is still
+    # writing; past the 64 KiB pipe buffer printf takes SIGPIPE and `set -o pipefail` (:15) propagates
+    # 141 — non-zero — which this guard reads as "no WIP" and DELETES the branch. A here-string has no
+    # second process to die, so the rc is grep's alone. Measured: rc flipped to 141 at ~215 KB.
+    grep -q '^+' <<<"$out"                                # any patch NOT already upstream → real WIP
+}
+# _wip_drop_branch BRANCH — the ONLY guarded delete-by-name on the claim path. Returns 0 when the name is
+# FREE afterwards (deleted, or it never existed), 1 when the branch was KEPT — either because it still
+# carries unmerged WIP or because git refused the delete (e.g. it is checked out in a worktree we could
+# not prune). Callers must NOT assume the name is creatable unless this returned 0: that is precisely
+# what stops a `worktree add -b` from being preceded by a force-delete of live work.
+_wip_drop_branch() {
+  local b="${1:-}"
+  b="${b#refs/heads/}"                                  # accept either form; never let a full ref read as "absent"
+  [ -n "$b" ] || return 1
+  git -C "$REPO" rev-parse -q --verify "refs/heads/$b" >/dev/null 2>&1 || return 0
+  _wip_ahead "refs/heads/$b" && return 1
+  git -C "$REPO" branch -D "$b" >/dev/null 2>&1
+}
+# _wip_count BRANCH — how many WIP commits, for the operator-facing messages (never a decision input).
+_wip_count() {
+  local base out; base="$(_wip_base)" || { printf '?'; return 0; }
+  # same predicate as _wip_ahead, so the number an operator reads matches the decision that was made:
+  # count only the patches that are NOT already upstream (a squash-merged commit is not "1 WIP commit").
+  out="$(git -C "$REPO" cherry "$base" "${1:-}" 2>/dev/null)" || { printf '?'; return 0; }
+  printf '%s' "$(printf '%s\n' "$out" | grep -c '^+')"
+}
+# _wip_resume_branch HASH — THE cross-run resume lookup: the MOST RECENTLY COMMITTED swarm branch for this
+# item hash that still carries unmerged WIP, or empty. Extracted from run_worker so the selftest exercises
+# the REAL lookup instead of a copy that could silently drift from it.
+#
+# The scan is ordered by committerdate DESC, not by refname: with several WIP branches for one hash,
+# name order would resume the OLDEST attempt and leave the newest work sitting untouched. Note this
+# returns the FIRST match only — it does not vouch for any other branch, so no caller may treat "this
+# ref was not returned" as "that ref holds nothing" (see the guarded delete in run_worker).
+#
+# The glob is deliberately `swarm/*-$hash`, NOT `swarm/${RUNID}-*-$hash`. Branch names are
+# swarm/<runid>-<wid>-<hash>, so hash-only matching spans BOTH runs and workers — which is the whole
+# point: RUNID-scoping made cross-run resume structurally impossible, and the old self-exclusion
+# (`grep -vxF "$branch"`) additionally hid a same-worker re-claim's own branch from itself.
+_wip_resume_branch() {
+  local h="${1:-}" b
+  [ -n "$h" ] || return 0
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    _wip_ahead "$b" && { printf '%s' "$b"; return 0; }
+  done < <(git -C "$REPO" for-each-ref --sort=-committerdate --format='%(refname:short)' "refs/heads/swarm/*-$h" 2>/dev/null)
+  return 0
+}
+
 run_worker() {
-  local wid="w$1" res item hash paths branch wt base_ref _keep_branch _prior _resume
+  local wid="w$1" res item hash paths branch wt base_ref _keep_branch _prior _resume _werr _b
   while :; do
     # operator controls from `ace swarm dash` (or `ace swarm pause/drain/kill`):
     [ -f "$SWARM_DIR/control.kill-$wid" ] && { swarm_post "$wid" idle "killed by operator" ; rm -f "$SWARM_DIR/control.kill-$wid"; break; }
@@ -201,21 +290,57 @@ run_worker() {
     # worker opens behind origin/main and its pre-commit changelog hook regenerates
     # from a shorter history, reverting main's entries (near-miss data loss in the run).
     git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true
+    git -C "$REPO" worktree prune 2>/dev/null || true   # release worktree registrations a reap/crash left behind, so a resume branch is attachable
     base_ref="$MAIN"; git -C "$REPO" rev-parse -q --verify "origin/$MAIN" >/dev/null 2>&1 && base_ref="origin/$MAIN"
-    # #64: resume-on-reclaim — if a PRIOR attempt at THIS item (this run) left committed WIP on its swarm branch
-    # (kept on an incomplete/abandoned outcome below), base this worktree on that WIP instead of fresh main, so the
-    # autoloop builds on it rather than re-implementing from scratch (Opus is ~94% of cost). The merge queue still
-    # rebases onto fresh main at land time, so a slightly-behind WIP base is safe.
-    _prior="$(git -C "$REPO" for-each-ref --format='%(refname:short)' "refs/heads/swarm/${RUNID:-r}-*-$hash" 2>/dev/null | grep -vxF "$branch" | head -1)"
-    if [ -n "$_prior" ] && [ "$(git -C "$REPO" rev-list --count "origin/$MAIN..$_prior" 2>/dev/null || echo 0)" -gt 0 ]; then
-      base_ref="$_prior"; _resume=1
+    # #64 resume-on-reclaim, now CROSS-RUN (docs/swarm.md:174). Find ANY swarm branch for THIS item hash that
+    # still carries unmerged WIP — the branch name is swarm/<runid>-<wid>-<hash>, so globbing on the hash alone
+    # spans runs AND workers. The old search was RUNID-prefixed and additionally `grep -vxF "$branch"`-excluded
+    # its OWN name, which broke resume twice over: a prior run could never match, and a SAME-worker re-claim
+    # recomputed an identical branch name, excluded it from the search, then died in `worktree add -b` on the
+    # collision — burning a whole MAX_TRIES slot with zero model work.
+    #
+    # The fix is to REATTACH rather than re-create: check the existing branch out into the new worktree (no -b)
+    # and adopt it as OUR branch for this attempt. That is collision-proof by construction (we never ask git to
+    # create a name that exists), and it drops the old `branch -D "$_prior"` — deleting the very WIP we resumed
+    # from, which only worked because the new branch happened to contain it.
+    _prior="$(_wip_resume_branch "$hash")"; _werr=""
+    if [ -n "$_prior" ]; then
+      # reattach: same branch, new worktree. Can still fail if the branch is checked out in a worktree we could
+      # not prune (a genuinely live peer) — fall THROUGH to our own branch name rather than forfeiting the
+      # attempt. That fall-through does NOT license deleting anything: see the guard below.
+      if _werr="$(git -C "$REPO" worktree add -q "$wt" "$_prior" 2>&1)"; then
+        branch="$_prior"; _resume=1
+        swarm_post "$wid" acquired "resuming prior WIP ($(_wip_count "$branch") commit(s), branch $branch) for: $item" "$item"
+      else
+        swarm_post "$wid" needs-attention "could not reattach WIP branch $_prior (${_werr:-no detail}) — falling back to our own branch $branch (kept $_prior intact)" "$item"
+        _prior=""; rm -rf "$wt"
+      fi
     fi
-    if ! git -C "$REPO" worktree add -q -b "$branch" "$wt" "$base_ref" 2>/dev/null; then
-      swarm_post "$wid" error "worktree add failed" "$item"; swarm_release "$wid" "$hash" error; continue
-    fi
-    if [ "$_resume" = 1 ]; then
-      swarm_post "$wid" acquired "resuming prior WIP ($(git -C "$REPO" rev-list --count "origin/$MAIN..$_prior" 2>/dev/null || echo '?') commit(s)) for: $item" "$item"
-      git -C "$REPO" branch -D "$_prior" 2>/dev/null   # superseded by our worktree's branch
+    if [ "$_resume" != 1 ]; then
+      # We did not reattach. A branch may still exist under our computed name — and we may NOT assume it is
+      # empty. `_wip_resume_branch` returns the FIRST match and stops, so when another ref for this hash
+      # matched first (or when reattaching that ref failed and we fell through here), our own name was never
+      # tested and can hold unmerged WIP. The pre-fix code force-deleted it here; that turned a wasted
+      # MAX_TRIES slot into silent, irreversible data loss — the branch NAME then reappears at base_ref via
+      # `worktree add -b`, so nothing looks wrong afterwards. _wip_drop_branch asks the durable question and
+      # only frees the name when it is genuinely free.
+      if _wip_drop_branch "$branch"; then
+        if ! _werr="$(git -C "$REPO" worktree add -q -b "$branch" "$wt" "$base_ref" 2>&1)"; then
+          # surface git's stderr: the old `2>/dev/null` turned every cause (name collision, dirty path, locked
+          # worktree) into one blind "worktree add failed", which is why the re-claim collision went unnoticed.
+          swarm_post "$wid" error "worktree add failed for $branch: ${_werr:-no detail}" "$item"
+          rm -rf "$wt"; swarm_release "$wid" "$hash" error; continue
+        fi
+      elif _werr="$(git -C "$REPO" worktree add -q "$wt" "$branch" 2>&1)"; then
+        # our own name was KEPT because it still holds work — adopt it instead of destroying it.
+        _resume=1
+        swarm_post "$wid" acquired "resuming WIP on our own branch name ($(_wip_count "$branch") commit(s), branch $branch) for: $item" "$item"
+      else
+        # kept AND unattachable (checked out in a worktree we could not prune). Burn the attempt — that is
+        # recoverable; deleting the branch to make room is not.
+        swarm_post "$wid" needs-attention "branch $branch holds unmerged WIP and could not be reattached (${_werr:-no detail}) — refusing to delete it; releasing this attempt" "$item"
+        rm -rf "$wt"; swarm_release "$wid" "$hash" error; continue
+      fi
     fi
     rm -f "$SWARM_DIR/control.abandon-$wid-$hash" 2>/dev/null   # fresh claim — clear any stale abandon signal
     ( while :; do swarm_beat "$wid" "$hash"; sleep "${SWARM_BEAT:-30}"; done ) & local bpid=$!
@@ -234,7 +359,7 @@ run_worker() {
       swarm_post "$wid" abandoned "reassigned mid-flight — dropped: $item" "$item"
       rm -f "$SWARM_DIR/control.abandon-$wid-$hash" 2>/dev/null
       # #64: keep our WIP branch so the NEW owner resumes from it (the autoloop already committed WIP on TERM).
-      [ "$DRY_RUN" != 1 ] && [ "$(git -C "$REPO" rev-list --count "origin/$MAIN..$branch" 2>/dev/null || echo 0)" -gt 0 ] && _keep_branch=1
+      [ "$DRY_RUN" != 1 ] && _wip_ahead "$branch" && _keep_branch=1
     else
       swarm_post "$wid" merging "$item" "$item"
       local ok=1
@@ -260,7 +385,7 @@ run_worker() {
         swarm_post "$wid" "$_oc" "$_oc → $([ "$_oc" = conflict ] && echo conflict_resolver || echo requeue): $item" "$item"
         swarm_release "$wid" "$hash" "$_oc"
         # #64: keep the branch if it has committed WIP so the re-claim resumes from it instead of re-implementing.
-        [ "$DRY_RUN" != 1 ] && [ "$(git -C "$REPO" rev-list --count "origin/$MAIN..$branch" 2>/dev/null || echo 0)" -gt 0 ] && _keep_branch=1
+        [ "$DRY_RUN" != 1 ] && _wip_ahead "$branch" && _keep_branch=1
       fi
     fi
     # Preserve this worker's run artefacts BEFORE `worktree remove` deletes .opencode/ — solo runs persist these,
@@ -279,7 +404,14 @@ run_worker() {
       done
     fi
     git -C "$REPO" worktree remove -f "$wt" 2>/dev/null
-    [ "${_keep_branch:-0}" = 1 ] || git -C "$REPO" branch -D "$branch" 2>/dev/null   # #64: keep the WIP branch so the next claimant resumes from it
+    # #64: keep the WIP branch so the next claimant resumes from it. The _wip_drop_branch re-check is not
+    # redundant with _keep_branch: the DRY-mode short-circuit above leaves _keep_branch=0 on the abandon
+    # path, and this is the last gate before an irreversible delete — ask the durable question directly.
+    # NOTE (behaviour change, deliberate): this gate is no longer live-only. In DRY on a REAL repo a
+    # simulated-edit branch that failed to merge now survives here, because the guard cannot distinguish
+    # a simulated commit from a real one and must not guess. `_prune_stale_swarm` clears it on the next
+    # start once its content has landed; until then it is a resume candidate like any other WIP branch.
+    [ "${_keep_branch:-0}" = 1 ] || _wip_drop_branch "$branch"
   done
 }
 
@@ -306,11 +438,23 @@ swarm_watch() {
 }
 
 # clean a reclaimed item's worktree + branch by hash (glob over worker ids).
+# The WORKTREE always goes: it is a checkout, reconstructible from the branch, and leaving it registered
+# is what blocks the next claimant from reattaching the branch.
+# The BRANCH only goes when it holds nothing unmerged. This guard is the whole point: the reaper fires on
+# exactly the abandoned/dead-worker outcomes that the stop path and _keep_branch=1 deliberately preserved
+# WIP for, so the unguarded `branch -D` here deleted that WIP moments after it was saved — making both the
+# #64 resume path and docs/swarm.md's "a later run can resume it" dead letters.
 _clean_hash() {
   local h="$1" w b
   for w in "$WT_ROOT/"*"-$h"; do [ -d "$w" ] && git -C "$REPO" worktree remove -f "$w" 2>/dev/null; done
+  git -C "$REPO" worktree prune 2>/dev/null || true
   for b in $(git -C "$REPO" for-each-ref --format='%(refname:short)' "refs/heads/swarm/*-$h" 2>/dev/null); do
-    git -C "$REPO" branch -D "$b" 2>/dev/null; done
+    if _wip_ahead "$b"; then
+      swarm_post reaper reap "kept WIP branch $b ($(_wip_count "$b") commit(s)) — the next claimant resumes from it" "" 2>/dev/null || true
+      continue
+    fi
+    git -C "$REPO" branch -D "$b" 2>/dev/null
+  done
 }
 
 # reaper — periodically reclaim leases whose worker went silent; clean their
@@ -336,26 +480,48 @@ _reaper() {
   done
 }
 
-# prune leftovers from prior runs: close junk resume PRs + delete every stale
-# swarm/* branch (local+remote). Without this the auto-loop's resume logic finds
-# old open PRs on colliding branch names and burns full conflict-resolution laps
-# on corrupt-ROADMAP-stub junk (the biggest waste in the 10h run).
+# prune leftovers from prior runs: close junk resume PRs + delete stale swarm/* branches (local+remote).
+# Without this the auto-loop's resume logic finds old open PRs on colliding branch names and burns full
+# conflict-resolution laps on corrupt-ROADMAP-stub junk (the biggest waste in the 10h run).
+#
+# STALE ≠ UNMERGED. Under the CROSS-RUN resume model (docs/swarm.md:174) a swarm/* branch that is ahead of
+# the integration tip is the previous run's preserved WIP — the single most expensive artifact the swarm
+# produces (Opus is ~94% of run cost) — and this function used to delete EVERY one of them on the next
+# start, three lines of shell undoing exactly what the stop path had just protected. The junk this is
+# meant to clear (empty stubs, fully-merged leftovers) is precisely the set that is NOT ahead, so the
+# guard costs nothing: it only spares branches that hold real work.
 _prune_stale_swarm() {
-  local slug b pr
+  local slug b pr kept=0
   slug="$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || true
+  git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true   # measure against the CURRENT tip: a branch merged since last run is now prunable
+  # Mirror origin's swarm/* heads into remote-tracking refs up front, so the PR sweep AND the remote sweep
+  # below can both ask _wip_ahead about a branch that exists only on origin (e.g. a prior run elsewhere).
+  git -C "$REPO" fetch -q --prune origin '+refs/heads/swarm/*:refs/remotes/origin/swarm/*' 2>/dev/null || true
   git -C "$REPO" worktree prune 2>/dev/null || true
   for b in $(git -C "$REPO" for-each-ref --format='%(refname:short)' 'refs/heads/swarm/*' 2>/dev/null); do
+    if _wip_ahead "$b"; then
+      kept=$((kept+1)); echo "  kept local $b ($(_wip_count "$b") unmerged commit(s)) — resumable by hash" >&2; continue
+    fi
     git -C "$REPO" branch -D "$b" >/dev/null 2>&1 && echo "  pruned local $b" >&2; done
+  [ "$kept" -gt 0 ] && echo "  ($kept WIP branch(es) preserved for cross-run resume)" >&2
   [ -n "$slug" ] || return 0
   command -v gh >/dev/null || return 0
+  # Close the junk PRs (that is the churn fix) but do NOT pass --delete-branch on a swarm/* head that still
+  # carries WIP — gh would delete the remote branch out from under the resume path we just protected locally.
   gh pr list --repo "$slug" --state open --json number,headRefName,title --limit 200 2>/dev/null \
     | jq -rc '.[] | select((.headRefName|startswith("swarm/")) or (.title|startswith("chore(resume)"))) | "\(.number)\t\(.headRefName)"' 2>/dev/null \
     | while IFS=$'\t' read -r pr b; do
-        [ -n "$pr" ] && gh pr close "$pr" --repo "$slug" --delete-branch >/dev/null 2>&1 \
-          && echo "  closed junk PR #$pr ($b)" >&2; done
+        [ -n "$pr" ] || continue
+        if _wip_ahead "refs/heads/$b" || _wip_ahead "refs/remotes/origin/$b"; then
+          gh pr close "$pr" --repo "$slug" >/dev/null 2>&1 && echo "  closed junk PR #$pr ($b) — branch KEPT (unmerged WIP)" >&2
+        else
+          gh pr close "$pr" --repo "$slug" --delete-branch >/dev/null 2>&1 && echo "  closed junk PR #$pr ($b)" >&2
+        fi; done
   git -C "$REPO" ls-remote --heads origin 'swarm/*' 2>/dev/null | awk '{sub(/refs\/heads\//,"",$2); print $2}' \
-    | while read -r b; do [ -n "$b" ] && git -C "$REPO" push -q origin --delete "$b" >/dev/null 2>&1 \
-        && echo "  deleted stale remote $b" >&2; done
+    | while read -r b; do
+        [ -n "$b" ] || continue
+        if _wip_ahead "refs/remotes/origin/$b"; then echo "  kept remote $b (unmerged WIP)" >&2; continue; fi
+        git -C "$REPO" push -q origin --delete "$b" >/dev/null 2>&1 && echo "  deleted stale remote $b" >&2; done
   # GC the auto-loop's own feat/* branches once MERGED into main (they pile up across a long run).
   git -C "$REPO" fetch -q origin "$MAIN" 2>/dev/null || true
   for b in $(git -C "$REPO" branch --merged "origin/$MAIN" --format='%(refname:short)' 2>/dev/null | grep -E '^feat/'); do
@@ -451,7 +617,11 @@ _swarm_plan_sync() {
         while IFS= read -r _rsp; do
           [ -n "$_rsp" ] || continue
           printf '%s\n' "$_slint" | grep -q "^SPECGAP $(basename "$_rsp" .md) " && continue   # still gappy after re-spec → skip
-          _deb="$(cd "$REPO" && bash "$HERE/debate.sh" spec "$_rsp" 2>/dev/null)" || true
+          # NO 2>/dev/null: debate.sh narrates every turn on stderr (lib/debate.sh:110-152) and reports its
+          # fail-open skips there too ("DEBATE_MODEL_B unset", "challenger returned NOTHING"). Discarding it
+          # three lines after promising per-turn progress made a silently-skipped debate look identical to a
+          # completed one. $( ) captures stdout only, so the narration reaches coordinator.log where it belongs.
+          _deb="$(cd "$REPO" && bash "$HERE/debate.sh" spec "$_rsp")" || true
           [ -n "$_deb" ] && _extra="$(printf '%s\n%s' "$_extra" "$_deb")"
         done < <(_specf)
       elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
@@ -868,8 +1038,142 @@ DEAF
   rm -rf "$d2"
   [ "$ok2" = 1 ] || ok=0
 
+  # ── scenario 3: the WIP-branch LIFECYCLE ────────────────────────────────────────────────────────
+  # Chained here (rather than given its own row in tests/swarm-selftests.sh) because this file's only
+  # CI entry point is `killsafety-selftest` (.github/workflows/ci.yml:38 → tests/swarm-selftests.sh:33).
+  # It is the natural partner of the scenarios above: they prove the stop path COMMITS in-flight WIP to
+  # a swarm branch, and this proves the reaper and the next start do not then DELETE it. A subshell
+  # keeps its REPO/MAIN/WT_ROOT/SWARM_DIR fixture from leaking into (or inheriting from) the above.
+  ( swarm_wiplifecycle_selftest ) || ok=0
+
   [ "$ok" = 1 ] && { echo "[killsafety] PASS ✓"; return 0; }
   echo "[killsafety] FAIL ✗" >&2; return 1
+}
+
+# ---- WIP-branch lifecycle selftest (hermetic, real git, no network, no credits) ----
+# Proves the CROSS-RUN resume guarantee docs/swarm.md:174 makes: a swarm/*-<hash> branch carrying commits
+# that are not on origin/main SURVIVES (a) the reaper's _clean_hash and (b) the next run's start-time
+# _prune_stale_swarm, and is then FOUND and REATTACHED by a re-claim regardless of which run or worker
+# created it. Every assertion below fails on the pre-fix code:
+#   · _clean_hash / _prune_stale_swarm deleted the branch unconditionally  → KEEP-1/KEEP-2/KEEP-3 fail
+#   · the resume search was refs/heads/swarm/${RUNID}-*-$hash              → XRUN fails (different runid)
+#   · a same-name re-claim used `worktree add -b` on an existing branch    → RECLAIM fails
+swarm_wiplifecycle_selftest() {
+  local d ok=1 up
+  d="$(mktemp -d)" || return 1
+  up="$d/origin.git"; REPO="$d/repo"; WT_ROOT="$d/wt"; SWARM_DIR="$d/state"; MAIN=main; DRY_RUN=0
+  mkdir -p "$WT_ROOT" "$SWARM_DIR"
+  git init -q --bare -b main "$up"
+  git init -q -b main "$REPO"
+  git -C "$REPO" config user.email swarm@test; git -C "$REPO" config user.name swarm
+  git -C "$REPO" config commit.gpgsign false
+  echo base > "$REPO/f.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -q -m base
+  git -C "$REPO" remote add origin "$up"; git -C "$REPO" push -q -u origin main
+
+  # (1) a PRIOR RUN's WIP branch: old runid, worker w2, item hash deadbeef, one unmerged commit.
+  git -C "$REPO" branch swarm/oldrun-w2-deadbeef main
+  git -C "$REPO" worktree add -q "$d/tmpwt" swarm/oldrun-w2-deadbeef
+  echo wip > "$d/tmpwt/wip.txt"
+  git -C "$d/tmpwt" add -A; git -C "$d/tmpwt" commit -q -m "WIP: real work worth resuming"
+  git -C "$REPO" worktree remove -f "$d/tmpwt"
+  # (2) a genuinely STALE branch for the same hash — fully merged, nothing to lose. Must still be pruned,
+  #     otherwise the guard has simply traded data loss for unbounded branch accumulation (the audit's
+  #     explicit warning about relaxing the prune).
+  git -C "$REPO" branch swarm/oldrun-w9-deadbeef main
+  # (3) a live-looking worktree registration for the hash, as a reap would find it
+  git -C "$REPO" worktree add -q "$WT_ROOT/w2-deadbeef" swarm/oldrun-w2-deadbeef
+
+  _has(){ git -C "$REPO" rev-parse -q --verify "refs/heads/$1" >/dev/null 2>&1; }
+
+  # ── KEEP-1: the reaper must not destroy what the stop path preserved ───────────────────────────
+  _clean_hash deadbeef >/dev/null 2>&1
+  _has swarm/oldrun-w2-deadbeef || { echo "[wiplifecycle] KEEP-1: _clean_hash DELETED a WIP branch ahead of origin/main"; ok=0; }
+  _has swarm/oldrun-w9-deadbeef && { echo "[wiplifecycle] KEEP-1: _clean_hash kept a fully-merged branch (branches would leak unboundedly)"; ok=0; }
+  [ -d "$WT_ROOT/w2-deadbeef" ] && { echo "[wiplifecycle] KEEP-1: _clean_hash left the worktree behind (blocks the next reattach)"; ok=0; }
+
+  # ── KEEP-2: the next `start` must not destroy it either ───────────────────────────────────────
+  git -C "$REPO" branch swarm/oldrun-w9-deadbeef main 2>/dev/null   # re-add the merged one; start must prune it
+  _prune_stale_swarm >/dev/null 2>&1
+  _has swarm/oldrun-w2-deadbeef || { echo "[wiplifecycle] KEEP-2: _prune_stale_swarm DELETED a WIP branch ahead of origin/main"; ok=0; }
+  _has swarm/oldrun-w9-deadbeef && { echo "[wiplifecycle] KEEP-2: _prune_stale_swarm kept a fully-merged branch (no longer pruning junk)"; ok=0; }
+
+  # ── XRUN: a NEW run (different RUNID) and a DIFFERENT worker must FIND that branch by hash ─────
+  # Drives the PRODUCTION lookup (_wip_resume_branch, which run_worker calls) under a RUNID that shares
+  # nothing with the branch's own — the exact case the old RUNID-prefixed glob could never match.
+  local found; RUNID=newrun-$$; found="$(_wip_resume_branch deadbeef)"
+  [ "$found" = swarm/oldrun-w2-deadbeef ] || { echo "[wiplifecycle] XRUN: cross-run resume lookup found '$found' — expected swarm/oldrun-w2-deadbeef (is it still RUNID-scoped?)"; ok=0; }
+  # a hash with no WIP anywhere must return empty, not the first branch it happens to see
+  [ -z "$(_wip_resume_branch 00000000)" ] || { echo "[wiplifecycle] XRUN: resume lookup invented a branch for an unknown hash"; ok=0; }
+
+  # ── RESUME: reattaching that branch into a fresh worktree must carry the WIP commit ────────────
+  if git -C "$REPO" worktree add -q "$WT_ROOT/w1-deadbeef" swarm/oldrun-w2-deadbeef 2>/dev/null; then
+    [ -f "$WT_ROOT/w1-deadbeef/wip.txt" ] || { echo "[wiplifecycle] RESUME: reattached worktree does not contain the prior WIP"; ok=0; }
+    git -C "$REPO" worktree remove -f "$WT_ROOT/w1-deadbeef" 2>/dev/null
+  else
+    echo "[wiplifecycle] RESUME: could not reattach the preserved WIP branch"; ok=0
+  fi
+
+  # ── RECLAIM: the SAME worker re-claiming the SAME item in the SAME run must not wedge ─────────
+  # Pre-fix this was the fatal shape: the computed name already exists, `worktree add -b` fails, the
+  # attempt is spent with zero model work, and MAX_TRIES drains one dead lap at a time. We assert the
+  # new path attaches SOMETHING usable rather than asserting the branch name, since either reattaching
+  # the prior WIP or opening a fresh branch is an acceptable outcome — burning the try is not.
+  git -C "$REPO" branch swarm/newrun-w1-cafe1234 main          # a same-name leftover with NO WIP
+  local rc_branch="swarm/newrun-w1-cafe1234" rc_wt="$WT_ROOT/w1-cafe1234" rc_prior rc_ok=0
+  rc_prior="$(_wip_resume_branch cafe1234)"
+  if [ -n "$rc_prior" ]; then git -C "$REPO" worktree add -q "$rc_wt" "$rc_prior" 2>/dev/null && rc_ok=1
+  else
+    _has "$rc_branch" && git -C "$REPO" branch -D "$rc_branch" >/dev/null 2>&1
+    git -C "$REPO" worktree add -q -b "$rc_branch" "$rc_wt" origin/main 2>/dev/null && rc_ok=1
+  fi
+  [ "$rc_ok" = 1 ] || { echo "[wiplifecycle] RECLAIM: a same-worker re-claim still fails to open a worktree (burns a MAX_TRIES slot with zero model work)"; ok=0; }
+  git -C "$REPO" worktree remove -f "$rc_wt" 2>/dev/null
+
+  # ── NODESTROY: the claim path's delete-by-name must REFUSE a branch that still holds WIP. This is the
+  #    reattach-fall-through case: _wip_resume_branch returns the FIRST match and stops, so when another
+  #    ref for the hash matched first (or its reattach failed), our own computed name was never tested.
+  #    Force-deleting it there destroyed the WIP SILENTLY — `worktree add -b` immediately recreates the
+  #    same NAME at base_ref, so `git branch` looks normal and nothing logs the loss.
+  _wip_drop_branch swarm/oldrun-w2-deadbeef \
+    && { echo "[wiplifecycle] NODESTROY: the claim-path delete freed a branch that still holds unmerged WIP"; ok=0; }
+  _has swarm/oldrun-w2-deadbeef \
+    || { echo "[wiplifecycle] NODESTROY: the claim-path delete DESTROYED a WIP branch"; ok=0; }
+  git -C "$REPO" branch swarm/newrun-w4-beef0001 main    # merged/empty leftover: the name MUST be freed
+  _wip_drop_branch swarm/newrun-w4-beef0001 \
+    || { echo "[wiplifecycle] NODESTROY: refused to free an empty leftover — a re-claim could never open its branch"; ok=0; }
+  _wip_drop_branch swarm/newrun-w4-nosuchref \
+    || { echo "[wiplifecycle] NODESTROY: an absent name reported 'not free' — a fresh claim would be released as an error"; ok=0; }
+
+  # ── SQUASH: the LIVE merge is `--squash` (lib/autoloop.sh), which lands a branch's content on main
+  #    WITHOUT making it an ancestor. A branch whose work has already shipped must NOT read as WIP —
+  #    otherwise every merged swarm/* branch leaks forever (local AND remote) and, because the item hash
+  #    is a stable cksum of the ROADMAP line, keeps resuming already-shipped work. An ancestry-based
+  #    predicate (`rev-list --count base..b`) passes every other assertion here and fails this one.
+  git -C "$REPO" branch swarm/oldrun-w3-5quash11 main
+  git -C "$REPO" worktree add -q "$d/sqwt" swarm/oldrun-w3-5quash11
+  echo shipped > "$d/sqwt/shipped.txt"
+  git -C "$d/sqwt" add -A; git -C "$d/sqwt" commit -q -m "work that later ships via squash"
+  git -C "$REPO" worktree remove -f "$d/sqwt"
+  git -C "$REPO" merge -q --squash swarm/oldrun-w3-5quash11 >/dev/null 2>&1
+  git -C "$REPO" commit -q -m "squash-merge of swarm/oldrun-w3-5quash11" >/dev/null 2>&1
+  git -C "$REPO" push -q origin main
+  _wip_ahead refs/heads/swarm/oldrun-w3-5quash11 \
+    && { echo "[wiplifecycle] SQUASH: a squash-merged branch still reads as WIP — merged branches would accumulate unboundedly and keep resuming shipped work"; ok=0; }
+  _clean_hash 5quash11 >/dev/null 2>&1
+  _has swarm/oldrun-w3-5quash11 \
+    && { echo "[wiplifecycle] SQUASH: _clean_hash kept a squash-merged branch (the prune is now a no-op under LIVE merge semantics)"; ok=0; }
+
+  # ── FAIL-CLOSED: with no main to compare against, the guard must KEEP (a leak is recoverable,
+  #    a deleted WIP commit is not). Probes the _wip_ahead contract directly.
+  ( MAIN=nonexistent-branch; _wip_ahead swarm/oldrun-w2-deadbeef ) \
+    || { echo "[wiplifecycle] FAIL-CLOSED: an undeterminable base answered 'no WIP' — that re-arms the delete"; ok=0; }
+  # and a ref that simply does not exist must answer "no WIP" (else the PR sweep probes never prune)
+  _wip_ahead refs/heads/swarm/does-not-exist \
+    && { echo "[wiplifecycle] a nonexistent ref reported WIP — remote/PR probes would never prune"; ok=0; }
+
+  rm -rf "$d"
+  [ "$ok" = 1 ] && { echo "[wiplifecycle] PASS ✓"; return 0; }
+  echo "[wiplifecycle] FAIL ✗" >&2; return 1
 }
 
 # ---- sandbox: full end-to-end proof on a throwaway repo, zero credits ---------
@@ -1078,7 +1382,8 @@ case "${1:-}" in
   split)      swarm_dash_split ;;       # OPTIONAL: real tmux panes (independent scrollback/mouse per worker) — needs tmux
   cockpit)    DASH_FEEDS=0 swarm_dash ;; # boxes-only cockpit (no inline feeds) — used inside the tmux split's top pane
   sandbox)    swarm_sandbox ;;
-  killsafety-selftest) swarm_killsafety_selftest ;;   # hermetic proof of the stop/Ctrl-C kill path (run by tests/swarm-selftests.sh)
+  killsafety-selftest) swarm_killsafety_selftest ;;   # hermetic proof of the stop/Ctrl-C kill path + the WIP-branch lifecycle (run by tests/swarm-selftests.sh)
+  wiplifecycle-selftest) swarm_wiplifecycle_selftest ;;   # the WIP-branch half alone, for a fast focused loop (also chained into killsafety-selftest for CI)
   worker)     run_worker "${2:-1}" ;;
   watch)      swarm_watch ;;
   pause)      swarm_init; : > "$SWARM_DIR/control.pause"; echo "paused — workers hold before claiming (resume: ace swarm resume)" ;;

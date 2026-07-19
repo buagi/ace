@@ -8,6 +8,19 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+# ── ONE exclusion list for EVERY recursive scan in this gate ────────────────────────────────────────
+# Trees this project does not own: dependency installs (node_modules/, .venv/, vendor/), build output,
+# and brownfield/ — code adopted by `ace import`, which PROMISES it is "excluded from the gate". It was
+# not: the RLS, migration-safety and log-hygiene sections below scanned it anyway, emitted RED [blocker]
+# and set fail=1, and .githooks/pre-commit then blocked EVERY commit over somebody else's legacy code.
+# Add paths HERE, never inline, so the next section added to this file cannot forget one.
+EXCL='/(node_modules|dist|build|\.next|out|vendor|\.git|\.serena|\.venv|venv|brownfield)/'
+# grep -r has no regex-based --exclude-dir, so these two wrappers apply $EXCL to a recursive grep:
+#   xgrep_l -> the matching FILE list minus excluded paths   ·   xgrep_q -> quiet test (true iff a match)
+# Both force -l so the pipe filters PATHS, and both are judged on their TEXT, never on $?: grep returns 1
+# for "no match" and xargs returns 123 if any batch did, neither of which means the check failed.
+xgrep_l(){ grep -rIl "$@" 2>/dev/null | grep -vE "$EXCL"; }
+xgrep_q(){ xgrep_l "$@" | grep -q .; }
 # STRICT security gate: an unattended PUBLIC self-merge has no human to catch a "major" security gap, so the
 # security [major] warnings below become HARD BLOCKERS (the orchestrator's AUTO-ACCEPT SAFETY RAIL, made
 # mechanical). ON when the profile audience is public/customer/enterprise AND auto_merge is on; force either
@@ -51,13 +64,22 @@ else
 fi
 section "[2/12] Env integrity — os.getenv vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
-used=$(grep -rhoP 'os\.(getenv|environ\.get)\("\K[A-Z0-9_]+' --include='*.py' . 2>/dev/null | sort -u)
+used=$(find . -name '*.py' -type f -print0 2>/dev/null | grep -zvE "$EXCL" | xargs -0 -r grep -hoP 'os\.(getenv|environ\.get)\("\K[A-Z0-9_]+' 2>/dev/null | sort -u)
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars:"; echo "$miss"; fail=1; }
 section "[3/12] Compile"
-python -m py_compile $(find . -name '*.py' -not -path './.serena/*' -not -path './brownfield/*') 2>/tmp/ci-pc.log || { echo "RED: compile"; cat /tmp/ci-pc.log; fail=1; }
+# -print0 | xargs -0: an unquoted $(find …) word-split every path containing a space into two bogus
+# names, py_compile answered "[Errno 2] No such file", the gate went RED and .githooks/pre-commit then
+# blocked EVERY commit. $EXCL also keeps .venv/ out — the .gitignore above declares it, and
+# byte-compiling the dependency tree (one py2-era file in any package) pinned this gate red forever.
+: > /tmp/ci-pc.log
+find . -name '*.py' -type f -print0 2>/dev/null | grep -zvE "$EXCL" | xargs -0 -r python -m py_compile 2>/tmp/ci-pc.log
+# Judged on the LOG, not the pipeline rc: `grep -zv` exits 1 when every .py was excluded (a
+# brownfield-only repo), which is not a compile failure. py_compile always names the file it could
+# not compile, so a non-empty log is the only honest signal here.
+[ -s /tmp/ci-pc.log ] && { echo "RED: compile"; cat /tmp/ci-pc.log; fail=1; }
 section "[4/12] No stubs / placeholders (depth gate)"
-stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE '/(node_modules|dist|\.next|brownfield|\.serena)/' | head -20)
+stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE "$EXCL" | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move real notes to .opencode/specs/):"; echo "$stub"; fail=1; }
 section "[5/12] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
@@ -71,12 +93,17 @@ if [ -n "$csec_dirs" ]; then
 else echo "(no client bundle dir — skipping)"; fi
 section "[6/12] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
-if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
-  rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
+# Resolve the OWNED .sql set once through $EXCL — a brownfield/ or vendored migration is not ours to
+# police, and it used to RED-block every commit here. Every lookup below reuses this one list, and it is
+# ALL owned .sql (not just the CREATE TABLE files) because RLS is usually enabled in a LATER migration.
+sql_all=$(find . -name '*.sql' -type f 2>/dev/null | grep -vE "$EXCL" || true)
+_sqlgrep(){ printf '%s\n' "$sql_all" | tr '\n' '\0' | xargs -0 -r grep "$@" 2>/dev/null; }   # judge the OUTPUT, never xargs' rc
+if [ -n "$sql_all" ] && _sqlgrep -lIE 'CREATE TABLE' | grep -q .; then
+  rls_tables=$(_sqlgrep -hoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
   for t in $rls_tables; do
-    if ! grep -rIqE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" --include='*.sql' . 2>/dev/null; then
+    if ! _sqlgrep -lIE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" | grep -q .; then
       echo "RED [blocker]: table '${t}' created without ENABLE ROW LEVEL SECURITY"; fail=1
-    elif ! grep -rIqE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" --include='*.sql' . 2>/dev/null; then
+    elif ! _sqlgrep -lIE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" | grep -q .; then
       _secwarn "table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
     fi
   done
@@ -84,15 +111,15 @@ else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
 section "[7/12] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
-  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
+  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE "$EXCL" | head -50 || true)
   if [ -n "$llm_calls" ]; then
     printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens' 2>/dev/null | grep -q . || _secwarn "LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
-    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
+    xgrep_q -iE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
 section "[8/12] Webhook handler integrity (payment/event webhooks)"
 # Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
-wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
+wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
 money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
 if [ -n "$money_wh" ]; then
   wh_sig='constructEvent|verifyHeader|verifySignature|Stripe-Signature|X-Hub-Signature|createHmac|compare_digest|hmac\.new|ConstructEvent|ValidateSignature|WebhookSignature'
@@ -106,7 +133,7 @@ if [ -n "$money_wh" ]; then
 else echo "(no payment webhook handler — skipping)"; fi
 section "[9/12] Auth & session edge cases (reset tokens / enumeration)"
 # Stack-conditional: runs only when auth routes are present; heuristic [major] warnings, never a hard fail.
-auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
+auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
 if [ -n "$auth_files" ]; then
   if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
     _secwarn "an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
@@ -119,7 +146,7 @@ if [ -n "$auth_files" ]; then
 else echo "(no auth routes — skipping)"; fi
 section "[10/12] Migration safety (expand-contract)"
 # Stack-conditional: runs only when SQL migration files are present; clean no-op otherwise.
-mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE '/(node_modules|dist|build|vendor|\.git)/' | head -80 || true)
+mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE "$EXCL" | head -80 || true)
 if [ -n "$mig_files" ]; then
   while IFS= read -r mf; do [ -n "$mf" ] || continue
     if grep -IiqE 'DROP (TABLE|COLUMN)|RENAME (TO|COLUMN)|ALTER COLUMN[^;]*DROP' "$mf" 2>/dev/null; then
@@ -132,12 +159,12 @@ if [ -n "$mig_files" ]; then
 else echo "(no SQL migrations — skipping)"; fi
 section "[11/12] Observability (structured logs, health, log hygiene)"
 # Log hygiene runs on any source (a secret VALUE in a log is a [blocker]); server checks gate on a server app.
-loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/|\.(test|spec)\.' | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
+loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE "${EXCL}|\.(test|spec)\." | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
 [ -n "$loghy" ] && { echo "RED [blocker]: a secret/PII VALUE appears in a log statement — never log passwords/tokens/secrets/PII:"; printf '%s\n' "$loghy" | head -10; fail=1; }
-if grep -rIqE '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; then
-  grep -rIqiE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . 2>/dev/null || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
+if xgrep_q -E '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' .; then
+  xgrep_q -iE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
   grep -rIqiE 'winston|pino|bunyan|structlog|loguru|zap|logrus|zerolog|log/slog|slog\.' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null || echo "WARN [major]: no structured logger detected — use a structured logger (not raw console.log/print) in request paths"
-  grep -rIqiE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
+  xgrep_q -iE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
 else echo "(not a server app — health/correlation checks skipped; log hygiene ran)"; fi
 section "[12/12] Supply chain (deterministic installs, SBOM, pinned actions)"
 if [ -f Containerfile ] || [ -d .github/workflows ]; then

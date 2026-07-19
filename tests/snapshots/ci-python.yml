@@ -11,8 +11,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.13' }
       - run: pip install -r requirements.txt
-      - run: python -m pytest -q
-      - run: python -m py_compile $(git ls-files "*.py")
+      - run: python -m pytest -q --ignore=brownfield
+      - run: git ls-files -z "*.py" | grep -zv "^brownfield/" | xargs -0 -r python -m py_compile
   security:
     runs-on: ubuntu-latest
     steps:

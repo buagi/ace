@@ -34,9 +34,14 @@ _sc_research(){
   # researcher delegated? (log-grep, best-effort — the researcher runs inside opencode)
   local rlog=0 lg
   for lg in "$SC_OC/last-run.log" "$SC_SWARM/coordinator.log" "$SC_SWARM"/w*.log; do [ -f "$lg" ] && rlog=$(( rlog + $(_gc -iE 'researcher|research & design|comparable product' "$lg") )); done
-  # residual grounding gaps from a lint pass
-  local rgaps=0
-  [ -f "$_SC_LIB/swarm.sh" ] && { rgaps="$(REPO="$SC_REPO" bash "$_SC_LIB/swarm.sh" spec-lint "$SC_OC"/specs/*.md 2>/dev/null | _gc -E 'SPECGAP.*(CITED|CITE_REAL|SOURCED)')"; }
+  # Residual grounding gaps from a lint pass. "—" (not 0) when the lint could not run or produced NOTHING:
+  # 0 means "linted, none found", and rendering an UNMEASURED value as 0 reads as a clean bill of health from
+  # a check that never executed. Every sibling metric in this file uses "—" for unmeasured; match it.
+  local rgaps='—' _lint=''
+  if [ -f "$_SC_LIB/swarm.sh" ]; then
+    _lint="$(REPO="$SC_REPO" bash "$_SC_LIB/swarm.sh" spec-lint "$SC_OC"/specs/*.md 2>/dev/null)"
+    [ -n "$_lint" ] && rgaps="$(printf '%s\n' "$_lint" | _gc -E 'SPECGAP.*(CITED|CITE_REAL|SOURCED)')"
+  fi
   printf '   specs %s · citations %s (%s/spec) · UNVERIFIED %s · grounding-gaps %s\n' "$nspec" "$cited" "$(( cited / nspec ))" "$unver" "$rgaps"
   if [ "$rlog" = 0 ]; then printf '   %s⚠ researcher not seen in logs — confirm research was delegated for [value] features%s\n' "${C_YELLOW:-}" "${C_RESET:-}"
   else printf '   researcher activity in logs: %s reference(s)\n' "$rlog"; fi
@@ -106,13 +111,70 @@ _sc_results(){
   printf '   %s(critic accept/reject rates need the DB/opencode seam — these are log-grep counts)%s\n' "${C_GREY:-}" "${C_RESET:-}"
 }
 
-# ⑤ DEBATE — the cross-model barter: convergence, accepted vs disputed, effectiveness
+# debate-metrics.jsonl is APPEND-ONLY and CUMULATIVE across every run this project ever did. ⑤ and ⑧ used to
+# aggregate the WHOLE file while the section header said "this run" — so conv%, issue counts and the top-line
+# VERDICT carried debates from days ago, and a run with zero debates still scored one. Each record now carries
+# the loop's RUN_ID where one exists (see debate.sh _debate_log_metric), so scope to ONE run — but ONLY when
+# the log can actually prove the boundary, otherwise report the whole file and label it. Scoping on a guess
+# is worse than not scoping: it drops the run you asked about while still printing a number.
+#
+# _sc_debate_scope <file> → sets SC_DRUN (the run id to select; "" = whole file) and SC_DSCOPE (the human
+# label, printed in ⑤, in the VERDICT and in --json). NEVER scope silently: the label always says what was
+# counted.
+#
+# Auto-detection is DELIBERATELY conservative, because the two failure directions are not symmetric:
+# under-scoping shows a few EXTRA debates (visibly labelled CUMULATIVE), while over-scoping DELETES the very
+# debates you asked about. Only ONE producer path carries a run id: autoloop.sh:1273 exports RUN_ID. The SWARM
+# coordinator does NOT — it has its own `RUNID` (swarm-run.sh:684), never exported, and it invokes debate.sh
+# as a separate process (swarm-run.sh:569), so the coordinator's spec-debates record run_id "". Its workers
+# each run a nested autoloop with their OWN RUN_ID. So on the parallel path the newest tagged records belong
+# to ONE WORKER while the coordinator's belong to nobody, and "newest tagged run" would silently report one
+# worker's debates as the entire run. Hence: only honour a run id when the log PROVES that run's records are a
+# clean trailing block — every record from its first occurrence to EOF carries it, AND the record just before
+# carries a different, non-empty run id (a known previous run: a real boundary, not "might be ours").
+# Exporting a run id from the swarm coordinator is the proper root fix; swarm-run.sh is not this file's to edit.
+_sc_debate_scope(){
+  local dm="$1" r=''
+  if [ -n "${SC_RUN:-}" ]; then SC_DRUN="$SC_RUN"; SC_DSCOPE="run $SC_RUN (pinned via SC_RUN)"; return; fi
+  # scoring from INSIDE the loop: this process's RUN_ID is authoritative, no guessing needed
+  if [ -n "${RUN_ID:-}" ]; then SC_DRUN="$RUN_ID"; SC_DSCOPE="run $RUN_ID (current run)"; return; fi
+  r="$(jq -rs '
+        (map(.run_id // "")) as $r | ($r|length) as $n |
+        if $n == 0 then "" else
+          ($r[$n-1]) as $last |
+          if $last == "" then ""                                                   # newest record untagged
+          else
+            ([range(0;$n) | select($r[.] == $last)] | min) as $first |
+            if ([range($first;$n) | select($r[.] != $last)] | length) > 0 then ""   # interleaved (swarm workers)
+            elif $first > 0 and $r[$first-1] == "" then ""                          # preceded by UNTAGGED records
+            else $last end
+          end
+        end' "$dm" 2>/dev/null)"
+  if [ -n "$r" ]; then
+    SC_DRUN="$r"; SC_DSCOPE="run $r (newest run in the log — not necessarily the one you just finished)"
+  else
+    SC_DRUN=''; SC_DSCOPE='CUMULATIVE (whole log) — this run cannot be isolated (untagged or interleaved records: swarm/manual debates carry no run id)'
+  fi
+}
+# _sc_debate_records <file> <run|""> → the in-scope records as JSONL on stdout
+_sc_debate_records(){
+  local dm="$1" r="${2:-}"
+  if [ -n "$r" ]; then jq -c --arg r "$r" 'select((.run_id//"")==$r)' "$dm" 2>/dev/null
+  else cat "$dm" 2>/dev/null; fi
+}
+
+# ⑤ DEBATE — the cross-model barter: convergence, accepted vs disputed, effectiveness (scoped to ONE run)
 _sc_debate(){
   printf '\n%s⑤ DEBATE (cross-model barter)%s\n' "${C_BOLD:-}" "${C_RESET:-}"
   local dm="$SC_OC/cache/debate-metrics.jsonl"
-  [ -f "$dm" ] && command -v jq >/dev/null 2>&1 || { printf '   — no debates this run (SPEC_DEBATE/REVIEW_DEBATE off, or none HIGH-risk)\n'; return; }
-  local agg; agg="$(jq -s 'if length==0 then empty else {n:length,conv:(map(select(.converged))|length),capped:(map(select(.wall_capped))|length),rounds:((map(.rounds)|add)/length*10|round/10),acc:(map(.per_round|(map(.accepted)|add)//0)|add),disp:(map(.per_round|(map(.disputed)|add)//0)|add),issues:(map(.issues_emitted)|add)} end' "$dm" 2>/dev/null)"
-  [ -n "$agg" ] || { printf '   — no debate records\n'; return; }
+  # NOTE these are two SEPARATE guards. As `[ -f "$dm" ] && command -v jq || { …off… }` a missing jq reported
+  # "SPEC_DEBATE/REVIEW_DEBATE off" — a config claim from a tooling failure. ③ already does it correctly.
+  [ -f "$dm" ] || { printf '   — no debates this run (SPEC_DEBATE/REVIEW_DEBATE off, or none HIGH-risk)\n'; return; }
+  command -v jq >/dev/null 2>&1 || { printf '   — jq required\n'; return; }
+  local recs; _sc_debate_scope "$dm"; recs="$(_sc_debate_records "$dm" "$SC_DRUN")"
+  printf '   scope: %s\n' "$SC_DSCOPE"
+  local agg; agg="$(printf '%s\n' "$recs" | jq -s 'if length==0 then empty else {n:length,conv:(map(select(.converged))|length),capped:(map(select(.wall_capped))|length),rounds:((map(.rounds)|add)/length*10|round/10),acc:(map(.per_round|(map(.accepted)|add)//0)|add),disp:(map(.per_round|(map(.disputed)|add)//0)|add),issues:(map(.issues_emitted)|add)} end' 2>/dev/null)"
+  [ -n "$agg" ] || { printf '   — no debate records in scope (%s)\n' "$SC_DSCOPE"; return; }
   local n conv capped rounds acc disp issues
   n=$(jq -r '.n' <<<"$agg"); conv=$(jq -r '.conv' <<<"$agg"); capped=$(jq -r '.capped' <<<"$agg"); rounds=$(jq -r '.rounds' <<<"$agg")
   acc=$(jq -r '.acc' <<<"$agg"); disp=$(jq -r '.disp' <<<"$agg"); issues=$(jq -r '.issues' <<<"$agg")
@@ -170,14 +232,27 @@ _sc_edge(){
   [ "$un" -gt 0 ] && { printf '   • UNRESOLVABLE conflict %s× — needs a human\n' "$un"; any=1; }
   local feat=''; [ -f "$SC_OC/run-summary.txt" ] && feat="$(grep -oE 'features=[0-9]+' "$SC_OC/run-summary.txt" | tail -1 | cut -d= -f2)"; SC_FEAT="${feat:-—}"
   [ "${feat:-1}" = 0 ] && { printf '   • 0 features shipped this run — planning-only or stuck?\n'; any=1; }
+  # same run-scoping as ⑤ — an all-time "0 issues across ALL specs" verdict would be dominated by older runs.
+  # The message names the scope it actually counted: when ⑤ fell back to CUMULATIVE this claim spans the log,
+  # not "this run", and saying "this run" would be the same manufactured claim ⑤'s jq guard exists to avoid.
   local dm="$SC_OC/cache/debate-metrics.jsonl"
-  [ -f "$dm" ] && command -v jq >/dev/null 2>&1 && { local z; z=$(jq -s 'if length>=3 and ((map(.issues_emitted)|add)==0) then 1 else 0 end' "$dm" 2>/dev/null); [ "$z" = 1 ] && { printf '   • debate flagged 0 issues across ALL HIGH-risk specs — over-agreeable? (ace debate diagnose)\n'; any=1; }; }
+  if [ -f "$dm" ] && command -v jq >/dev/null 2>&1; then
+    local z
+    _sc_debate_scope "$dm"
+    z=$(_sc_debate_records "$dm" "$SC_DRUN" | jq -s 'if length>=3 and ((map(.issues_emitted)|add)==0) then 1 else 0 end' 2>/dev/null)
+    [ "${z:-0}" = 1 ] && { printf '   • debate flagged 0 issues across ALL HIGH-risk specs in scope [%s] — over-agreeable? (ace debate diagnose)\n' "$SC_DSCOPE"; any=1; }
+  fi
   [ "$any" = 0 ] && printf '   — no edge paths activated ✓\n'
 }
 
 ace_scorecard(){
-  local json=0 a; SC_GAPS=- SC_HIT=- SC_CONVPCT=- SC_LOGPCT=- SC_ANOM=0 SC_FEAT=- SC_NDEBATE=0 SC_F1=- SC_NSPEC=-
-  for a in "$@"; do case "$a" in --json) json=1 ;; --repo=*) SC_REPO="${a#*=}" ;; --swarm-dir=*) SC_SWARM="${a#*=}" ;; esac; done
+  local json=0 a; SC_GAPS=- SC_HIT=- SC_CONVPCT=- SC_LOGPCT=- SC_ANOM=0 SC_FEAT=- SC_NDEBATE=0 SC_F1=- SC_NSPEC=- SC_DSCOPE=- SC_DRUN=
+  # SC_RUN / --run=<RUN_ID> pins ⑤/⑧ to a specific run in the cumulative debate log, overriding the
+  # conservative auto-detection in _sc_debate_scope (which reports CUMULATIVE unless the run's records form a
+  # provable trailing block). A pin is honoured verbatim: if it matches nothing, ⑤ says so rather than
+  # quietly widening back to the whole log. NOTE ./ace rejects unknown flags before dispatch, so from the CLI use the env form —
+  # `SC_RUN=20260718-101500 ace scorecard`. --run= works when this lib is invoked/sourced directly.
+  for a in "$@"; do case "$a" in --json) json=1 ;; --repo=*) SC_REPO="${a#*=}" ;; --swarm-dir=*) SC_SWARM="${a#*=}" ;; --run=*) SC_RUN="${a#*=}" ;; esac; done
   [ "${ACE_JSON:-0}" = 1 ] && json=1   # the ace parser routes --json here via ACE_JSON (its -*) arm would otherwise swallow it)
   _sc_resolve
   if [ "$json" = 1 ]; then
@@ -186,7 +261,8 @@ ace_scorecard(){
     jq -nc --arg repo "$(basename "$SC_REPO")" --arg feat "${SC_FEAT:-—}" --arg gaps "${SC_GAPS:-—}" \
        --arg hit "${SC_HIT:-—}" --arg conv "${SC_CONVPCT:-—}" --arg f1 "${SC_F1:-—}" \
        --argjson anom "${SC_ANOM:-0}" --arg logpct "${SC_LOGPCT:-—}" --argjson ndeb "${SC_NDEBATE:-0}" \
-       '{repo:$repo,features:$feat,spec_gaps:$gaps,hit_rate_pct:$hit,debates:$ndeb,debate_converged_pct:$conv,debate_f1:$f1,anomalies:$anom,logging_pct:$logpct}'
+       --arg dscope "${SC_DSCOPE:--}" \
+       '{repo:$repo,features:$feat,spec_gaps:$gaps,hit_rate_pct:$hit,debates:$ndeb,debate_scope:$dscope,debate_converged_pct:$conv,debate_f1:$f1,anomalies:$anom,logging_pct:$logpct}'
     return 0
   fi
   printf '%s══ ace scorecard · %s ══%s\n' "${C_BOLD:-}" "$(basename "$SC_REPO")" "${C_RESET:-}"
@@ -196,6 +272,9 @@ ace_scorecard(){
   printf '\n%s══ VERDICT ══%s\n' "${C_BOLD:-}" "${C_RESET:-}"
   printf '   features %s · subtask hit-rate %s%% · spec-gaps %s · debate conv %s%% (F1 %s) · anomalies %s · logging %s%%\n' \
     "${SC_FEAT}" "${SC_HIT}" "${SC_GAPS}" "${SC_CONVPCT}" "${SC_F1}" "${SC_ANOM}" "${SC_LOGPCT}"
+  # the debate figures above are the ONLY ones that can span runs — say which scope produced them, so a
+  # CUMULATIVE conv% is never read as this run's number (the same reason ⑤ prints its scope).
+  printf '   %sdebate figures scope: %s%s\n' "${C_GREY:-}" "${SC_DSCOPE}" "${C_RESET:-}"
   local health='healthy ✓' issues=''
   [ "${SC_HIT:-100}" != - ] && [ "${SC_HIT:-100}" -lt 60 ] 2>/dev/null && issues="$issues low-hit-rate;"
   [ "${SC_GAPS:-0}" != - ] && [ "${SC_GAPS:-0}" -gt 0 ] 2>/dev/null && issues="$issues spec-gaps;"

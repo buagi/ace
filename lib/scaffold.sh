@@ -143,7 +143,13 @@ scaffold_project() {
   gen_opencode_local "$name"
   gen_autoloop "$dir"
   if [ "${PROFILE_CI_CD:-github-actions}" != none ]; then gen_ci_workflow "$stack"; else info "ci_cd=none → skipping the GitHub Actions workflow."; fi
-  local _dk="${STACK_DEPLOY[$stack]:-service}"; [ "$stack" = go ] && _dk="$(_go_deploy_kind "${PROFILE_SHAPE:-api}")"
+  # DEPLOY KIND COMES FROM THE PROFILE, not the per-stack table. profile_wizard (above, for every code
+  # stack) already derived deploy_kind from `shape` and wrote it to .opencode/profile.yaml, and
+  # gen_ci_workflow reads it from there. The table's node/python entries hardcode 'service', so
+  # `--stack node --shape cli` used to get a "Add a VPS deploy job?" prompt for a deploy the CI workflow
+  # correctly refused to emit — two readers, two answers. One reader now; the table is only the fallback
+  # for stacks that never run the wizard (config), and STACK_DEPLOY stays the registry's documentation.
+  local _dk; _dk="$(_prof_get deploy_kind 2>/dev/null)"; _dk="${_dk:-${STACK_DEPLOY[$stack]:-service}}"
   [ "${ACE_DEPLOY:-}" = none ] && _dk=none
   [ "${PROFILE_CONTAINER:-true}" = false ] && [ "$_dk" = service ] && { _dk=none; info "container=false → no image to deploy; VPS service deploy off (use 'ace release' for binaries)."; }
   if [ "$_dk" = service ] && confirm "Add a VPS deploy job + scripts/deploy.sh template?" Y; then gen_deploy_artifacts "$name" "$stack"
@@ -413,6 +419,12 @@ node_modules
 .turbo
 dist
 .git
+# runtime config is injected by the deploy (--env-file), never baked into a layer
+.env
+.env.*
+!.env.example
+.serena
+brownfield
 EOF
   cat > Containerfile <<EOF
 FROM $digest AS build
@@ -443,6 +455,19 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+# ── ONE exclusion list for EVERY recursive scan in this gate ────────────────────────────────────────
+# Trees this project does not own: dependency installs (node_modules/, .venv/, vendor/), build output,
+# and brownfield/ — code adopted by `ace import`, which PROMISES it is "excluded from the gate". It was
+# not: the RLS, migration-safety and log-hygiene sections below scanned it anyway, emitted RED [blocker]
+# and set fail=1, and .githooks/pre-commit then blocked EVERY commit over somebody else's legacy code.
+# Add paths HERE, never inline, so the next section added to this file cannot forget one.
+EXCL='/(node_modules|dist|build|\.next|out|vendor|\.git|\.serena|\.venv|venv|brownfield)/'
+# grep -r has no regex-based --exclude-dir, so these two wrappers apply $EXCL to a recursive grep:
+#   xgrep_l -> the matching FILE list minus excluded paths   ·   xgrep_q -> quiet test (true iff a match)
+# Both force -l so the pipe filters PATHS, and both are judged on their TEXT, never on $?: grep returns 1
+# for "no match" and xargs returns 123 if any batch did, neither of which means the check failed.
+xgrep_l(){ grep -rIl "$@" 2>/dev/null | grep -vE "$EXCL"; }
+xgrep_q(){ xgrep_l "$@" | grep -q .; }
 # STRICT security gate: an unattended PUBLIC self-merge has no human to catch a "major" security gap, so the
 # security [major] warnings below become HARD BLOCKERS (the orchestrator's AUTO-ACCEPT SAFETY RAIL, made
 # mechanical). ON when the profile audience is public/customer/enterprise AND auto_merge is on; force either
@@ -506,7 +531,7 @@ section "[3/13] Typecheck + lint (no any / no @ts-ignore / no unused)"
 pnpm -r --if-present typecheck >/tmp/ci-tc.log 2>&1 || { echo "RED: typecheck"; tail -20 /tmp/ci-tc.log; fail=1; }
 pnpm lint >/tmp/ci-lint.log 2>&1 || { echo "RED: lint (any / @ts-ignore / unused)"; tail -30 /tmp/ci-lint.log; fail=1; }
 section "[4/13] No stubs / placeholders (depth gate)"
-stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE '/(node_modules|dist|\.next|brownfield|\.serena)/' | head -20)
+stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE "$EXCL" | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move real notes to .opencode/specs/):"; echo "$stub"; fail=1; }
 section "[5/13] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
@@ -520,12 +545,17 @@ if [ -n "$csec_dirs" ]; then
 else echo "(no client bundle dir — skipping)"; fi
 section "[6/13] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
-if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
-  rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
+# Resolve the OWNED .sql set once through $EXCL — a brownfield/ or vendored migration is not ours to
+# police, and it used to RED-block every commit here. Every lookup below reuses this one list, and it is
+# ALL owned .sql (not just the CREATE TABLE files) because RLS is usually enabled in a LATER migration.
+sql_all=$(find . -name '*.sql' -type f 2>/dev/null | grep -vE "$EXCL" || true)
+_sqlgrep(){ printf '%s\n' "$sql_all" | tr '\n' '\0' | xargs -0 -r grep "$@" 2>/dev/null; }   # judge the OUTPUT, never xargs' rc
+if [ -n "$sql_all" ] && _sqlgrep -lIE 'CREATE TABLE' | grep -q .; then
+  rls_tables=$(_sqlgrep -hoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
   for t in $rls_tables; do
-    if ! grep -rIqE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" --include='*.sql' . 2>/dev/null; then
+    if ! _sqlgrep -lIE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" | grep -q .; then
       echo "RED [blocker]: table '${t}' created without ENABLE ROW LEVEL SECURITY"; fail=1
-    elif ! grep -rIqE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" --include='*.sql' . 2>/dev/null; then
+    elif ! _sqlgrep -lIE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" | grep -q .; then
       _secwarn "table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
     fi
   done
@@ -533,15 +563,15 @@ else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
 section "[7/13] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
-  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
+  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE "$EXCL" | head -50 || true)
   if [ -n "$llm_calls" ]; then
     printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens' 2>/dev/null | grep -q . || _secwarn "LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
-    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
+    xgrep_q -iE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
 section "[8/13] Webhook handler integrity (payment/event webhooks)"
 # Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
-wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
+wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
 money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
 if [ -n "$money_wh" ]; then
   wh_sig='constructEvent|verifyHeader|verifySignature|Stripe-Signature|X-Hub-Signature|createHmac|compare_digest|hmac\.new|ConstructEvent|ValidateSignature|WebhookSignature'
@@ -555,7 +585,7 @@ if [ -n "$money_wh" ]; then
 else echo "(no payment webhook handler — skipping)"; fi
 section "[9/13] Auth & session edge cases (reset tokens / enumeration)"
 # Stack-conditional: runs only when auth routes are present; heuristic [major] warnings, never a hard fail.
-auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
+auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
 if [ -n "$auth_files" ]; then
   if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
     _secwarn "an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
@@ -568,7 +598,7 @@ if [ -n "$auth_files" ]; then
 else echo "(no auth routes — skipping)"; fi
 section "[10/13] Migration safety (expand-contract)"
 # Stack-conditional: runs only when SQL migration files are present; clean no-op otherwise.
-mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE '/(node_modules|dist|build|vendor|\.git)/' | head -80 || true)
+mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE "$EXCL" | head -80 || true)
 if [ -n "$mig_files" ]; then
   while IFS= read -r mf; do [ -n "$mf" ] || continue
     if grep -IiqE 'DROP (TABLE|COLUMN)|RENAME (TO|COLUMN)|ALTER COLUMN[^;]*DROP' "$mf" 2>/dev/null; then
@@ -581,12 +611,12 @@ if [ -n "$mig_files" ]; then
 else echo "(no SQL migrations — skipping)"; fi
 section "[11/13] Observability (structured logs, health, log hygiene)"
 # Log hygiene runs on any source (a secret VALUE in a log is a [blocker]); server checks gate on a server app.
-loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/|\.(test|spec)\.' | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
+loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE "${EXCL}|\.(test|spec)\." | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
 [ -n "$loghy" ] && { echo "RED [blocker]: a secret/PII VALUE appears in a log statement — never log passwords/tokens/secrets/PII:"; printf '%s\n' "$loghy" | head -10; fail=1; }
-if grep -rIqE '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; then
-  grep -rIqiE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . 2>/dev/null || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
+if xgrep_q -E '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' .; then
+  xgrep_q -iE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
   grep -rIqiE 'winston|pino|bunyan|structlog|loguru|zap|logrus|zerolog|log/slog|slog\.' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null || echo "WARN [major]: no structured logger detected — use a structured logger (not raw console.log/print) in request paths"
-  grep -rIqiE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
+  xgrep_q -iE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
 else echo "(not a server app — health/correlation checks skipped; log hygiene ran)"; fi
 section "[12/13] Supply chain (deterministic installs, SBOM, pinned actions)"
 if [ -f Containerfile ] || [ -d .github/workflows ]; then
@@ -654,6 +684,25 @@ __pycache__/
 .opencode/reanalyze/
 *.orig
 *.rej
+EOF
+  # The Containerfile below does `COPY . .`, so without this the image ships .git and the whole .venv
+  # (node's and go's templates already have one; python's was missing entirely).
+  cat > .dockerignore <<'EOF'
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+dist
+build
+.serena
+brownfield
+# runtime config is injected by the deploy (--env-file), never baked into a layer
+.env
+.env.*
+!.env.example
 EOF
   printf '# Declared env vars (ci.sh checks os.getenv usage).\nAPP_ENV=dev\n' > .env.example
   printf 'pytest==8.3.4\npytest-cov==6.0.0\n' > requirements.txt
@@ -730,6 +779,19 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 # keep CI output as SIGNAL: silence tool update-notifier banners (Prisma / npm / generic update-notifier)
 export PRISMA_HIDE_UPDATE_MESSAGE=1 CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+# ── ONE exclusion list for EVERY recursive scan in this gate ────────────────────────────────────────
+# Trees this project does not own: dependency installs (node_modules/, .venv/, vendor/), build output,
+# and brownfield/ — code adopted by `ace import`, which PROMISES it is "excluded from the gate". It was
+# not: the RLS, migration-safety and log-hygiene sections below scanned it anyway, emitted RED [blocker]
+# and set fail=1, and .githooks/pre-commit then blocked EVERY commit over somebody else's legacy code.
+# Add paths HERE, never inline, so the next section added to this file cannot forget one.
+EXCL='/(node_modules|dist|build|\.next|out|vendor|\.git|\.serena|\.venv|venv|brownfield)/'
+# grep -r has no regex-based --exclude-dir, so these two wrappers apply $EXCL to a recursive grep:
+#   xgrep_l -> the matching FILE list minus excluded paths   ·   xgrep_q -> quiet test (true iff a match)
+# Both force -l so the pipe filters PATHS, and both are judged on their TEXT, never on $?: grep returns 1
+# for "no match" and xargs returns 123 if any batch did, neither of which means the check failed.
+xgrep_l(){ grep -rIl "$@" 2>/dev/null | grep -vE "$EXCL"; }
+xgrep_q(){ xgrep_l "$@" | grep -q .; }
 # STRICT security gate: an unattended PUBLIC self-merge has no human to catch a "major" security gap, so the
 # security [major] warnings below become HARD BLOCKERS (the orchestrator's AUTO-ACCEPT SAFETY RAIL, made
 # mechanical). ON when the profile audience is public/customer/enterprise AND auto_merge is on; force either
@@ -773,13 +835,22 @@ else
 fi
 section "[2/12] Env integrity — os.getenv vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
-used=$(grep -rhoP 'os\.(getenv|environ\.get)\("\K[A-Z0-9_]+' --include='*.py' . 2>/dev/null | sort -u)
+used=$(find . -name '*.py' -type f -print0 2>/dev/null | grep -zvE "$EXCL" | xargs -0 -r grep -hoP 'os\.(getenv|environ\.get)\("\K[A-Z0-9_]+' 2>/dev/null | sort -u)
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars:"; echo "$miss"; fail=1; }
 section "[3/12] Compile"
-python -m py_compile $(find . -name '*.py' -not -path './.serena/*' -not -path './brownfield/*') 2>/tmp/ci-pc.log || { echo "RED: compile"; cat /tmp/ci-pc.log; fail=1; }
+# -print0 | xargs -0: an unquoted $(find …) word-split every path containing a space into two bogus
+# names, py_compile answered "[Errno 2] No such file", the gate went RED and .githooks/pre-commit then
+# blocked EVERY commit. $EXCL also keeps .venv/ out — the .gitignore above declares it, and
+# byte-compiling the dependency tree (one py2-era file in any package) pinned this gate red forever.
+: > /tmp/ci-pc.log
+find . -name '*.py' -type f -print0 2>/dev/null | grep -zvE "$EXCL" | xargs -0 -r python -m py_compile 2>/tmp/ci-pc.log
+# Judged on the LOG, not the pipeline rc: `grep -zv` exits 1 when every .py was excluded (a
+# brownfield-only repo), which is not a compile failure. py_compile always names the file it could
+# not compile, so a non-empty log is the only honest signal here.
+[ -s /tmp/ci-pc.log ] && { echo "RED: compile"; cat /tmp/ci-pc.log; fail=1; }
 section "[4/12] No stubs / placeholders (depth gate)"
-stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE '/(node_modules|dist|\.next|brownfield|\.serena)/' | head -20)
+stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|NotImplementedError' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' apps packages services src 2>/dev/null | grep -vE "$EXCL" | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move real notes to .opencode/specs/):"; echo "$stub"; fail=1; }
 section "[5/12] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
@@ -793,12 +864,17 @@ if [ -n "$csec_dirs" ]; then
 else echo "(no client bundle dir — skipping)"; fi
 section "[6/12] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
-if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
-  rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
+# Resolve the OWNED .sql set once through $EXCL — a brownfield/ or vendored migration is not ours to
+# police, and it used to RED-block every commit here. Every lookup below reuses this one list, and it is
+# ALL owned .sql (not just the CREATE TABLE files) because RLS is usually enabled in a LATER migration.
+sql_all=$(find . -name '*.sql' -type f 2>/dev/null | grep -vE "$EXCL" || true)
+_sqlgrep(){ printf '%s\n' "$sql_all" | tr '\n' '\0' | xargs -0 -r grep "$@" 2>/dev/null; }   # judge the OUTPUT, never xargs' rc
+if [ -n "$sql_all" ] && _sqlgrep -lIE 'CREATE TABLE' | grep -q .; then
+  rls_tables=$(_sqlgrep -hoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
   for t in $rls_tables; do
-    if ! grep -rIqE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" --include='*.sql' . 2>/dev/null; then
+    if ! _sqlgrep -lIE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" | grep -q .; then
       echo "RED [blocker]: table '${t}' created without ENABLE ROW LEVEL SECURITY"; fail=1
-    elif ! grep -rIqE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" --include='*.sql' . 2>/dev/null; then
+    elif ! _sqlgrep -lIE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" | grep -q .; then
       _secwarn "table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
     fi
   done
@@ -806,15 +882,15 @@ else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
 section "[7/12] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
-  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
+  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE "$EXCL" | head -50 || true)
   if [ -n "$llm_calls" ]; then
     printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens' 2>/dev/null | grep -q . || _secwarn "LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
-    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
+    xgrep_q -iE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
 section "[8/12] Webhook handler integrity (payment/event webhooks)"
 # Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
-wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
+wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
 money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
 if [ -n "$money_wh" ]; then
   wh_sig='constructEvent|verifyHeader|verifySignature|Stripe-Signature|X-Hub-Signature|createHmac|compare_digest|hmac\.new|ConstructEvent|ValidateSignature|WebhookSignature'
@@ -828,7 +904,7 @@ if [ -n "$money_wh" ]; then
 else echo "(no payment webhook handler — skipping)"; fi
 section "[9/12] Auth & session edge cases (reset tokens / enumeration)"
 # Stack-conditional: runs only when auth routes are present; heuristic [major] warnings, never a hard fail.
-auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
+auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
 if [ -n "$auth_files" ]; then
   if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
     _secwarn "an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
@@ -841,7 +917,7 @@ if [ -n "$auth_files" ]; then
 else echo "(no auth routes — skipping)"; fi
 section "[10/12] Migration safety (expand-contract)"
 # Stack-conditional: runs only when SQL migration files are present; clean no-op otherwise.
-mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE '/(node_modules|dist|build|vendor|\.git)/' | head -80 || true)
+mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE "$EXCL" | head -80 || true)
 if [ -n "$mig_files" ]; then
   while IFS= read -r mf; do [ -n "$mf" ] || continue
     if grep -IiqE 'DROP (TABLE|COLUMN)|RENAME (TO|COLUMN)|ALTER COLUMN[^;]*DROP' "$mf" 2>/dev/null; then
@@ -854,12 +930,12 @@ if [ -n "$mig_files" ]; then
 else echo "(no SQL migrations — skipping)"; fi
 section "[11/12] Observability (structured logs, health, log hygiene)"
 # Log hygiene runs on any source (a secret VALUE in a log is a [blocker]); server checks gate on a server app.
-loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/|\.(test|spec)\.' | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
+loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE "${EXCL}|\.(test|spec)\." | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
 [ -n "$loghy" ] && { echo "RED [blocker]: a secret/PII VALUE appears in a log statement — never log passwords/tokens/secrets/PII:"; printf '%s\n' "$loghy" | head -10; fail=1; }
-if grep -rIqE '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; then
-  grep -rIqiE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . 2>/dev/null || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
+if xgrep_q -E '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' .; then
+  xgrep_q -iE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
   grep -rIqiE 'winston|pino|bunyan|structlog|loguru|zap|logrus|zerolog|log/slog|slog\.' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null || echo "WARN [major]: no structured logger detected — use a structured logger (not raw console.log/print) in request paths"
-  grep -rIqiE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
+  xgrep_q -iE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
 else echo "(not a server app — health/correlation checks skipped; log hygiene ran)"; fi
 section "[12/12] Supply chain (deterministic installs, SBOM, pinned actions)"
 if [ -f Containerfile ] || [ -d .github/workflows ]; then
@@ -1532,6 +1608,11 @@ EOF
 dist
 bin
 .serena
+# runtime config is injected by the deploy (--env-file), never baked into a layer
+.env
+.env.*
+!.env.example
+brownfield
 EOF
   case "$shape" in
     cli|cli-web) gen_go_skel_cli "$name" "$digest" ;;
@@ -1549,6 +1630,19 @@ MODE="fast"; { [ "${1:-}" = "--container" ] || [ "${CONTAINER:-}" = "1" ]; } && 
 [ "$MODE" = container ] && [ ! -f Containerfile ] && { echo "[ci] no Containerfile — running the host gate."; MODE="fast"; }
 export CGO_ENABLED=0 CI=1
 fail=0; section(){ printf '\n== %s ==\n' "$1"; }
+# ── ONE exclusion list for EVERY recursive scan in this gate ────────────────────────────────────────
+# Trees this project does not own: dependency installs (node_modules/, .venv/, vendor/), build output,
+# and brownfield/ — code adopted by `ace import`, which PROMISES it is "excluded from the gate". It was
+# not: the RLS, migration-safety and log-hygiene sections below scanned it anyway, emitted RED [blocker]
+# and set fail=1, and .githooks/pre-commit then blocked EVERY commit over somebody else's legacy code.
+# Add paths HERE, never inline, so the next section added to this file cannot forget one.
+EXCL='/(node_modules|dist|build|\.next|out|vendor|\.git|\.serena|\.venv|venv|brownfield)/'
+# grep -r has no regex-based --exclude-dir, so these two wrappers apply $EXCL to a recursive grep:
+#   xgrep_l -> the matching FILE list minus excluded paths   ·   xgrep_q -> quiet test (true iff a match)
+# Both force -l so the pipe filters PATHS, and both are judged on their TEXT, never on $?: grep returns 1
+# for "no match" and xargs returns 123 if any batch did, neither of which means the check failed.
+xgrep_l(){ grep -rIl "$@" 2>/dev/null | grep -vE "$EXCL"; }
+xgrep_q(){ xgrep_l "$@" | grep -q .; }
 # STRICT security gate: an unattended PUBLIC self-merge has no human to catch a "major" security gap, so the
 # security [major] warnings below become HARD BLOCKERS (the orchestrator's AUTO-ACCEPT SAFETY RAIL, made
 # mechanical). ON when the profile audience is public/customer/enterprise AND auto_merge is on; force either
@@ -1580,37 +1674,66 @@ if [ "$MODE" = launch ]; then
   else echo "deploy_kind != service (artifact/library/none) — rollback/SLO/runbook not required"; fi
   [ "$fail" = 0 ] && { echo -e "\nLAUNCH GREEN (mechanical checks pass — now run the launch_readiness_reviewer agent for the full GO/NO-GO)"; exit 0; } || { echo -e "\nLAUNCH RED — NO-GO (fix the [blocker] artifacts above)"; exit 1; }
 fi
+# The OWNED Go package list — `./...` would build/vet/test/staticcheck brownfield/ too, but `ace import`
+# PROMISES imported code is excluded from the gate, and a legacy tree that does not compile made EVERY
+# commit RED. Resolved once here and reused by sections [1] and [3]. Unquoted on use is deliberate and
+# safe: a Go import path cannot contain whitespace. ($EXCL is for grep -r; go needs package paths.)
+# `go list` FAILING and `go list` returning NOTHING are different facts and must be judged separately.
+# This line used to be `go list ./... 2>/dev/null | …`: the rc was thrown away with the diagnostics, so a
+# module that did not even parse (bad go.mod, unavailable toolchain, broken `replace`, run outside the
+# module) produced an EMPTY list, took the "no packages — skipping" branch, and the gate printed CI GREEN
+# on a tree that cannot compile. Keep the rc AND the stderr; an empty list is only believed when rc=0.
+_golist_rc=0; : > /tmp/ci-golist.err
+_golist_out=$(go list ./... 2>/tmp/ci-golist.err) || _golist_rc=$?
+_gopkgs=$(printf '%s\n' "$_golist_out" | grep -v '/brownfield' || true)
 section "[1/13] Build + test ($MODE)"
-if [ "$MODE" = container ]; then
+if [ "$_golist_rc" != 0 ]; then
+  # Deliberately RED in container MODE too: the package list is unusable either way, and a module that
+  # does not resolve is a real failure — not something to hand to the build and hope it notices.
+  echo "RED: 'go list ./...' failed (rc=$_golist_rc) — the module does not resolve, so build/vet/test cannot be judged:"
+  cat /tmp/ci-golist.err
+  fail=1
+elif [ "$MODE" = container ]; then
   if podman build --force-rm --target test -t localhost/ci:dev -f Containerfile .; then _rc=0; else _rc=1; fi
   podman image prune -f >/dev/null 2>&1 || true   # reclaim this build's dangling layers
   [ "$_rc" = 0 ] || { echo RED; exit 1; }
+elif [ -z "$_gopkgs" ]; then
+  echo "(no Go packages outside brownfield/ — skipping build/vet/test)"
 else
-  go build ./... || fail=1
-  go vet ./... || fail=1
+  go build $_gopkgs || fail=1
+  go vet $_gopkgs || fail=1
   # -race needs cgo, but builds are CGO_ENABLED=0 (fully static) — so enable cgo for the race test ONLY
   # when a C compiler is present (else 'go test -race' errors "requires cgo"); otherwise plain tests.
   # -timeout 120s: a deadlocked/flaky concurrency test surfaces as RED in 2min, not the 10-min default
   # (a scheduler-dependent hang once merged silently and poisoned every downstream branch). GO_TEST_COUNT>1
   # (set by the --container merge gate) re-runs to expose that flakiness before it can merge.
   _gtc="${GO_TEST_COUNT:-1}"
-  if command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; then CGO_ENABLED=1 go test ./... -race -timeout 120s -count="$_gtc" -coverprofile=coverage.out -covermode=atomic || fail=1
-  else go test ./... -timeout 120s -count="$_gtc" -coverprofile=coverage.out || fail=1; fi
+  if command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; then CGO_ENABLED=1 go test $_gopkgs -race -timeout 120s -count="$_gtc" -coverprofile=coverage.out -covermode=atomic || fail=1
+  else go test $_gopkgs -timeout 120s -count="$_gtc" -coverprofile=coverage.out || fail=1; fi
   # coverage is a SIGNAL, not a gate (no blanket % target — that just invites gaming): print the total.
   [ -f coverage.out ] && go tool cover -func=coverage.out 2>/dev/null | tail -1
 fi
 section "[2/13] Format — gofmt"
-unf=$(gofmt -l $(find . -name '*.go' -not -path './brownfield/*' -not -path './.serena/*') 2>/dev/null)
+# -print0 | xargs -0: an unquoted $(find …) word-split spaced paths into bogus names. And gofmt's STDERR
+# is KEPT: it was 2>/dev/null'd, so a gofmt that could not parse a file printed nothing to stdout and the
+# section read "clean" — a real failure reported as a pass. gofmt -l exits 0 for merely-unformatted files,
+# so a non-zero rc (or any stderr) means gofmt itself failed and must be RED.
+: > /tmp/ci-gofmt.log
+unf=$(find . -name '*.go' -type f -print0 2>/dev/null | grep -zvE "$EXCL" | xargs -0 -r gofmt -l 2>/tmp/ci-gofmt.log)
 [ -n "$unf" ] && { echo "RED: gofmt — run 'gofmt -w .':"; echo "$unf"; fail=1; }
+[ -s /tmp/ci-gofmt.log ] && { echo "RED: gofmt FAILED TO RUN (this used to be silent and read as clean):"; cat /tmp/ci-gofmt.log; fail=1; }
 section "[3/13] staticcheck (if installed)"
-if command -v staticcheck >/dev/null 2>&1; then staticcheck ./... || fail=1; else echo "(staticcheck not on PATH — 'ace install' adds it; skipping)"; fi
+if ! command -v staticcheck >/dev/null 2>&1; then echo "(staticcheck not on PATH — 'ace install' adds it; skipping)"
+elif [ "$_golist_rc" != 0 ]; then echo "(skipped — 'go list ./...' failed; already RED in [1/13])"   # skip, but the run is NOT green
+elif [ -z "$_gopkgs" ]; then echo "(no Go packages outside brownfield/ — skipping staticcheck)"
+else staticcheck $_gopkgs || fail=1; fi
 section "[4/13] Env integrity — os.Getenv vars declared in .env.example"
 declared=$(grep -oP '^[A-Z0-9_]+(?==)' .env.example 2>/dev/null | sort -u)
-used=$(grep -rhoP 'os\.Getenv\("\K[A-Z0-9_]+' --include='*.go' . 2>/dev/null | sort -u)
+used=$(find . -name '*.go' -type f -print0 2>/dev/null | grep -zvE "$EXCL" | xargs -0 -r grep -hoP 'os\.Getenv\("\K[A-Z0-9_]+' 2>/dev/null | sort -u)
 miss=$(comm -23 <(printf '%s\n' "$used"|sed '/^$/d') <(printf '%s\n' "$declared"|sed '/^$/d'))
 [ -n "$miss" ] && { echo "RED: undeclared env vars (add to .env.example):"; echo "$miss"; fail=1; }
 section "[5/13] No stubs / placeholders (depth gate)"
-stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|panic\("?TODO' --include='*.go' cmd internal pkg 2>/dev/null | grep -vE '/(brownfield|\.serena)/' | head -20)
+stub=$(grep -rInE '(TODO|FIXME|XXX)|not[ _]implemented|panic\("?TODO' --include='*.go' cmd internal pkg 2>/dev/null | grep -vE "$EXCL" | head -20)
 [ -n "$stub" ] && { echo "RED: unfinished stubs/markers — complete them (or move notes to .opencode/specs/):"; echo "$stub"; fail=1; }
 section "[6/13] Client-bundle secret scan (leaked provider/service keys)"
 # Scan the BUILT client bundle only (dist/build/.next/public) for shipped provider/service keys — never
@@ -1624,12 +1747,17 @@ if [ -n "$csec_dirs" ]; then
 else echo "(no client bundle dir — skipping)"; fi
 section "[7/13] Row-Level Security — RLS enabled per table (Postgres/Supabase)"
 # Stack-conditional: runs only when SQL migrations declare CREATE TABLE; clean no-op otherwise.
-if grep -rIqE 'CREATE TABLE' --include='*.sql' . 2>/dev/null; then
-  rls_tables=$(grep -rhoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' --include='*.sql' . 2>/dev/null | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
+# Resolve the OWNED .sql set once through $EXCL — a brownfield/ or vendored migration is not ours to
+# police, and it used to RED-block every commit here. Every lookup below reuses this one list, and it is
+# ALL owned .sql (not just the CREATE TABLE files) because RLS is usually enabled in a LATER migration.
+sql_all=$(find . -name '*.sql' -type f 2>/dev/null | grep -vE "$EXCL" || true)
+_sqlgrep(){ printf '%s\n' "$sql_all" | tr '\n' '\0' | xargs -0 -r grep "$@" 2>/dev/null; }   # judge the OUTPUT, never xargs' rc
+if [ -n "$sql_all" ] && _sqlgrep -lIE 'CREATE TABLE' | grep -q .; then
+  rls_tables=$(_sqlgrep -hoIE 'CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?[A-Za-z0-9_]+' | sed -E 's/.*CREATE TABLE( IF NOT EXISTS)? +(public\.)?"?//; s/".*//' | sort -u)
   for t in $rls_tables; do
-    if ! grep -rIqE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" --include='*.sql' . 2>/dev/null; then
+    if ! _sqlgrep -lIE "ALTER TABLE +(public\.)?\"?${t}\"? +ENABLE ROW LEVEL SECURITY" | grep -q .; then
       echo "RED [blocker]: table '${t}' created without ENABLE ROW LEVEL SECURITY"; fail=1
-    elif ! grep -rIqE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" --include='*.sql' . 2>/dev/null; then
+    elif ! _sqlgrep -lIE "CREATE POLICY .*ON +(public\.)?\"?${t}\"?" | grep -q .; then
       _secwarn "table '${t}' has RLS enabled but no CREATE POLICY (deny-all — usually unintended)"
     fi
   done
@@ -1637,15 +1765,15 @@ else echo "(no SQL CREATE TABLE — skipping RLS check)"; fi
 section "[8/13] LLM call-site guards (cost / abuse)"
 # Stack-conditional: runs only when an LLM SDK is a dependency; heuristic [major] warnings, never a hard fail.
 if grep -rIqE 'openai|anthropic|langchain|@ai-sdk|llamaindex|@google/generative-ai' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null; then
-  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent|CreateChatCompletion|CreateMessage|CreateCompletion' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | head -50 || true)
+  llm_calls=$(grep -rIlE '\.chat\.completions\.create|\.messages\.create|\.completions\.create|\.responses\.create|generateText|streamText|generateObject|\.GenerateContent|CreateChatCompletion|CreateMessage|CreateCompletion' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null | grep -vE "$EXCL" | head -50 || true)
   if [ -n "$llm_calls" ]; then
     printf '%s\n' "$llm_calls" | xargs grep -lIE 'max_tokens|maxOutputTokens|max_output_tokens|maxTokens|MaxTokens' 2>/dev/null | grep -q . || _secwarn "LLM call site(s) with no visible token cap (max_tokens/maxOutputTokens) — uncapped output is a cost + DoS risk"
-    grep -rIqiE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.go' --include='*.ts' --include='*.js' . 2>/dev/null || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
+    xgrep_q -iE 'budget|rate.?limit|max.?iteration|max.?step|max.?turn' --include='*.go' --include='*.ts' --include='*.js' . || _secwarn "no visible per-user/session budget, rate-limit, or agent max-iteration cap near LLM calls"
   else echo "(LLM SDK present but no direct call site found — skipping)"; fi
 else echo "(no LLM SDK dependency — skipping)"; fi
 section "[9/13] Webhook handler integrity (payment/event webhooks)"
 # Stack-conditional: runs only when a MONEY webhook handler is present; clean no-op otherwise.
-wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
+wh_files=$( { grep -rIliE 'webhook|constructEvent|Stripe-Signature|whsec_' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f -iname '*webhook*' 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -50 )
 money_wh=""; [ -n "$wh_files" ] && money_wh=$(printf '%s\n' "$wh_files" | xargs grep -lIiE 'stripe|paypal|braintree|paddle|lemonsqueez|razorpay|payment|charge|subscription|checkout|billing' 2>/dev/null || true)
 if [ -n "$money_wh" ]; then
   wh_sig='constructEvent|verifyHeader|verifySignature|Stripe-Signature|X-Hub-Signature|createHmac|compare_digest|hmac\.new|ConstructEvent|ValidateSignature|WebhookSignature'
@@ -1659,7 +1787,7 @@ if [ -n "$money_wh" ]; then
 else echo "(no payment webhook handler — skipping)"; fi
 section "[10/13] Auth & session edge cases (reset tokens / enumeration)"
 # Stack-conditional: runs only when auth routes are present; heuristic [major] warnings, never a hard fail.
-auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/' | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
+auth_files=$( { grep -rIliE 'password|reset[_-]?token|forgot|sign[_-]?in|next-auth|passport|lucia|bcrypt|argon2' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; find . -type f \( -iname '*auth*' -o -iname '*login*' -o -iname '*password*' \) 2>/dev/null | grep -E '\.(ts|tsx|js|mjs|py|go)$'; } | grep -vE "$EXCL" | grep -vE '\.(test|spec)\.|/(__tests__|tests?)/' | sort -u | head -80 )
 if [ -n "$auth_files" ]; then
   if printf '%s\n' "$auth_files" | xargs grep -lIiE 'no such (user|account)|(email|user|account) not found|does ?n.?t exist|no account (with|found)' 2>/dev/null | grep -q .; then
     _secwarn "an auth response reveals whether an account exists (enumeration) — return a GENERIC message for existing AND non-existing accounts"
@@ -1672,7 +1800,7 @@ if [ -n "$auth_files" ]; then
 else echo "(no auth routes — skipping)"; fi
 section "[11/13] Migration safety (expand-contract)"
 # Stack-conditional: runs only when SQL migration files are present; clean no-op otherwise.
-mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE '/(node_modules|dist|build|vendor|\.git)/' | head -80 || true)
+mig_files=$(grep -rIlE 'ALTER TABLE|DROP TABLE|DROP COLUMN|CREATE TABLE|RENAME' --include='*.sql' . 2>/dev/null | grep -vE "$EXCL" | head -80 || true)
 if [ -n "$mig_files" ]; then
   while IFS= read -r mf; do [ -n "$mf" ] || continue
     if grep -IiqE 'DROP (TABLE|COLUMN)|RENAME (TO|COLUMN)|ALTER COLUMN[^;]*DROP' "$mf" 2>/dev/null; then
@@ -1685,12 +1813,12 @@ if [ -n "$mig_files" ]; then
 else echo "(no SQL migrations — skipping)"; fi
 section "[12/13] Observability (structured logs, health, log hygiene)"
 # Log hygiene runs on any source (a secret VALUE in a log is a [blocker]); server checks gate on a server app.
-loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE '/(node_modules|dist|build|\.next|vendor|\.git)/|\.(test|spec)\.' | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
+loghy=$(grep -rIinE '(console\.(log|info|warn|error|debug)|logger?\.[a-zA-Z]+|log\.(Info|Print|Printf|Debug|Error|Warn|Fatal)|logging\.(info|debug|warning|error)|print|println|fmt\.Print[a-z]*)[[:space:]]*\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null | grep -vE "${EXCL}|\.(test|spec)\." | grep -IiE '\.(password|passwd|secret|token|authorization|ssn|cvv|api[_-]?key|credit[_-]?card)\b|[$][{][^}]*(password|passwd|secret|token|ssn|cvv)|[{][[:space:]]*(password|passwd|secret|token|ssn|cvv)[[:space:]]*[,}]|[(][[:space:]]*(password|passwd|secret|token|ssn)[[:space:]]*[),]' | head -20 || true)
 [ -n "$loghy" ] && { echo "RED [blocker]: a secret/PII VALUE appears in a log statement — never log passwords/tokens/secrets/PII:"; printf '%s\n' "$loghy" | head -10; fail=1; }
-if grep -rIqE '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null; then
-  grep -rIqiE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . 2>/dev/null || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
+if xgrep_q -E '\.listen\(|createServer|app\.run\(|http\.ListenAndServe|uvicorn|FastAPI|express\(|fastify\(|gin\.(New|Default)|Flask\(' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' .; then
+  xgrep_q -iE '/health|/healthz|/ready|/readyz|actuator/health|livenessProbe' . || echo "WARN [major]: no /health or /ready endpoint found — add liveness/readiness probes for a server app"
   grep -rIqiE 'winston|pino|bunyan|structlog|loguru|zap|logrus|zerolog|log/slog|slog\.' package.json requirements.txt pyproject.toml go.mod go.sum 2>/dev/null || echo "WARN [major]: no structured logger detected — use a structured logger (not raw console.log/print) in request paths"
-  grep -rIqiE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . 2>/dev/null || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
+  xgrep_q -iE 'correlation|request[_-]?id|x-request-id|traceparent|trace[_-]?id' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.py' --include='*.go' . || echo "WARN [major]: no request/correlation-ID found — attach one to every log line for traceability"
 else echo "(not a server app — health/correlation checks skipped; log hygiene ran)"; fi
 section "[13/13] Supply chain (deterministic installs, SBOM, pinned actions)"
 if [ -f Containerfile ] || [ -d .github/workflows ]; then
@@ -2820,7 +2948,19 @@ loop_ctl() {
       proj="$(config_get LOOP_PROJECT 2>/dev/null)"
       step "Bringing ACE + project up to date"
       ( cd "${ACE_DIR:-$(dirname "$(readlink -f "$(command -v ace 2>/dev/null)" 2>/dev/null)" 2>/dev/null)}" 2>/dev/null && git pull --ff-only 2>&1 | tail -2 ) || true
-      [ -n "$proj" ] && ( cd "$proj" 2>/dev/null && git checkout -f main >/dev/null 2>&1; git pull --ff-only 2>&1 | tail -2 ) || true
+      # REFUSE on a dirty tree. This used to be `checkout -f main` with everything /dev/null'd: it
+      # DISCARDED uncommitted work in the user's project and said nothing. It also used `;` after the
+      # cd, so a failed cd still ran `git pull` in the CALLER's repo. Both are now &&-chained, the
+      # checkout is a plain (non-forcing) one, and a dirty tree stops the update instead of eating it.
+      if [ -n "$proj" ]; then
+        if [ -n "$(git -C "$proj" status --porcelain 2>/dev/null)" ]; then
+          warn "$proj has uncommitted changes — NOT touching it (this used to 'checkout -f main' and discard them)."
+          say  "    Commit or stash there, then re-run: ${C_BOLD}ace loop update${C_RESET}"
+        else
+          ( cd "$proj" && git checkout main >/dev/null 2>&1 && git pull --ff-only 2>&1 | tail -2 ) \
+            || warn "project update skipped — could not switch to main / fast-forward in $proj."
+        fi
+      fi
       ok "updated. Run 'ace loop restart' to apply (driver/config changes need a fresh loop)."
       ;;
     *) err "usage: ace loop {start|stop|restart|status|logs|stats|update}   (bare 'ace loop' = interactive launcher)"; return 1 ;;
@@ -2987,8 +3127,15 @@ autoloop_run() {
       warn "swarm needs a GitHub remote (it merges via PRs). Run 'ace publish' first, or use 1 (single loop)."; return 1
     fi
     step "SWARM · $par parallel flows (cap 8) — path-disjoint, self-merging, self-healing"
-    ( cd "$root" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$root" SWARM_MAX="$par" \
-        AUTOMERGE=1 HERMES_NOTIFY="$hn" bash "$ACE_DIR/lib/swarm-run.sh" startd )
+    # startd's exit status is the ONLY signal that the coordinator actually came up. It used to be
+    # discarded, so a coordinator that died on launch still printed "the forge is lit" and auto-attached
+    # a dash to nothing — the user watched an empty cockpit believing work was in flight. Fail closed.
+    if ! ( cd "$root" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$root" SWARM_MAX="$par" \
+        AUTOMERGE=1 HERMES_NOTIFY="$hn" bash "$ACE_DIR/lib/swarm-run.sh" startd ); then
+      err "swarm coordinator failed to start — nothing is running."
+      say  "    Diagnose: ${C_BOLD}ace swarm status${C_RESET} · ${C_BOLD}ace swarm logs${C_RESET}   (then re-run 'ace autorun')"
+      return 1
+    fi
     box "the forge is lit — $par workers" \
       "watch    ace swarm dash      (live cockpit: per-worker stage pipeline)" \
       "columns  ace swarm split     (tmux — one pane per worker)" \
@@ -3361,7 +3508,15 @@ upgrade_repo() {
   gen_hooks
   gen_opencode_local
   local _hp; _hp="$(git config --get core.hooksPath 2>/dev/null || true)"
-  if [ -z "$_hp" ] && [ -f .git/hooks/pre-commit ]; then
+  # A GATE MUST EXIST BEFORE WE ACTIVATE THE HOOK THAT RUNS IT. .githooks/pre-commit does `./ci.sh ||
+  # exit 1`, so pointing core.hooksPath at it in a repo with no ci.sh makes EVERY commit fail with
+  # "./ci.sh: No such file or directory" — adoption bricking the repo it was meant to help. We still
+  # WRITE .githooks/ (it is ACE-owned and harmless while inactive); we just don't switch it on yet.
+  local _hasgate=0; [ -f ci.sh ] && _hasgate=1
+  if [ "$_hasgate" = 0 ]; then
+    warn "no ci.sh in this repo — wrote .githooks/ but did NOT activate it (an active gate with no ci.sh blocks every commit)."
+    say  "    Add a ci.sh gate, then turn it on: ${C_BOLD}git config core.hooksPath .githooks${C_RESET}"
+  elif [ -z "$_hp" ] && [ -f .git/hooks/pre-commit ]; then
     warn "you already have .git/hooks/pre-commit — wrote .githooks/ but left yours active. Enable ACE's gate with: git config core.hooksPath .githooks"
   elif [ -z "$_hp" ] || [ "$_hp" = .githooks ]; then
     # `;` here would print "wired" even when the install failed — install_gitflow_hooks now returns 1 on a
@@ -3401,10 +3556,32 @@ _ci_build_security_jobs() {
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./... -race -timeout 120s
-      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./... || true
+      # Same brownfield exclusion as ./ci.sh — remote CI must agree with the local gate, or a repo that
+      # commits imported code passes pre-commit and then fails here on somebody else's legacy package.
+      # go list's rc is judged on its own: an empty list must mean "no owned packages", never "go list
+      # blew up". Inlining it in the echo discarded the rc and left an empty GOPKGS that only fails the
+      # next step by luck (and silently narrows 'go test' to the root package in a repo with a root main).
+      - name: Resolve owned packages (excludes brownfield/)
+        run: |
+          # stdout and stderr MUST stay separate: `go list` writes "go: downloading <mod>" to STDERR while
+          # exiting 0 — routine on a cold module cache, i.e. the first CI run of every scaffolded Go repo with
+          # a dependency. Folding it in put that text INTO the package list, and the next step ran
+          # `go build go: downloading … app` -> malformed import path. Judge rc; keep stderr for the message.
+          if ! out=\$(go list ./... 2>/tmp/golist.err); then
+            echo "::error::'go list ./...' failed — the module does not resolve; refusing to build/vet/test a tree we cannot enumerate"
+            cat /tmp/golist.err; exit 1
+          fi
+          pkgs=\$(printf '%s\n' "\$out" | grep -v '/brownfield' | tr '\n' ' ')
+          echo "GOPKGS=\$pkgs" >> "\$GITHUB_ENV"
+          if [ -z "\${pkgs// /}" ]; then echo "no Go packages outside brownfield/ — skipping build/vet/test (same as ./ci.sh)"; echo "GOSKIP=1" >> "\$GITHUB_ENV"; fi
+      - if: env.GOSKIP != '1'
+        run: go build \$GOPKGS
+      - if: env.GOSKIP != '1'
+        run: go vet \$GOPKGS
+      - if: env.GOSKIP != '1'
+        run: go test \$GOPKGS -race -timeout 120s
+      - if: env.GOSKIP != '1'
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest \$GOPKGS || true
   security:
     runs-on: ubuntu-latest
     steps:
@@ -3559,7 +3736,10 @@ gen_ci_workflow() {
   local stack="$1" install build test typecheck hpath="/" trigger _shape=api _dk=service _bin=1
   case "$stack" in
     node)   install='pnpm install --frozen-lockfile'; build='pnpm build'; test='pnpm test'; typecheck='pnpm -r --if-present typecheck && pnpm lint' ;;
-    python) install='pip install -r requirements.txt'; build='echo "(no build)"'; test='python -m pytest -q'; typecheck='python -m py_compile $(git ls-files "*.py")' ;;
+    # typecheck: -z/-0 throughout (an unquoted $(git ls-files) word-splits spaced paths, and py_compile
+    # then reports "[Errno 2] No such file" — the same bug ./ci.sh had). brownfield/ IS tracked, so it
+    # must be filtered here too or remote CI disagrees with the local gate about the same commit.
+    python) install='pip install -r requirements.txt'; build='echo "(no build)"'; test='python -m pytest -q --ignore=brownfield'; typecheck='git ls-files -z "*.py" | grep -zv "^brownfield/" | xargs -0 -r python -m py_compile' ;;
     go)     _shape="$(_prof_get shape 2>/dev/null)"; _shape="${_shape:-api}"; _dk="$(_go_deploy_kind "$_shape")"
             _go_binary_shape "$_shape" || _bin=0
             [ "$_shape" = api ] && hpath='/healthz' || hpath='' ;;   # only api exposes an HTTP health endpoint
@@ -3601,35 +3781,25 @@ gen_deploy_artifacts() {
   mkdir -p scripts
   ensure_env_merge   # settings-safe merge: adds NEW keys only, never overwrites live values
 
-  # Block 3 (build + run) is stack-specific: Go ships a self-contained distroless image we can run
-  # directly; other stacks get a runnable build target + an EDIT line for the start command.
-  local build_run _gshape; _gshape="$(_prof_get shape 2>/dev/null)"; _gshape="${_gshape:-api}"
+  # Block 3 (build + run) differs between stacks ONLY in the header line, the `podman run` arguments and
+  # the closing message — the build/replace/rollback machinery around them is identical, so it is written
+  # once below instead of in three near-identical copies that drift apart.
+  local _gshape _hdr _runargs _upmsg _port=3000
+  _gshape="$(_prof_get shape 2>/dev/null)"; _gshape="${_gshape:-api}"
   if [ "$stack" = go ] && [ "$_gshape" = worker ]; then
-    build_run='# 3) build the final (distroless) image and (re)start the worker (no published port)
-IMAGE="localhost/'"$name"':latest"
-echo "[deploy] building $IMAGE (final image) …"
-podman build --target final -t "$IMAGE" -f Containerfile .
-podman rm -f '"$name"' 2>/dev/null || true
-podman run -d --name '"$name"' --restart=always --env-file .env "$IMAGE"
-echo "[deploy] '"$name"' worker running (liveness = container up)"'
+    _hdr='# 3) build the final (distroless) image and (re)start the worker (no published port)'
+    _runargs='--restart=always --env-file .env'
+    _upmsg="$name worker running (liveness = container up)"
   elif [ "$stack" = go ]; then
-    build_run='# 3) build the final (distroless) image and (re)start it
-IMAGE="localhost/'"$name"':latest"
-echo "[deploy] building $IMAGE (final image) …"
-podman build --target final -t "$IMAGE" -f Containerfile .
-podman rm -f '"$name"' 2>/dev/null || true
-podman run -d --name '"$name"' --restart=always --env-file .env -p 3000:3000 "$IMAGE"
-echo "[deploy] '"$name"' running on :3000 (health: /healthz)"'
+    _hdr='# 3) build the final (distroless) image and (re)start it'
+    _runargs='--restart=always --env-file .env -p 3000:3000'
+    _upmsg="$name running on :3000 (health: /healthz)"
   else
-    local _port=3000; [ "$stack" = python ] && _port=8000
-    build_run='# 3) build the runtime (final) image and (re)start the service.
-# The start command lives in the Containerfile'"'"'s `final` stage (CMD) — set it there for your app.
-IMAGE="localhost/'"$name"':latest"
-echo "[deploy] building $IMAGE (final image) …"
-podman build --target final -t "$IMAGE" -f Containerfile .
-podman rm -f '"$name"' 2>/dev/null || true
-podman run -d --name '"$name"' --restart=always --env-file .env -p '"$_port"':'"$_port"' "$IMAGE"
-echo "[deploy] '"$name"' running on :'"$_port"' (set the final-stage CMD if it is not up yet)"'
+    [ "$stack" = python ] && _port=8000
+    _hdr='# 3) build the runtime (final) image and (re)start the service.
+# The start command lives in the `final` stage of the Containerfile (CMD) — set it there for your app.'
+    _runargs="--restart=always --env-file .env -p $_port:$_port"
+    _upmsg="$name running on :$_port (set the final-stage CMD if it is not up yet)"
   fi
 
   cat > scripts/deploy.sh <<EOF
@@ -3651,7 +3821,56 @@ for ex in \$(git ls-files '*.example' 2>/dev/null); do
   [ -e "\$target" ] || { cp "\$ex" "\$target"; echo "[deploy] seeded \$target from \$ex"; }
 done
 
-$build_run
+$_hdr
+NAME="$name"
+IMAGE="localhost/\$NAME:latest"
+PREV="localhost/\$NAME:prev"
+
+# ROLLBACK GUARD. This block used to overwrite :latest and then 'podman rm -f' the live container with
+# no trap and no previous image kept — so a failing 'podman run' left the host with NO container AND no
+# last-good image to restore, i.e. a hard outage from a routine deploy. Now: keep the current :latest as
+# :prev BEFORE the build overwrites it, and if the new container fails to come up, put :prev back.
+#
+# The rollback target is taken from the image the container is ACTUALLY RUNNING, not from :latest.
+# :latest is overwritten by every build, including a failed deploy's — so re-tagging :latest as :prev
+# would, on the second consecutive failed deploy, overwrite the last-good :prev with the known-bad image
+# and leave nothing to roll back to. The running container is the only image proven to work.
+_LIVE_IMG=\$(podman inspect -f '{{if .State.Running}}{{.Image}}{{end}}' "\$NAME" 2>/dev/null || true)
+if [ -n "\$_LIVE_IMG" ]; then
+  podman tag "\$_LIVE_IMG" "\$PREV"
+  echo "[deploy] kept the RUNNING image as \$PREV (rollback target)"
+elif podman image exists "\$PREV" 2>/dev/null; then
+  echo "[deploy] \$NAME is not running — keeping the existing \$PREV as the rollback target (not overwriting it with an unproven image)"
+else
+  echo "[deploy] no running container and no \$PREV — first deploy, nothing to roll back to"
+fi
+
+# Armed only for the window where the old container is already gone but the new one is not up yet.
+# Outside that window a failure leaves the running service untouched, so there is nothing to undo.
+_ROLLBACK_ARMED=0
+_rollback() {
+  [ "\$_ROLLBACK_ARMED" = 1 ] || return 0
+  if ! podman image exists "\$PREV" 2>/dev/null; then
+    echo "[deploy] DEPLOY FAILED and there is no \$PREV image — \$NAME is DOWN. Inspect: podman logs \$NAME" >&2
+    return 0
+  fi
+  echo "[deploy] DEPLOY FAILED — rolling back to \$PREV …" >&2
+  podman rm -f "\$NAME" 2>/dev/null || true
+  if podman run -d --name "\$NAME" $_runargs "\$PREV"; then
+    echo "[deploy] rolled back: \$NAME is running the previous image (\$PREV)." >&2
+  else
+    echo "[deploy] ROLLBACK ALSO FAILED — \$NAME is DOWN. Inspect: podman logs \$NAME" >&2
+  fi
+}
+trap _rollback EXIT
+
+echo "[deploy] building \$IMAGE (final image) …"
+podman build --target final -t "\$IMAGE" -f Containerfile .
+podman rm -f "\$NAME" 2>/dev/null || true
+_ROLLBACK_ARMED=1
+podman run -d --name "\$NAME" $_runargs "\$IMAGE"
+_ROLLBACK_ARMED=0; trap - EXIT
+echo "[deploy] $_upmsg"
 EOF
   chmod +x scripts/deploy.sh
   # rootless systemd (Quadlet) example for auto-start on the VPS
@@ -3827,3 +4046,75 @@ import_existing() {
   import_brownfield "$root"
   confirm "Re-map now with GitNexus + Serena?" Y && { cd "$root" && index_project; }
 }
+
+# ---------------------------------------------------------------- emitted-gate behavioural selftest
+# tests/snapshot-generators.sh is a CHANGE DETECTOR: it locks in what the generators EMIT, and it would
+# have accepted the `go list` fail-open (rc discarded, empty list read as "no packages", CI GREEN on a
+# module that does not parse) exactly as happily as it accepts the fix. This asserts the emitted Go gate
+# BEHAVES: a `go list` FAILURE is RED, and only a genuine rc=0 empty list is a skip.
+# Hermetic — `go`/`gofmt` are stubbed on PATH, so no Go toolchain is needed to run it:
+#   bash lib/scaffold.sh gates-selftest
+scaffold_gates_selftest() {
+  local work bin app out rc n_fail=0
+  work="$(mktemp -d)" || return 1
+  bin="$work/bin"; app="$work/app"; mkdir -p "$bin" "$app/cmd/app" || return 1
+
+  # Stub toolchain. STUB_GOLIST picks which of the three states `go list ./...` is in.
+  cat > "$bin/go" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = list ]; then
+  case "${STUB_GOLIST:-ok}" in
+    ok)    printf '%s\n' app/cmd/app app/brownfield/legacy; exit 0 ;;
+    empty) exit 0 ;;                                                   # rc=0, nothing owned
+    fail)  echo "go: errors parsing go.mod: go.mod:5: syntax error" >&2; exit 1 ;;
+  esac
+fi
+exit 0
+STUB
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/gofmt"
+  chmod +x "$bin/go" "$bin/gofmt"
+
+  ( cd "$app" && gen_go app >/dev/null 2>&1 ) || { echo "gates-selftest: gen_go failed"; rm -rf "$work"; return 1; }
+  [ -f "$app/ci.sh" ] || { echo "gates-selftest: no ci.sh emitted"; rm -rf "$work"; return 1; }
+
+  _gs_case() { # <STUB_GOLIST> <label> ; sets $out/$rc
+    out="$(cd "$app" && PATH="$bin:$PATH" STUB_GOLIST="$1" bash ci.sh 2>&1)"; rc=$?
+  }
+  _gs_want() { case "$out" in *"$1"*) return 0 ;; *) echo "  MISSING expected text: $1"; return 1 ;; esac; }
+  _gs_deny() { case "$out" in *"$1"*) echo "  UNEXPECTED text present: $1"; return 1 ;; *) return 0 ;; esac; }
+
+  # 1) go list FAILS -> must be RED, and must NOT be mistaken for "no packages".
+  _gs_case fail
+  { _gs_want "'go list ./...' failed" \
+    && _gs_deny "skipping build/vet/test" \
+    && _gs_want "CI RED" \
+    && [ "$rc" != 0 ]; } \
+    && echo "ok   go list failure -> CI RED" \
+    || { echo "FAIL go list failure must be RED (rc=$rc) — this is the fail-open the gate exists to kill"; n_fail=$((n_fail+1)); }
+
+  # 2) go list SUCCEEDS but owns nothing -> a legitimate skip, and NOT reported as a go-list failure.
+  _gs_case empty
+  { _gs_want "skipping build/vet/test" && _gs_deny "'go list ./...' failed"; } \
+    && echo "ok   empty package list -> skip" \
+    || { echo "FAIL rc=0 empty list should skip build/vet/test cleanly"; n_fail=$((n_fail+1)); }
+
+  # 3) packages resolve -> the build/vet/test arm actually runs (neither skip nor failure text).
+  _gs_case ok
+  { _gs_deny "skipping build/vet/test" && _gs_deny "'go list ./...' failed"; } \
+    && echo "ok   packages resolve -> build/vet/test runs" \
+    || { echo "FAIL resolved packages must reach build/vet/test"; n_fail=$((n_fail+1)); }
+
+  unset -f _gs_case _gs_want _gs_deny
+  rm -rf "$work"
+  [ "$n_fail" = 0 ] && { echo "gates-selftest: PASS"; return 0; }
+  echo "gates-selftest: $n_fail FAILED"; return 1
+}
+
+# Direct invocation only (sourcing this file must stay side-effect free): bash lib/scaffold.sh gates-selftest
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = gates-selftest ]; then
+  _sc_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck disable=SC1091
+  . "$_sc_lib/ui.sh" 2>/dev/null || true; . "$_sc_lib/core.sh" 2>/dev/null || true
+  export ACE_DIR="${ACE_DIR:-$(dirname "$_sc_lib")}" ACE_DRY_RUN=0
+  scaffold_gates_selftest
+fi
