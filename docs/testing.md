@@ -14,6 +14,9 @@ bash tests/snapshot-generators.sh   # generated .gitignore / CI config snapshots
 bash tests/supply-chain.sh          # pinned installs + sha256-verified downloads + curl|sh allowlist
 bash tests/prompt-contracts.sh      # 12 agents · valid opencode.json · every load-bearing prompt clause
 bash tests/swarm-selftests.sh       # claim store · leasing · fencing · plan-lint · spec-lint/slice/rubric · RED-main
+bash tests/approval-selftest.sh     # merge-approval: deny-by-default · undelivered request · token uniqueness
+bash tests/cli-dispatch-selftest.sh # CLI dispatch ↔ help agreement
+bash tests/autoloop-selftest.sh     # provider-cap detection · step budget · resume never commits to main
 ```
 
 | Gate | Catches |
@@ -23,6 +26,21 @@ bash tests/swarm-selftests.sh       # claim store · leasing · fencing · plan-
 | `prompt-contracts.sh` | a prompt edit that breaks an agent's output contract, a lost placeholder, the agent count drifting off 12, an MCP key dropping, a missing Part-H/debate clause (spec-template · AC-ids · SSRF · researcher + debater denies · dash wiring) |
 | `swarm-selftests.sh` | coordination regressions + the Part H spec functions (`spec-lint`, `spec-slice`, `spec-rubric` default-off) |
 | `profile-reader` · `snapshot-generators` · `supply-chain` | profile/scaffold/supply-chain drift |
+| `approval-selftest` · `cli-dispatch-selftest` · `autoloop-selftest` | merge-approval deny-by-default · a subcommand that dispatches but isn't in `--help` (or vice versa) · step-budget telemetry + resume-never-commits-to-main |
+
+### Why these gates exist — and what they can't catch
+
+The 2026-07-18 audit (152 verified defects) found that **every defect was found by reproduction, never by reading**, and that three successive generations of *fixes* each re-introduced the class they were fixing. The durable write-up — the mechanical bash traps with their one-line fixes, the fix/review discipline, and the design defaults — is **[engineering-lessons.md](engineering-lessons.md)**. Read it before you write a fix, not after.
+
+Two rules from it bind directly on this page:
+
+- **A test that passes either way is worthless** (B1). Revert the fix in a temp copy and prove the test goes red. If you didn't, say so — "I did not verify" is acceptable, a false claim is not. `tests/autoloop-selftest.sh:69-85` is the model: it demonstrates the shell semantics (`read` returns 1 on an unterminated final line) *and then* asserts the writers and the reader.
+- **A test that nothing runs is not a gate** (B2). Wire it into `.github/workflows/ci.yml` in the **same commit**. A suite once existed, passed locally against a dirty tree, and was in no workflow — main was red while CI was green.
+
+> [!WARNING]
+> **Not gates today.** `tests/hygiene-selftest.sh`, `tests/scorecard-selftest.sh` and `tests/reanalyze-selftest.sh` are present in `tests/` but appear in **no workflow**. Run them by hand until they're wired; don't read a green CI as covering them.
+>
+> A **bash-traps** static gate for the §A trap shapes (`local a=X b=$a`, `grep -c … || echo 0`, `printf | grep -q` under `pipefail`, `git check-ignore` without `--no-index`, an unterminated `.step-budget`-style write) is planned as a Tier 1 lint step. It is **not present in `ci.yml` at the time of writing** — treat this bullet as the spec, and grep before you rely on it.
 
 ## Tier 2 — nightly goldens (model-in-the-loop, needs keys)
 
