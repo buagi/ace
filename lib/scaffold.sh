@@ -2472,19 +2472,48 @@ ace_snap() {
   else ok "Snapshot: $out"; fi
 }
 
-# ace approve [<token>] [yes|no] — answer a pending loop approval request (the autonomous loop, run with
+# ace approve [<token>] yes|no — answer a pending loop approval request (the autonomous loop, run with
 # MERGE_APPROVAL=hermes, polls for it). From chat the bot runs this when you reply approve/deny.
-#   ace approve <tok> yes · ace approve <tok> no · ace approve yes (newest) · ace approve (newest ⇒ yes)
+#   ace approve <tok> yes · ace approve <tok> no · ace approve yes (newest) · ace approve no (newest)
+#
+# DENY-BY-DEFAULT. This is the ONLY human gate on an otherwise unattended merge-to-main, and its caller is
+# an LLM chat relay (lib/hermes-ace-skill.md rule 8) that hands us whatever the human typed. So the ONLY
+# input that releases a merge is an explicit, recognised approval word; every other string — "nope",
+# "hold off", "not yet", a paraphrase the relay invented, a truncated word — records a DENY, which the
+# loop reads as "leave the PR open and stop". Asymmetry of harm: a wrong DENY costs one chat round-trip,
+# a wrong APPROVE merges unreviewed code to main. (Was: `local d=yes` + a lowercase-only deny list, i.e.
+# every unrecognised reply — and a missing decision entirely — recorded an APPROVAL.)
 ace_approve() {
-  local root tok="${1:-}" dec="${2:-}" dir
+  local root tok="${1:-}" dec="${2:-}" dir d ltok ldec
   root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"; dir="$root/.opencode/approvals"
-  case "$tok" in yes|no|y|n|approve|approved|deny|denied|reject|rejected|ok|1|0|✅|❌) dec="$tok"; tok="" ;; esac
+  # Case-fold BOTH slots up front. The relay passes the human's raw casing ("No", "YES", "Approve"), and
+  # the two slots used to be matched against DIFFERENT vocabularies — a word could be accepted as a
+  # decision in the token slot and then fall through to the yes-default when it was classified.
+  ltok="$(printf '%s' "$tok" | tr 'A-Z' 'a-z')"; ldec="$(printf '%s' "$dec" | tr 'A-Z' 'a-z')"
+  # Single-arg form `ace approve yes|no`: the lone argument is the DECISION for the newest pending
+  # request, not a token. Same vocabulary as the classifier below, so the two can no longer disagree.
+  # Guarded on an EMPTY decision slot: when BOTH args are present arg1 is the token and arg2 is the
+  # decision, so a malformed `ace approve yes no` must not let the leading "yes" override the trailing
+  # "no" (it falls through instead, finds no request named "yes", and records nothing — fail-closed).
+  if [ -z "$ldec" ]; then
+    case "$ltok" in
+      y|yes|approve|approved|ok|1|✅|n|no|deny|denied|reject|rejected|0|❌) dec="$tok"; ldec="$ltok"; tok="" ;;
+    esac
+  fi
+  # A MISSING decision is not consent. `ace approve <tok>` (and bare `ace approve`) used to record a yes.
+  [ -n "$ldec" ] || { err "usage: ace approve [<token>] yes|no  — a decision is REQUIRED (no decision is NOT an approval)."; return 1; }
   ls "$dir"/*.request >/dev/null 2>&1 || { err "no pending approval in $(basename "$root") — nothing to approve."; return 1; }
   [ -n "$tok" ] || { tok="$(ls -t "$dir"/*.request 2>/dev/null | head -1)"; tok="$(basename "${tok%.request}")"; }
   [ -f "$dir/$tok.request" ] || { err "no pending approval '$tok'."; return 1; }
-  local d=yes; case "$dec" in n|no|deny|denied|reject|rejected|0|❌) d=no ;; esac
+  d=no; case "$ldec" in y|yes|approve|approved|ok|1|✅) d=yes ;; esac
+  # Tell the human when we did NOT understand them, so a denied-by-fallback reply isn't silently mistaken
+  # for a deliberate deny — they can re-answer with the exact word while the request is still pending.
+  case "$ldec" in
+    y|yes|approve|approved|ok|1|✅|n|no|deny|denied|reject|rejected|0|❌) ;;
+    *) warn "decision '$dec' not recognised — recorded as DENY (fail-closed). Approve with the exact word: yes" ;;
+  esac
   printf '%s\n' "$d" > "$dir/$tok.decision"
-  ok "recorded approval: $tok → $d  (the loop will pick it up)"
+  ok "recorded decision: $tok → $d  (the loop will pick it up)"
   grep -E '^(kind|summary)=' "$dir/$tok.request" 2>/dev/null | sed 's/^/  /'
 }
 
