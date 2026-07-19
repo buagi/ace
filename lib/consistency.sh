@@ -140,13 +140,51 @@ con_check_arch(){ # informational only — freshness is gated by ci.sh + per-tas
   info "arch       snapshot present (freshness gated by ci.sh + per-task graph-refresh)"; return 0
 }
 
+# _con_opencode_dbs — the EXACT set of opencode sqlite stores that `ace consistency fix` will size-cap.
+# ONE enumerator, shared by the read-only CHECK and the destructive FIX. They used to each keep their own
+# list: the check looked at the default store only, while the fix ALSO deleted every per-worker swarm db
+# under ~/.config/ace/swarm/ — so `ace consistency` previewed one file and `ace consistency fix` deleted N.
+# A user approved a deletion they were never shown. Add a new store HERE, once, or the preview goes stale
+# again. Emits absolute paths, one per line; callers do their own -f test (an absent store is a no-op for
+# both sides). Nothing is filtered by size here — that is the caller's job, using _con_db_mb below.
+_con_opencode_dbs(){
+  local d
+  printf '%s\n' "$HOME/.local/share/opencode/opencode.db"
+  # per-worker swarm stores are REUSED (appended to) across runs, so they grow unboundedly
+  for d in "$HOME"/.config/ace/swarm/*/*.opencode.db; do [ -f "$d" ] && printf '%s\n' "$d"; done
+  return 0
+}
+# _con_db_mb — size of one db in MB, by the SAME measurement the fix uses to decide. Shared for the same
+# reason as the enumerator: if the preview measured differently from the fix, it could show "142MB, safe"
+# for a file the fix then deletes. An unreadable db reports 0, which means the check calls it safe AND the
+# fix leaves it alone — the two stay in agreement, and the failure direction is "never delete", not
+# "delete unannounced". A store we cannot size is never destroyed on the strength of a guess.
+_con_db_mb(){ local m; m="$(du -sm "$1" 2>/dev/null | cut -f1)"; printf '%s' "${m:-0}"; }
+
+# con_check_opencode — READ-ONLY PREVIEW of a destructive operation. Its contract is not "is the default db
+# big" but "name every file `fix` would delete", because that report is the only thing the user sees before
+# approving. It therefore walks _con_opencode_dbs (all of them) and reproduces the fix's own guards.
 con_check_opencode(){
-  local db="$HOME/.local/share/opencode/opencode.db"
-  [ -f "$db" ] || { ok "opencode   db absent (recreated fresh on next run)"; return 0; }
-  local mb; mb="$(du -sm "$db" 2>/dev/null | cut -f1)"
-  if [ "${mb:-0}" -ge "$ACE_OPENCODE_DB_MAX_MB" ]; then
-    warn "opencode   db ${mb}MB ≥ ${ACE_OPENCODE_DB_MAX_MB}MB threshold — will reset"; return 1; fi
-  ok "opencode   db ${mb:-0}MB (< ${ACE_OPENCODE_DB_MAX_MB}MB)"; return 0
+  local db mb n=0 over=0 tot=0 over_list=""
+  while IFS= read -r db; do
+    [ -n "$db" ] && [ -f "$db" ] || continue
+    n=$((n+1)); mb="$(_con_db_mb "$db")"; tot=$((tot+mb))
+    [ "$mb" -ge "$ACE_OPENCODE_DB_MAX_MB" ] || continue
+    over=$((over+1)); over_list="${over_list}
+             · ${db} (${mb}MB, plus its -wal/-shm)"
+  done < <(_con_opencode_dbs)
+  [ "$n" -gt 0 ] || { ok "opencode   no session db present (recreated fresh on next run)"; return 0; }
+  if [ "$over" -gt 0 ]; then
+    # Mirror _con_reset_db_if_big's fail-closed live-process guard, or the preview promises a deletion that
+    # `fix` will decline to perform — an inaccurate preview in the harmless direction is still inaccurate.
+    if pgrep -x opencode >/dev/null 2>&1; then
+      warn "opencode   ${over}/${n} session db(s) ≥ ${ACE_OPENCODE_DB_MAX_MB}MB, but opencode is RUNNING — 'fix' will SKIP them (fail-closed):${over_list}"
+    else
+      warn "opencode   ${over}/${n} session db(s) ≥ ${ACE_OPENCODE_DB_MAX_MB}MB — 'fix' WILL DELETE (history is disposable):${over_list}"
+    fi
+    return 1
+  fi
+  ok "opencode   ${n} session db(s), ${tot}MB total (all < ${ACE_OPENCODE_DB_MAX_MB}MB)"; return 0
 }
 
 con_check_podman(){
@@ -214,18 +252,20 @@ _con_fix_gitnexus(){
 
 _con_reset_db_if_big(){   # size-cap ONE opencode sqlite db; skip while opencode is live (fail-closed)
   local db="$1"; [ -f "$db" ] || return 0
-  local mb; mb="$(du -sm "$db" 2>/dev/null | cut -f1)"
-  [ "${mb:-0}" -ge "$ACE_OPENCODE_DB_MAX_MB" ] || return 0
+  local mb; mb="$(_con_db_mb "$db")"          # SAME measurement con_check_opencode previewed with
+  [ "$mb" -ge "$ACE_OPENCODE_DB_MAX_MB" ] || return 0
   if pgrep -x opencode >/dev/null 2>&1; then
     warn "opencode: $(basename "$db") ${mb}MB over threshold but opencode is running — skipping reset (fail-closed)"; return 0; fi
   rm -f "$db" "$db-wal" "$db-shm" && ok "opencode: $(basename "$db") was ${mb}MB ≥ ${ACE_OPENCODE_DB_MAX_MB}MB — reset (history is disposable; recreates fresh)"
 }
+# E4: each swarm worker keeps its OWN opencode.db under ~/.config/ace/swarm/<proj>/, REUSED (appended to)
+# across runs → it grows unboundedly and was never capped (only the default store was). The set of stores
+# lives in _con_opencode_dbs so that con_check_opencode previews EXACTLY this loop — see the note there.
 _con_fix_opencode(){
-  _con_reset_db_if_big "$HOME/.local/share/opencode/opencode.db"
-  # E4: each swarm worker keeps its OWN opencode.db under ~/.config/ace/swarm/<proj>/, REUSED (appended to)
-  # across runs → it grows unboundedly and was never capped (only the default store was). Cap those too.
   local d
-  for d in "$HOME"/.config/ace/swarm/*/*.opencode.db; do [ -f "$d" ] && _con_reset_db_if_big "$d"; done
+  # `continue` rather than `[ -n "$d" ] && …`, so a blank line cannot make the loop — and therefore this
+  # function — return a misleading non-zero rc that has nothing to do with any reset having failed.
+  while IFS= read -r d; do [ -n "$d" ] || continue; _con_reset_db_if_big "$d"; done < <(_con_opencode_dbs)
 }
 
 _con_fix_podman(){

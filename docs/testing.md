@@ -40,6 +40,12 @@ bash tests/spec-debate-goldens.sh --calibrate    # cross-model debate verdict ag
 | `agent-goldens` (researcher) | the returned spec parses under `swarm_spec_lint` and cites only files that exist (no fabricated citations) |
 | `spec-rubric-goldens` | rubric JSON schema (7 criteria 1-3 · verdict) + ≥90% agreement with human labels over ≥4 goldens → the go/no-go for enabling `SPEC_RUBRIC=1` |
 | `spec-debate-goldens` | the cross-model debate's final verdict (FLAGGED/SOUND) schema + ≥90% agreement with human labels over ≥4 goldens → the go/no-go for enabling `SPEC_DEBATE=1` / `REVIEW_DEBATE=1` |
+| `debate-effectiveness` | precision/recall/**F1** of the debate against the labeled sandbox (`DEBATE_F1_MIN`), plus a trend point |
+
+> [!IMPORTANT]
+> **A `HOLD` verdict is a FAILED calibration and exits non-zero** — the nightly goes red. These harnesses used to print `HOLD` and still exit `0`, so `agent-goldens.yml` stayed green through any regression, and deleting the hard goldens shrank the denominator into a green `100%` that still said HOLD. Label disagreement, an unparseable verdict, and a **missing fixture** (a row in the labels file with no recorded `.out`) are all failures now, not warnings — a deleted fixture must not quietly shrink the denominator or the trend file's basis.
+>
+> Expect red before you expect green: a HOLD means the calibration genuinely has not passed on your labeled set, which is exactly the signal that should block enabling the gate.
 
 ## Tier 3 — on-demand (full crew, credits, hours)
 
@@ -53,6 +59,11 @@ tests/eval-ab-parth.sh --k 5             # H8: Part H pipeline OFF vs ON (knob-t
 tests/swarm-battle.sh                    # many-worker coordination under load
 tests/swarm-fault.sh                     # fault injection (killed workers, RED main, abandon/reassign)
 ```
+
+> [!IMPORTANT]
+> **Stub rows are plumbing, not evidence — and the harness enforces that.** A `--stub` eval replaces the crew with a no-op that applies each task's `reference.patch`, so it scores **100% at ~zero cost by construction**. Every row it writes is tagged `mode=stub` (column 8, appended so existing 7-column readers keep working), and `eval-report.sh` / `eval-ab.sh` **refuse to hand you a verdict** on stub input unless you set `EVAL_ALLOW_STUB=1` to see the pipeline output anyway. When you do, the report is stamped as not-a-measurement.
+>
+> A **real** run refuses to start without `opencode` on `PATH` rather than degrading to the stub — a silent degrade produced a 100% pass rate that was indistinguishable, in the TSV, from a genuinely perfect crew. `--tasks` is resolved to an absolute path before any trial chdirs into its workdir (a relative path used to score every trial as a legitimate failure and exit `0`), and a trailing value-taking flag is rejected instead of looping forever.
 
 Pre-registered experiments live in `tests/eval/experiments/` — fill the **minimum actionable effect BEFORE** running; report **quality AND cost**; say **"indistinguishable"** when the effect is within the noise floor.
 

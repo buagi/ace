@@ -9,7 +9,9 @@ A concrete, **measurable** protocol to shake out the last ~3 days of work — th
 ace settings            # Providers & keys → OpenRouter  (writes OPENROUTER_API_KEY)
 printf 'DEBATE_MODEL_B=openrouter/<your-slug>\n' >> ~/.config/ace/config
 
-# pick the 5 features to trial the debate on — their spec SLUGS (basename of .opencode/specs/<slug>.md)
+# pick the 5 features to trial the debate on — their spec SLUGS (basename of .opencode/specs/<slug>.md).
+# DEBATE_ONLY scopes SPEC debates ONLY. The REVIEW (pre-merge) gate has its own REVIEW_DEBATE_ONLY,
+# matched against the BRANCH name with `/` folded to `-`. Leave it unset to review every branch.
 printf 'DEBATE_ONLY=slug1,slug2,slug3,slug4,slug5\n' >> ~/.config/ace/config
 
 ace opencode            # regenerate config → 12 agents incl. debater + the openrouter provider block

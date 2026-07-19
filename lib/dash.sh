@@ -49,7 +49,10 @@ loop_dash() {
   else
     AC="${C_VIOLET:-}"; CR="${C_RED:-}"; GO="${C_YELLOW:-}"; GN="${C_GREEN:-}"; RD="${C_RED:-}"; FGc=""; MU="${C_GREY:-}"; DM="${C_GREY:-}"
   fi
-  RS="${C_RESET:-$'\033[0m'}"; local BD="${C_BOLD:-}"
+  RS="${C_RESET:-$'\033[0m'}"
+  # Finishing the dead-var sweep: a `local BD="${C_BOLD:-}"` lived here and a `gi=0` in the agent-grid
+  # block below. Neither was ever read. Left in place they read as live render state (BD in particular
+  # looked like "bold is available here"), so they are removed rather than kept as decoration.
 
   # ── agents (id|name|role|icon) + their live state ──
   # the canonical 11-agent roster (shared with the swarm cockpit via dash-common.sh) — was a hardcoded 9 that
@@ -175,7 +178,7 @@ loop_dash() {
     local sb; sb=" $(_chip d "$AC" loop "#$cyc")    $(_chip d "$cis" ci "$ci")    $(_chip d "$GO" repo "$(basename "$proj")")    $(_chip d "$GO" branch "$branch")    $(_chip d "$GN" overseer "$ovr")    $(_chip d "$AC" features "$feat/∞")"
     buf+="$(_at 9 "$sb")"
     # agent grid: 4 per row × 2 rows, 3 lines each (top border · name · role-in-bottom-border)
-    local bw=$(( (W-3)/4 )) gi=0 top=10
+    local bw=$(( (W-3)/4 )) top=10
     local rowset
     for rowset in "0 1 2 3" "4 5 6 7" "8 9 10"; do
       local L1=" " L2=" " L3=" " idx

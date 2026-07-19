@@ -214,7 +214,38 @@ _rule(){ local glyph="$1" title="$2" col="${3:-$c_accent}" w tv
 dash_header(){ printf ' %s⛧ A C E%s %s· the forge%s  %s—  the loop is %seternal%s   %s[%s]%s\n' \
     "$c_accent$bold" "$c_reset" "$c_muted" "$c_reset" "$c_dim" "$c_gold" "$c_reset" "$c_dim" "${DASH_MODE:-stacked}" "$c_reset"; }
 
+# RUNID — resolved LAZILY, retried every frame for as long as it is still empty.
+# It used to be resolved ONCE in swarm_dash() before the render loop, so a dash attached BEFORE dispatch
+# (the normal case: `ace swarm start` then attach, or the tmux pane that opens with the run) latched the
+# empty result and rendered "run —" for the whole session — even though $SWARM_DIR/.runid lands on disk
+# seconds later. A run id is immutable once known, so we stop looking the moment we have one and the
+# steady-state frame pays nothing.
+_dash_resolve_runid(){
+  [ -n "${RUNID:-}" ] && return 0
+  local v
+  # .runid is written at dispatch (lib/swarm-run.sh:740) and is the authoritative name of THIS run.
+  # A read failure here is the EXPECTED pre-dispatch state, not an error to report — the value simply
+  # stays empty, the bar honestly shows "—", and the next frame (≤2s later) tries again.
+  v="$(head -1 "$SWARM_DIR/.runid" 2>/dev/null)"
+  # Bus fallback: worker events carry the real run id; coordinator posts write run:"" — take the last
+  # NON-empty one. Covers a run whose .runid is missing (older run) or unreadable.
+  [ -n "$v" ] || v="$(jq -r 'select(.run!=null and .run!="")|.run' "$SWARM_DIR/events.jsonl" 2>/dev/null | tail -1)"
+  # NEVER render an unvalidated on-disk string straight into the frame: an escape sequence in it would
+  # repaint/corrupt the cockpit. Validate rather than sanitize — a scrubbed value is a DIFFERENT id, and
+  # showing a mangled id is worse than showing none. Accept only the charset swarm-run generates (a
+  # date-stamp, or $SWARM_RUNID) within a sane length; anything else leaves RUNID empty so the bar keeps
+  # its honest "—" and the next frame retries (which also covers a torn read of a half-written file).
+  [ -n "$v" ] || return 1
+  case "$v" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [ "${#v}" -le 64 ] || return 1
+  RUNID="$v"
+}
+
 dash_statusbar(){
+  # NOTE: resolution happens in the RENDER LOOP (parent shell), not here — this function runs inside a
+  # command substitution, so an assignment here would be discarded and the probe would repeat every frame.
   local d t; read -r d t < <(_dash_roadmap)
   local active peak paused draining pct now mts pulse eta ncoll collchip inflabel spend spendchip=""
   active="$(_live_workers | grep -c . )"
@@ -272,9 +303,68 @@ dash_no_workers(){
   printf '   %sworker boxes appear here the instant one claims its first task%s\n' "$c_dim" "$c_reset"
 }
 
-# The 9 subagents, grouped under the 5 pipeline stages:  id : short-label : stage-idx.
-# conflict_resolver is stage 9 so it only lights up when a conflict actually occurs (not by stage order).
-_AGENTS="orchestrator:plan:0 implementer:impl:1 test_engineer:test:1 verifier:gate:2 reviewer:rev:3 ux_reviewer:ux:3 standards_keeper:std:3 alignment_reviewer:algn:3 conflict_resolver:rslv:9"
+# ── agent roster: a MAPPING onto dash-common.sh's canonical list, not a copy ───────────────────────
+# The strip is built FROM the shared DASH_AGENTS so this cockpit can never again drift from the solo
+# dash — it hardcoded 9 agents while the shared roster carried 11, so the researcher (#11) and the
+# launch-readiness gate were invisible here and the ":20 one source of truth" comment was false.
+#
+# It has to be a MAPPING because the two surfaces speak DIFFERENT id vocabularies, and a blind
+# substitution would have silently broken every ✓ / ▸active◂ match:
+#   • DASH_AGENTS ids are the SHORT keys agent_state() writes into .opencode/.agents
+#     (standards · alignment · conflict · launch).
+#   • this cockpit matches ids against the opencode agent NAMES that appear in a worker log and that
+#     _stage_from_log emits (standards_keeper · alignment_reviewer · conflict_resolver ·
+#     launch_readiness_reviewer — see ACE_AGENTS, lib/install.sh:421).
+# So DASH_AGENTS stays authoritative for MEMBERSHIP + ORDER; this table adds the two facts it does not
+# carry: the log-vocabulary id, and the pipeline stage.
+#   stage: 0 plan · 1 build · 2 gate · 3 review · 4 merge · 9 = never light by stage order
+#   (conflict_resolver only runs when a conflict actually occurs, so it must not go ✓ just because the
+#   pipeline moved past review).
+# Entry shape: dash-id|opencode-id|short-label|stage. Order here is only the FALLBACK order.
+_AGENT_MAP=(
+  "orchestrator|orchestrator|plan|0"
+  "researcher|researcher|rsrch|0"
+  "implementer|implementer|impl|1"
+  "test_engineer|test_engineer|test|1"
+  "verifier|verifier|gate|2"
+  "reviewer|reviewer|rev|3"
+  "ux_reviewer|ux_reviewer|ux|3"
+  "standards|standards_keeper|std|3"
+  "alignment|alignment_reviewer|algn|3"
+  "conflict|conflict_resolver|rslv|9"
+  "launch|launch_readiness_reviewer|launch|4"
+)
+# → "ocid:label:stage ocid:label:stage …" in the shared roster's order (the shape _agents_line parses).
+_build_agents(){
+  local e key m out="" row
+  # No shared roster at all (dash-common.sh unreadable — it is sourced tolerantly at :20 because
+  # swarm-run.sh sources THIS file): say so on stderr, which the frame loop already funnels to
+  # $SWARM_DIR/dash.err and already tells the user to check. Then fall back to this table's own order
+  # rather than rendering a silently different strip.
+  # (an EMPTY DASH_AGENTS counts as unavailable too — it would silently render a BLANK agent strip, which
+  # looks like "no agents ran" rather than "the roster did not load". The || short-circuits so the ${#…}
+  # is never evaluated on an unset array under `set -u`.)
+  if [ -z "${DASH_AGENTS+x}" ] || [ "${#DASH_AGENTS[@]}" -eq 0 ]; then
+    printf 'swarm-dash: shared agent roster (dash-common.sh) unavailable — agent strip falls back to the local map\n' >&2
+    for m in "${_AGENT_MAP[@]}"; do out+="$(printf '%s' "$m" | cut -d'|' -f2-4 | tr '|' ':') "; done
+    printf '%s' "$out"; return
+  fi
+  for e in "${DASH_AGENTS[@]}"; do
+    key="${e%%|*}"; row=""
+    for m in "${_AGENT_MAP[@]}"; do [ "${m%%|*}" = "$key" ] && { row="$(printf '%s' "$m" | cut -d'|' -f2-4 | tr '|' ':')"; break; }; done
+    # An agent the shared roster GAINED that this table has not learned yet is still rendered — dropping
+    # it would recreate exactly the drift this change exists to kill. It gets its own id as the label and
+    # stage 9, so it can only ever go ✓ on real evidence in the log, never by stage order. Loud in
+    # dash.err so the missing mapping is visible instead of being quietly approximated.
+    if [ -z "$row" ]; then
+      printf 'swarm-dash: agent "%s" is in the shared roster but not in _AGENT_MAP — rendered without a stage\n' "$key" >&2
+      row="${key}:${key}:9"
+    fi
+    out+="$row "
+  done
+  printf '%s' "$out"
+}
+_AGENTS="$(_build_agents)"
 
 # _stage_from_log WORKER → "idx<TAB>agent" from the MOST RECENT marker in the live log. The .stat phase
 # stays "implement" the whole time (the entire implement→gate→review→merge runs inside ONE opencode
@@ -284,6 +374,10 @@ _stage_from_log(){
   tail -n 240 "$log" 2>/dev/null | sed "s/$ESC\\[[0-9;]*m//g" | tac 2>/dev/null | awk '
     { l=tolower($0)
       if (l ~ /loop ended|nothing to merge|pr #[0-9]+ merged|gh pr merge|✔ merged/) {print "4\tmerge"; exit}
+      # launch-readiness is the go/no-go gate immediately BEFORE promotion → stage 4, tested after the
+      # merge markers so an actual merge on the same line still wins. Added with the roster fix: without
+      # it launch_readiness_reviewer could never be named as the active agent, only inferred from the log.
+      if (l ~ /launch.?readiness|ci\.sh --launch/)  {print "4\tlaunch_readiness_reviewer"; exit}
       if (l ~ /conflicting|conflict.resolver/)      {print "3\tconflict_resolver"; exit}
       if (l ~ /alignment.?review/)                  {print "3\talignment_reviewer"; exit}
       if (l ~ /standards.?keep/)                    {print "3\tstandards_keeper"; exit}
@@ -292,6 +386,12 @@ _stage_from_log(){
       if (l ~ /container gate|ci\.sh|verifier/)     {print "2\tverifier"; exit}
       if (l ~ /test.?engineer/)                     {print "1\ttest_engineer"; exit}
       if (l ~ /implementer|implement:/)             {print "1\timplementer"; exit}
+      # researcher runs BEFORE the spec is written → stage 0. Deliberately ranked BELOW implement/test
+      # (the same precedence dash-common.sh uses for a worker context): a stray "researching…" line in a
+      # tool trace must not drag the pipeline of a building worker back to PLAN. Narration strings only —
+      # NOT "webfetch"/"firecrawl", which are tool names that can appear at any phase.
+      # (No apostrophes in this awk block: it is single-quoted, one would terminate the program.)
+      if (l ~ /researching|research pass|prior art/) {print "0\tresearcher"; exit}
       if (l ~ /planning|writing spec|opencode\/specs|plan:/) {print "0\torchestrator"; exit}
     }'
 }
@@ -304,7 +404,10 @@ _agents_line(){
   for e in $_AGENTS; do
     id="${e%%:*}"; lbl="$(printf '%s' "$e" | cut -d: -f2)"; st="${e##*:}"
     if [ "$id" = "$active" ]; then out+="${c_accent}${bold}▸${lbl}◂${c_reset} "
-    elif [ "$st" -lt "$cur" ] || printf '%s' "$seen" | grep -qE "(^|[^a-z_])${id//_/[_ ]}"; then out+="${c_green}${lbl}✓${c_reset} "   # word-boundary: 'reviewer' must NOT match ux_reviewer/alignment_reviewer
+    # word-boundary: 'reviewer' must NOT match ux_reviewer/alignment_reviewer. The separator class also
+    # accepts '-': ACE narrates "launch-readiness" while the agent id is launch_readiness_reviewer, so an
+    # underscore-only class would leave the launch gate permanently dim even after it had run.
+    elif [ "$st" -lt "$cur" ] || printf '%s' "$seen" | grep -qE "(^|[^a-z_])${id//_/[-_ ]}"; then out+="${c_green}${lbl}✓${c_reset} "
     else out+="${c_dim}${lbl}${c_reset} "; fi
   done
   printf '%s' "$out"
@@ -381,7 +484,17 @@ dash_grid(){
   local ncols; ncols=$(( cols_t / 46 )); [ "$ncols" -lt 1 ] && ncols=1; [ "$ncols" -gt "$n" ] && ncols="$n"; [ "$ncols" -gt 4 ] && ncols=4
   local cw; cw=$(( cols_t / ncols - 2 )); [ "$cw" -gt 100 ] && cw=100   # cells scale with the terminal (was capped at 58)
   local nrows; nrows=$(( (n + ncols - 1) / ncols ))
-  local ch; ch=$(( (rows_t - 12) / (nrows>0?nrows:1) )); [ "$ch" -lt 6 ] && ch=6; [ "$ch" -gt 16 ] && ch=16   # -12: +1 for the PROGRESS status line
+  # -12: fixed chrome (header + 3 status rows + rules + coord + bus + footer), incl. the PROGRESS line.
+  # DASH_FEED_OVR (the +/- keys) used to be read ONLY by the stacked layout, so the footer advertised a
+  # feed-size key that was inert in grid mode. It is a FEED-LINE count in both layouts; a grid cell is 4
+  # chrome rows + its feed, so honour it as a cell height. It is then clamped to what the window can
+  # actually show: unlike a stacked box (which just gets a "+N more" note), an oversized grid cell would
+  # scroll the whole frame out of the viewport.
+  local ch chmax; chmax=$(( (rows_t - 12) / (nrows>0?nrows:1) ))
+  if [ -n "${DASH_FEED_OVR:-}" ]; then ch=$(( DASH_FEED_OVR + 4 )); [ "$ch" -gt 24 ] && ch=24
+  else ch="$chmax"; [ "$ch" -gt 16 ] && ch=16; fi
+  [ "$ch" -gt "$chmax" ] && [ "$chmax" -ge 6 ] && ch="$chmax"
+  [ "$ch" -lt 6 ] && ch=6      # floor: below this a cell has no feed left at all
   local feedh=$(( ch - 4 ))
   # collect worker records into arrays (compute the log-inferred stage/agent ONCE per worker here,
   # never per cell-line, or we'd spawn ch×n tail|awk pipelines every frame).
@@ -478,9 +591,11 @@ dash_frame(){
 swarm_dash(){
   swarm_init
   REPO="${SWARM_REPO:-${REPO:-}}"; REPO="${REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-  # worker events carry the real run id; coordinator posts write run:"" — take the last NON-empty one.
-  RUNID="${RUNID:-$(jq -r 'select(.run!=null and .run!="")|.run' "$SWARM_DIR/events.jsonl" 2>/dev/null | tail -1)}"
   command -v jq >/dev/null || { echo "swarm-dash needs jq"; return 1; }
+  # NOTE: RUNID is NOT resolved here any more. _dash_resolve_runid (above dash_statusbar) retries every
+  # frame while it is empty, which is what makes a dash attached pre-dispatch pick the id up on its own.
+  # (The jq probe also has to come after the `command -v jq` guard, which it did not.)
+  _dash_resolve_runid || true
   DASH_MODE="${DASH_MODE:-stacked}"
   # ALTERNATE SCREEN: a dedicated, non-scrolling viewport (like htop/vim). No scrollback
   # pollution while watching, and the terminal is restored exactly on quit — no scroll-up.
@@ -494,6 +609,11 @@ swarm_dash(){
     DASH_TICK=$(( DASH_TICK + 1 ))     # advances the heartbeat/pulse every frame
     # stderr → $SWARM_DIR/dash.err (overwritten per frame): a render bug must never paint raw errors
     # over the cockpit — check dash.err if something looks off. stdout is the frame, captured as before.
+    # Resolve RUNID HERE, in the parent shell. dash_frame runs inside a command substitution below, and a
+    # subshell cannot write back — so resolving it in dash_statusbar re-ran the probe on EVERY frame forever
+    # (measured 83 ms/frame against a 3.1 MB events.jsonl) and never actually stuck. Resolving in the loop
+    # makes the "resolve once, then free" design true rather than aspirational.
+    [ -n "${RUNID:-}" ] || _dash_resolve_runid || true
     printf '%s%s%s' "${ESC}[H" "${ESC}[2J" "$(dash_frame 2>"$SWARM_DIR/dash.err")"
     if [ -n "$_tty" ]; then read -rsn1 -t "${DASH_REFRESH:-2}" key <"$_tty" || key=""
     else read -rsn1 -t "${DASH_REFRESH:-2}" key || key=""; fi
@@ -503,7 +623,10 @@ swarm_dash(){
       r|R) rm -f "$SWARM_DIR/control.pause" "$SWARM_DIR/control.drain" ;;
       d|D) : > "$SWARM_DIR/control.drain" ;;
       g|G) if [ "${DASH_MODE:-stacked}" = grid ]; then DASH_MODE=stacked; else DASH_MODE=grid; fi ;;
-      +|=) DASH_FEED_OVR=$(( ${DASH_FEED_OVR:-8} + 2 )) ;;
+      # clamp BOTH ends here, not just at render: without an upper bound, holding '+' pushed the counter
+      # far past the 24-line render cap and the next N presses of '-' then did nothing visible — a key
+      # that looks broken. Both layouts read DASH_FEED_OVR (see dash_workers and dash_grid).
+      +|=) DASH_FEED_OVR=$(( ${DASH_FEED_OVR:-8} + 2 )); [ "${DASH_FEED_OVR}" -gt 24 ] && DASH_FEED_OVR=24 ;;
       -|_) DASH_FEED_OVR=$(( ${DASH_FEED_OVR:-8} - 2 )); [ "${DASH_FEED_OVR}" -lt 3 ] && DASH_FEED_OVR=3 ;;
       k|K) printf '%s kill which worker (e.g. w1): %s' "$c_gold" "$c_reset"
            if [ -n "$_tty" ]; then read -r kw <"$_tty"; else read -r kw; fi; [ -n "$kw" ] && : > "$SWARM_DIR/control.kill-$kw" ;;
