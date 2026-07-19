@@ -59,10 +59,20 @@ _debate_log_metric(){
   local dur=$(( $(date +%s) - start )) capped=0
   grep -q 'wall-cap' "$trf" 2>/dev/null && capped=1
   local rj; rj="$(printf '%s' "$tsv" | jq -R -s 'split("\n")|map(select(length>0)|split("\t")|{round:(.[0]|tonumber),challenger_chars:(.[1]|tonumber),defender_chars:(.[2]|tonumber),accepted:(.[3]|tonumber),disputed:(.[4]|tonumber),converged:(.[5]|tonumber),needs_more:(.[6]|tonumber),challenger_secs:(.[7]|tonumber),defender_secs:(.[8]|tonumber)})' 2>/dev/null || echo '[]')"
+  # run_id: this log is append-only and CUMULATIVE for the life of the project, so every consumer that wants to
+  # report on "this run" (lib/scorecard.sh ⑤/⑧) needs a way to select one run's records. RUN_ID is exported by
+  # autoloop.sh; a manual `ace debate spec` has none and records "" — consumers treat that as untagged.
+  # KNOWN GAP (for the swarm owner): the swarm COORDINATOR also records "". Its run id lives in `RUNID`
+  # (swarm-run.sh:684), which is never exported, and it invokes this file as a SEPARATE process
+  # (swarm-run.sh:569) — so a `${RUNID:-}` fallback here would be inert across that boundary and would only
+  # look like a fix. The real fix is to export a run id from swarm-run.sh. Until then scorecard's
+  # _sc_debate_scope detects the untagged/interleaved shape and reports CUMULATIVE, explicitly labelled,
+  # rather than reporting one worker's debates as the whole run.
   jq -nc --arg ts "$(date -u +%FT%TZ)" --arg mode "$mode" --arg slug "$slug" --arg a "$A" --arg b "$B" \
+     --arg run "${RUN_ID:-}" \
      --argjson rounds "${rounds:-0}" --argjson conv "${conv:-0}" --argjson dur "$dur" \
      --argjson issues "${issues:-0}" --argjson capped "$capped" --arg trf "$trf" --argjson rj "${rj:-[]}" \
-     '{ts:$ts,mode:$mode,slug:$slug,model_a:$a,model_b:$b,rounds:$rounds,converged:($conv==1),wall_capped:($capped==1),duration_s:$dur,issues_emitted:$issues,transcript:$trf,per_round:$rj}' \
+     '{ts:$ts,run_id:$run,mode:$mode,slug:$slug,model_a:$a,model_b:$b,rounds:$rounds,converged:($conv==1),wall_capped:($capped==1),duration_s:$dur,issues_emitted:$issues,transcript:$trf,per_round:$rj}' \
      >> "$(dirname "$trf")/debate-metrics.jsonl" 2>/dev/null || true
 }
 
@@ -87,11 +97,19 @@ ace_debate(){
     [ -n "$slug" ] || slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-')"; [ -n "$slug" ] || slug=diff
   fi
 
-  # DEBATE_ONLY (trial scoping): a comma-list of slugs to limit the debate to — the simple, easily-editable way
-  # to try it on just a few features. Empty ⇒ every eligible artifact. Set in ~/.config/ace/config (or env):
-  #   DEBATE_ONLY=checkout,authz,webhook,orders,ledger
-  local _only; _only="${DEBATE_ONLY:-$(_dcfg DEBATE_ONLY)}"
-  [ -z "$_only" ] || case ",$_only," in *",$slug,"*) : ;; *) return 0 ;; esac
+  # Trial scoping — SPEC mode and REVIEW mode have SEPARATE knobs ON PURPOSE. Their "slug" namespaces are
+  # different: a spec slug is a FEATURE name (checkout, authz); a review slug is a BRANCH name (feat-checkout).
+  # DEBATE_ONLY is documented (docs/configuration.md, docs/trial-runs.md Setup) as a list of SPEC slugs, but it
+  # used to be applied to BOTH modes — so a branch name never matched the list and every review debate returned
+  # here silently. Anyone who followed the trial-runs Setup and set DEBATE_ONLY thereby lost the entire
+  # REVIEW_DEBATE pre-merge gate, fail-open, with no log line saying so. Keep these two arms distinct:
+  #   DEBATE_ONLY=checkout,authz,…          → limits SPEC debates   (spec slug = spec file basename)
+  #   REVIEW_DEBATE_ONLY=feat-checkout,…    → limits REVIEW debates (review slug = branch, `/`→`-`)
+  # Unset ⇒ every eligible artifact in that mode. Set either in ~/.config/ace/config or the environment.
+  local _only
+  if [ "$mode" = spec ]; then _only="${DEBATE_ONLY:-$(_dcfg DEBATE_ONLY)}"
+  else                        _only="${REVIEW_DEBATE_ONLY:-$(_dcfg REVIEW_DEBATE_ONLY)}"; fi
+  [ -z "$_only" ] || case ",$_only," in *",$slug,"*) : ;; *) printf 'debate: %s "%s" not in the %s scope list — skipping.\n' "$mode" "$slug" "$([ "$mode" = spec ] && echo DEBATE_ONLY || echo REVIEW_DEBATE_ONLY)" >&2; return 0 ;; esac
 
   local dir=".opencode/cache"; local trf="$dir/${mode}-debate-${slug}.md"; mkdir -p "$dir" 2>/dev/null   # NOTE: keep as two `local` statements — `local a=X b=$a` expands $a from the OUTER scope (unbound under set -u) BEFORE the same-line assignment lands
   printf '# %s debate · %s\n\n- defender (A): %s\n- challenger (B): %s\n- rounds: min %s · max %s · hard %s\n' \
@@ -99,8 +117,14 @@ ace_debate(){
 
   local transcript="" round=0 min="${DEBATE_MIN:-2}" max="${DEBATE_MAX:-4}" hard="${DEBATE_HARD_MAX:-10}"
   local _start _rtsv="" _t0 _cs=0 _ds=0 conv=0 needs=0; _start="$(date +%s)"   # wall-clock backstop + per-round timing/metrics (hoisted so they exist even if turn 1 dies)
+  # `round` counts rounds ATTEMPTED; `_rdone` counts rounds that produced BOTH turns and therefore a _rtsv row.
+  # They diverge exactly when a turn dies mid-round (fail-open break below), and the metrics record must log
+  # _rdone: logging `round` there claimed a round that never happened and contradicted per_round|length inside
+  # the same record — inflating avg_rounds in `ace debate report` / the scorecard.
+  local _rdone=0
   while :; do
     round=$((round+1))
+    conv=0; needs=0   # a round that dies mid-way must NOT inherit the previous round's converged/needs-more flags
     local cprompt cout
     cprompt="ROLE: CHALLENGER (turn $round). Pressure-test $art_label below — thorough, multi-layered, do not spare depth.$([ "$round" -gt 1 ] && printf ' Press still-DISPUTED points; DROP refuted ones; raise a NEW point only if the dialogue genuinely surfaced it.')
 === ARTIFACT ===
@@ -137,6 +161,7 @@ $dout"
     # per-round metrics row (tab-separated): round · challenger_chars · defender_chars · accepted · disputed · conv · needs · c_secs · d_secs
     _rtsv="${_rtsv}${round}	${#cout}	${#dout}	$(_debate_ids_count "$dout" ACCEPTED)	$(_debate_ids_count "$dout" DISPUTED)	${conv}	${needs}	${_cs}	${_ds}
 "
+    _rdone=$round   # both turns landed + a metrics row exists — this round really happened
     printf '  debate %s · round %s done — accepted %s · disputed %s · converged %s · needs-more %s\n' \
       "$slug" "$round" "$(_debate_ids_count "$dout" ACCEPTED)" "$(_debate_ids_count "$dout" DISPUTED)" "$conv" "$needs" >&2
     [ "$round" -ge "$min" ] && [ "$conv" = 1 ] && break               # both converged (after the min real exchange)
@@ -160,7 +185,7 @@ $transcript")"
   local issues _ic; issues="$(printf '%s\n' "$sout" | grep -iE '^DEBATEISSUE')"
   _ic="$(printf '%s\n' "$sout" | grep -icE '^DEBATEISSUE' || true)"; _ic="${_ic:-0}"
   # excessive metrics for later analysis — logged for EVERY debate (SOUND or FLAGGED), fail-open.
-  _debate_log_metric "$mode" "$slug" "$A" "$B" "$round" "$conv" "$_start" "$_ic" "$trf" "$_rtsv" 2>/dev/null || true
+  _debate_log_metric "$mode" "$slug" "$A" "$B" "$_rdone" "$conv" "$_start" "$_ic" "$trf" "$_rtsv" 2>/dev/null || true
   [ -n "$issues" ] || return 0
   if [ "$mode" = spec ]; then
     printf '%s\n' "$issues" | sed -E "s|^DEBATEISSUE[[:space:]]*|SPECGAP $slug DEBATE:|"
@@ -208,9 +233,9 @@ ace_debate_trend(){
      {first:$first,last:$last,dall:(($last-$first)*1000|round/1000),drecent:(($last-$prev)*1000|round/1000),dcost:$dc}' "$f" 2>/dev/null \
     | jq -r '"  F1: \(.first) → \(.last)   (all-time \(if .dall>=0 then "+" else "" end)\(.dall) · since last \(if .drecent>=0 then "+" else "" end)\(.drecent))",
        "  cost: \(if .dcost>0 then "+\(.dcost)s (up)" elif .dcost<0 then "\(.dcost)s (down)" else "flat" end)",
-       (if .drecent>0.02 then "  CONCLUSION: IMPROVING — the last change raised F1; keep this direction (see `ace debate review` for what still fails)."
+       (if .drecent>0.02 then "  CONCLUSION: IMPROVING — the last change raised F1; keep this direction (see `ace debate diagnose` for what still fails)."
         elif .drecent<-0.02 then "  CONCLUSION: REGRESSING — the last change LOWERED F1; revert it or try another lever."
-        else "  CONCLUSION: FLAT — no meaningful F1 move; change a lever (model / prompt / knob) then re-score. `ace debate review` shows where it fails." end)' 2>/dev/null || true
+        else "  CONCLUSION: FLAT — no meaningful F1 move; change a lever (model / prompt / knob) then re-score. `ace debate diagnose` shows where it fails." end)' 2>/dev/null || true
 }
 
 # ace_debate_testproject [dir] — materialize the labeled sandbox into a runnable ACE project (specs →
@@ -259,6 +284,41 @@ ace_debate_selftest(){
     # Stash $? in its own var before anything else runs, then fail the selftest properly.
     out="$(ace_debate bogus x 2>/dev/null)"; rc=$?
     [ "$rc" = 2 ] || { echo "[debate] bad mode must exit 2 (got rc=$rc, out: $out)"; ok=0; }
+
+    # GATE REGRESSION: DEBATE_ONLY is a list of SPEC slugs. It must NOT gate REVIEW mode, whose slug is a
+    # BRANCH name — that mismatch silently disabled the whole REVIEW_DEBATE pre-merge gate for every user who
+    # followed docs/trial-runs.md Setup. Build a tiny 2-commit repo so review mode has a real diff, set
+    # DEBATE_ONLY to spec slugs that can never match a branch, and require the review debate to STILL run.
+    ( mkdir -p rv && cd rv
+      git init -q 2>/dev/null; git checkout -q -b main 2>/dev/null
+      printf 'a\n' > f.txt; git add -A 2>/dev/null
+      git -c user.email=d@ace -c user.name=d -c commit.gpgsign=false commit -qm base --no-verify >/dev/null 2>&1
+      git checkout -q -b feat/x 2>/dev/null; printf 'b\n' >> f.txt; git add -A 2>/dev/null
+      git -c user.email=d@ace -c user.name=d -c commit.gpgsign=false commit -qm change --no-verify >/dev/null 2>&1
+      PATH="$OLDPWD/bin:$PATH" DEBATE_MODEL_A=stub DEBATE_MODEL_B=openrouter/stub DEBATE_ONLY=authz,checkout \
+        DEBATE_MIN=1 DEBATE_MAX=1 DEBATE_HARD_MAX=1 DEBATE_TIMEOUT=3 DEBATE_WALL_MAX=10 \
+        ace_debate review main >/dev/null 2>&1
+      [ -f .opencode/cache/review-debate-feat-x.md ] ) \
+      || { echo "[debate] DEBATE_ONLY (spec slugs) must NOT disable the REVIEW_DEBATE gate — no review transcript written"; ok=0; }
+    # …and the review-side knob must still be able to scope review debates.
+    ( cd rv && rm -rf .opencode/cache
+      PATH="$OLDPWD/bin:$PATH" DEBATE_MODEL_A=stub DEBATE_MODEL_B=openrouter/stub REVIEW_DEBATE_ONLY=other-branch \
+        DEBATE_MIN=1 DEBATE_MAX=1 DEBATE_HARD_MAX=1 DEBATE_TIMEOUT=3 DEBATE_WALL_MAX=10 \
+        ace_debate review main >/dev/null 2>&1
+      [ ! -f .opencode/cache/review-debate-feat-x.md ] ) \
+      || { echo "[debate] REVIEW_DEBATE_ONLY must scope review debates (non-matching branch still debated)"; ok=0; }
+
+    # METRICS HONESTY: a debate whose round-2 challenger dies must log the rounds it actually COMPLETED —
+    # `rounds` must equal per_round|length, and the flags must not be inherited from round 1.
+    if command -v jq >/dev/null 2>&1; then
+      printf '#!/usr/bin/env bash\nn=$(( $(cat "$STUBCNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUBCNT"\n[ "$n" -ge 3 ] && exit 0\necho "no blocking issues."\necho "CONVERGED: yes"\n' > bin/opencode
+      chmod +x bin/opencode; rm -rf .opencode/cache; printf '0\n' > stub.cnt
+      PATH="$PWD/bin:$PATH" STUBCNT="$PWD/stub.cnt" DEBATE_MODEL_A=stub DEBATE_MODEL_B=openrouter/stub \
+        DEBATE_MIN=2 DEBATE_MAX=2 DEBATE_HARD_MAX=2 DEBATE_TIMEOUT=3 DEBATE_WALL_MAX=20 \
+        ace_debate spec hi.md >/dev/null 2>&1
+      out="$(jq -rs '.[-1]|"\(.rounds) \(.per_round|length)"' .opencode/cache/debate-metrics.jsonl 2>/dev/null)"
+      [ "$out" = "1 1" ] || { echo "[debate] aborted round must not be counted: rounds/per_round = '$out' (want '1 1')"; ok=0; }
+    fi
     [ "$ok" = 1 ] && echo "[debate] PASS ✓" || { echo "[debate] FAIL ✗"; exit 1; }
   ) || ok=0
   rm -rf "$d"; [ "$ok" = 1 ]

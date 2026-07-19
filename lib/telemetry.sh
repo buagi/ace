@@ -37,10 +37,16 @@ from collections import defaultdict
 since, root, sdir, scope, by, run_id = int(sys.argv[1] or 0), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 dbs = sys.argv[7:]
 where, args = ["time_created >= ?"], [since]
+def lk(s):
+    # SQL LIKE metacharacters must be escaped in an interpolated PATH, or the scope filter silently widens:
+    # `_` matches ANY single character, so a project at ~/code/my_app also matches ~/code/my-app, ~/code/myXapp
+    # — foreign projects' sessions folded into this project's cost report. `%` (legal in a path) is worse: it
+    # matches anything. Escape with a backslash and declare it via ESCAPE below.
+    return (s or '').replace('\\', '\\\\').replace('_', '\\_').replace('%', '\\%')
 if root:
     # a solo session's dir is under the project root; a swarm worker's is under ~/.config/ace/swarm/<proj>/worktrees/
-    where.append("(directory = ? OR directory LIKE ? OR directory LIKE ?)")
-    args += [root, root.rstrip('/') + '/%', (sdir.rstrip('/') + '/%') if sdir else root]
+    where.append("(directory = ? OR directory LIKE ? ESCAPE '\\' OR directory LIKE ? ESCAPE '\\')")
+    args += [root, lk(root.rstrip('/')) + '/%', (lk(sdir.rstrip('/')) + '/%') if sdir else lk(root)]
 W = " AND ".join(where)
 def q(sql):   # UNION the query across every gathered DB (default + per-worker swarm DBs); fail-soft per DB
     out = []
@@ -108,11 +114,19 @@ if by == 'task':
         hog=max(agg, key=lambda k: agg[k][5]); hv=agg[hog][5]; share=int(hv*100/T[4]) if T[4] else 0
         print(f"\n**Costliest task:** `{hog[1][:60]}` on `{hog[0]}` — ${hv:.2f} ({share}% of the total, {len(agg[hog][1])} subagents).")
 else:
-    agg = defaultdict(lambda: [0,0,0,0,0,0,0.0]); model = {}
+    agg = defaultdict(lambda: [0,0,0,0,0,0,0.0]); models = defaultdict(set)
     for d,ag,mdl,n,tin,tcr,tcw,tout,treas,cost in rows:
         k=(worker(d),ag); a=agg[k]
         a[0]+=n; a[1]+=tin or 0; a[2]+=tcr or 0; a[3]+=tcw or 0; a[4]+=tout or 0; a[5]+=treas or 0; a[6]+=cost or 0.0
-        model[k]=modelname(mdl)
+        # The GROUP BY key includes `model`, so one (worker,agent) legitimately spans several rows/models — an
+        # agent whose model was overridden mid-run, or re-grouped per DB. Assigning a single name here was
+        # last-write-wins: the totals were right but the row was LABELLED with whichever model the last row
+        # happened to carry, so a multi-model agent was silently attributed to one model. Collect them all.
+        models[k].add(modelname(mdl))
+    def modelcol(k):
+        ms = sorted(m for m in models.get(k, ()) if m)
+        if not ms: return ''
+        return ms[0] if len(ms) == 1 else f"{ms[0]} +{len(ms)-1}"
     T=[0,0,0,0,0,0,0.0]
     for a in agg.values():
         for i in range(6): T[i]+=a[i]
@@ -121,7 +135,7 @@ else:
     print("|---|---|---|--:|--:|--:|--:|--:|--:|")
     for (wk,ag) in sorted(agg, key=lambda k: -agg[k][6]):
         a=agg[(wk,ag)]; pct=cachepct(a[1],a[2])
-        print(f"| {wk} | {ag} | {model.get((wk,ag),'')} | {a[0]} | {h(a[1])} | {h(a[2])} | {pct}% | {h(a[4])} | ${a[6]:.4f} |")
+        print(f"| {wk} | {ag} | {modelcol((wk,ag))} | {a[0]} | {h(a[1])} | {h(a[2])} | {pct}% | {h(a[4])} | ${a[6]:.4f} |")
     tpct=cachepct(T[1],T[2])
     print(f"| **TOTAL** | | | **{T[0]}** | **{h(T[1])}** | **{h(T[2])}** | **{tpct}%** | **{h(T[4])}** | **${T[6]:.2f}** |")
     if agg:
@@ -207,7 +221,12 @@ quality_report(){ # aggregate -> .opencode/quality-report.md
   local f=.opencode/quality-metrics.csv out=.opencode/quality-report.md
   command -v python3 >/dev/null 2>&1 || return 0
   [ -f "$f" ] || return 0
-  python3 - "$f" ".opencode/eval-report.md" <<'PY' > "$out" 2>/dev/null
+  # Render to a TEMP file and mv only on success — same pattern as subagent_report, for the same reason.
+  # `python3 … > "$out" 2>/dev/null` TRUNCATES $out before python runs and swallows the traceback, so ONE
+  # malformed CSV row (or any exception) destroyed the last good report and left a 0-byte file that
+  # `ace quality` happily `cat`s: zero bytes, rc 0, no error anywhere. Now a failed render keeps the previous
+  # report and says so.
+  python3 - "$f" ".opencode/eval-report.md" <<'PY' > "$out.tmp" 2>/dev/null
 import sys, csv, math
 from collections import defaultdict
 f, evalrep = sys.argv[1], sys.argv[2]
@@ -253,7 +272,17 @@ except: pass
 print(esc)
 print("\n_Leading (critic FP, retry, tokens/task via `ace stats`) move first and predict the lagging (pass^k, escaped-bug) the nightly eval measures._")
 PY
-  command -v say >/dev/null 2>&1 && say "quality report → .opencode/quality-report.md (per-critic FP rate + retry rate)"
+  local rc=$?
+  # rc 0 AND non-empty: python can exit 0 having printed nothing only if the script were gutted, but an empty
+  # report is indistinguishable from a broken one to the reader — never publish it over a good previous one.
+  if [ "$rc" = 0 ] && [ -s "$out.tmp" ]; then
+    mv -f "$out.tmp" "$out"
+    command -v say >/dev/null 2>&1 && say "quality report → .opencode/quality-report.md (per-critic FP rate + retry rate)"
+    return 0
+  fi
+  rm -f "$out.tmp" 2>/dev/null
+  printf 'quality_report: renderer failed (rc %s) — keeping the previous %s. Re-run with the 2>/dev/null removed to see the error.\n' "$rc" "$out" >&2
+  return 0
 }
 
 # ace quality — on-demand quality report (per-critic FP rate, retry rate, escaped-bug)

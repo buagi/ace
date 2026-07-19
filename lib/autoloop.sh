@@ -56,7 +56,11 @@ DEEPSEEK_OVERSEER="${DEEPSEEK_OVERSEER:-deepseek/deepseek-v4-pro}"  # model used
 ORCH_MODEL_OVERRIDE="${ORCH_MODEL_OVERRIDE:-}"   # set to delegate the overseer (auto-set on a Claude limit)
 CI_STATE="${CI_STATE:-idle}"                     # live gate state for the dash chip: idle|running|green|red (set at the gate choke points)
 WAITED=0                                          # cumulative seconds spent waiting on the current limit
-ACE_CFG="${ACE_CFG:-$HOME/.config/ace/config}"
+# Same resolution order as core.sh:4 (ACE_CONFIG_DIR) — XDG_CONFIG_HOME first, $HOME/.config only as the
+# fallback. Hardcoding ~/.config here meant that on an XDG-relocated host the loop read NO config at all:
+# orch_model() found neither MODEL_orchestrator nor ORCH_PROVIDER, silently fell back to Opus, and then
+# PRINTED that fallback in preflight/run-summary/loop-state as if it were the configured overseer.
+ACE_CFG="${ACE_CFG:-${XDG_CONFIG_HOME:-$HOME/.config}/ace/config}"
 EXPECT_REPO="${EXPECT_REPO:-}"                    # optional owner/name guard for the loop
 VERIFY="${VERIFY:-0}"                            # 1 => after each deploy, run 'ace verify' (triage findings -> ROADMAP)
 HARVEST="${HARVEST:-1}"                          # 1 => after each GREEN merge, curate build WARNINGS the gate let through into ROADMAP
@@ -188,7 +192,11 @@ token_report(){
         CR[a]+=chr; IN[a]+=inp; OUT[a]+=out; TOT[a]+=inp+out
       } END {
         hog=""; hv=0;
-        for (a in n){ pct=(IN[a]>0?int(CR[a]*100/IN[a]):0); printf "| %s | %d | %d | %d | %d | %d%% |\n",a,n[a],IN[a],CR[a],OUT[a],pct; if(TOT[a]>hv){hv=TOT[a];hog=a} }
+        # cache-read% = cache_read / (FRESH input + cache_read) — the SAME denominator capture_usage()
+        # computes and documents ~40 lines up. opencode reports `input` as the UNCACHED portion only, so
+        # dividing by input alone is not a percentage of anything: this table routinely printed >100%
+        # (and unbounded) for exactly the well-cached agents it was built to celebrate.
+        for (a in n){ den=IN[a]+CR[a]; pct=(den>0?int(CR[a]*100/den):0); printf "| %s | %d | %d | %d | %d | %d%% |\n",a,n[a],IN[a],CR[a],OUT[a],pct; if(TOT[a]>hv){hv=TOT[a];hog=a} }
         if (hog!="") printf "\n**Cost hog:** %s (~%d input+output tokens this run). If one agent dominates it is usually the HIGH-risk 4-critic panel at max effort — risk-tier the panel or shorten its prompt.\n",hog,hv
       }' "$f"
     printf '\n## opencode stats (per-session token/cost, if available)\n\n```\n'
@@ -328,6 +336,12 @@ command -v opencode >/dev/null || { echo "need opencode"; exit 1; }
 branch(){ git branch --show-current; }
 repo_slug(){ gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null; }
 # effective overseer model id: per-agent MODEL_orchestrator override › ORCH_PROVIDER alias › Claude Opus (default).
+# DUPLICATE OF core.sh:150 — deliberately, NOT by oversight. This file cannot `source lib/core.sh`: core.sh
+# installs `trap cleanup EXIT` at source time, and this file defines its OWN cleanup() (kill the whole
+# process subtree, then `exit 130`) further down — sourcing core.sh would bind THAT to every NORMAL exit of
+# the loop, so a clean end-of-run would SIGKILL its own children and report 130. The two copies are instead
+# pinned together by a behavioural drift assertion in tests/profile-reader.sh (every branch of the resolver
+# is compared against core.sh's for the same config file). If you change one, change the other or CI fails.
 orch_model(){
   local m=""; [ -f "$ACE_CFG" ] && m="$(grep -E '^MODEL_orchestrator=' "$ACE_CFG" | tail -1 | cut -d= -f2-)"
   if [ -z "$m" ]; then case "$([ -f "$ACE_CFG" ] && grep -E '^ORCH_PROVIDER=' "$ACE_CFG" | tail -1 | cut -d= -f2-)" in
@@ -440,7 +454,13 @@ spec_gate_solo(){
     say "spec-debate: cross-model dialogue on the lint-green HIGH-risk spec(s) — each turn can take minutes; per-turn progress follows."
     for sp in $specs; do
       printf '%s\n' "$slint" | grep -q "^SPECGAP $(basename "$sp" .md) " && continue   # still gappy after re-spec → skip
-      deb="$(bash "$_dsh" spec "$sp" 2>/dev/null)" || true
+      # stderr is NOT noise here: debate.sh puts its whole per-turn narration there (challenger/defender
+      # thinking, reply size + seconds, per-round accepted/disputed counts) plus every FAIL-OPEN reason it
+      # can return on ("DEBATE_MODEL_B unset — skipping", "challenger returned NOTHING"). Only the SPECGAP
+      # lines go to stdout, which is what "$(…)" captures — so 2>/dev/null discarded exactly the output the
+      # line above promises ("per-turn progress follows") and turned a silently-skipped debate into a
+      # multi-minute unexplained pause. Let it through to the loop log.
+      deb="$(bash "$_dsh" spec "$sp")" || true
       [ -n "$deb" ] && extra="$(printf '%s\n%s' "$extra" "$deb")"
     done
   elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
@@ -592,10 +612,28 @@ preflight(){
     if [ ! -e ./ci.sh ]; then
       say "STOPPING: no ./ci.sh gate in $(pwd) — can't verify the uncommitted work. Is this your project directory (not e.g. ACE's own repo)?"; exit 1
     elif ./ci.sh >/dev/null 2>&1; then
+      # BRANCH GATE — every other WIP-preserving site in this file tests `!= main` before it commits
+      # (cleanup(), the hang-restart checkpoint, the cap checkpoint, the BIG-TASK checkpoint); this one did
+      # not, so a run that died while HEAD was on main committed straight to main AND pushed it, bypassing
+      # the PR + gate path entirely. That is the one thing the loop must never do. The dirt is often not even
+      # the user's work: ace_repo_hygiene (called ~20 lines above) stages index deletions and rewrites
+      # .gitignore, so the rescue routinely fires on hygiene's OWN output while sitting on main.
+      # On main/master, move the work onto chore/resume-<ts> FIRST — `git checkout -b` carries the
+      # uncommitted tree across, so nothing is lost — and only then commit/push/open the PR. (A detached
+      # HEAD cannot reach here: preflight exits above on an empty `branch`.)
+      local _rb; _rb="$(branch)"
+      if [ "$_rb" != main ] && [ "$_rb" != master ]; then
+        :   # already on a feature branch — commit here, as before
+      elif git checkout -b "chore/resume-$(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1; then
+        _rb="$(branch)"; say "rescue: HEAD was on '$b' — moved the uncommitted work to '$_rb' (a rescue never lands on main)."
+      else
+        say "REFUSING to resume: uncommitted work is sitting on '$b' and a rescue branch could not be created — commit or stash it yourself, then re-run. Stopping."; exit 1
+      fi
       git add -A && git commit -m "chore(resume): commit gate-green work from an interrupted run" >/dev/null 2>&1 || true
       git push -u origin HEAD >/dev/null 2>&1 || true
       gh pr create --base main --fill >/dev/null 2>&1 || true
-      say "rescued + pushed the interrupted work (./ci.sh GREEN)."
+      b="$_rb"   # keep preflight's branch var in sync — the pending-PR check below compares against it
+      say "rescued + pushed the interrupted work on '$b' (./ci.sh GREEN)."
     else
       say "REFUSING to resume: uncommitted work FAILS ./ci.sh — fix or stash it, then re-run. Stopping."; exit 1
     fi
@@ -618,7 +656,45 @@ preflight(){
 }
 
 # --- opencode runner with Claude (subscription) session-limit handling ---
-claude_limit_hit(){ grep -qiE 'usage limit|rate.?limit|quota|too many requests|429|limit reached|resets? (at|in)|session limit|credit balance|insufficient (credit|quota|funds|balance)|out of (credit|usage|tokens)|billing|payment required|402|overloaded|529|authentication_error|invalid x-api-key|expired' "$1" 2>/dev/null; }
+# ONE provider-cap regex for the WHOLE file: the post-hoc check below and the in-flight fast-detect inside
+# drive()'s watcher both ask claude_limit_hit, so they can never drift apart again.
+#
+# Two rules, both learned the hard way:
+#  1. TAIL-SCOPE. The old form grepped the ENTIRE transcript. A step that merely DISCUSSES a cap — reads a
+#     billing doc, `cat`s a log, writes an error-handling branch containing the string 429 — matched, and a
+#     REAL failure was then mis-handled as a provider cap: 6h of polling (CLAUDE_RESET_WAIT) followed by a
+#     stop, with the true error never surfaced anywhere. A cap is reported by the provider at the END of the
+#     run, so only the tail can be evidence of one.
+#  2. PROVIDER-SHAPED CONTEXT for anything ambiguous. Bare `billing`, `quota`, `expired`, `429`, `402`, `529`
+#     are ordinary words/numbers in a build log. Numeric status codes must carry a status/code/http/error
+#     lead-in (the same idiom classify_failure_mode already uses), and the English words must appear in
+#     their actual provider phrasing ("quota exceeded" / "exceeded your current quota", not bare "quota").
+#     Where the provider's phrasing IS a bare word, capitalisation carries the shape instead — see
+#     _CAP_RE_CS below. Under-detection is as expensive as over-detection: a missed cap makes a 529 storm
+#     read as a code RED and burns the whole fix budget on a phantom build break.
+CAP_TAIL_LINES="${CAP_TAIL_LINES:-60}"   # how much of the log tail counts as provider evidence
+#     Two numeric alternatives, deliberately: a log/JSON lead-in that contains NO `=` at all
+#     ("status 429", "code: 402", "\"status_code\": 429"), and a single-`=` assignment form
+#     ("status_code=429"). Neither can match a source line like `res.status === 429`, which is what a
+#     retry/backoff implementation looks like — and which the loop reads while the model is WRITING one.
+_CAP_RE='usage limit|rate.?limit|too many requests|limit reached|session limit|limit[^.]{0,40}resets? (at|in|on) |quota (exceeded|exhausted|reached)|exceeded your[^.]{0,20}quota|insufficient (credit|quota|funds|balance)|credit balance|out of (credit|usage|tokens)|payment required|billing[ _-]?hard[ _-]?limit|(billing|spend(ing)?)[ _-]?(limit|cap)[ _-]?(reached|exceeded)|overloaded_error|authentication_error|invalid x-api-key|(api[ _-]?key|token|subscription|credential)s? (has |have )?expired|(status|code|http|error)[^0-9a-z=]{0,4}(429|402|529)($|[^0-9])|(status|code)[_a-z]{0,6} ?= ?(429|402|529)($|[^0-9])'
+# CASE-SENSITIVE arm. `Overloaded` — capital O, standalone — is verbatim Anthropic's 529 response body
+# ({"type":"overloaded_error","message":"Overloaded"}), and AI-SDK/opencode routinely surface the bare
+# message string with the `type` field stripped, so `overloaded_error` alone MISSES a real 529 storm (the
+# loop then burns MAX_FIX attempts fixing a phantom build break). It cannot go in the -i regex above:
+# lowercase `overloaded` is ordinary log/test prose ("ok 14 - returns 529 when the upstream is
+# overloaded"), and capitalisation is the only thing that separates the API string from the prose.
+# Case-SENSITIVE arm, and it has to satisfy two opposing requirements at once:
+#   UNDER-detection — a line that is JUST `Overloaded` is a real 529 body (what opencode/AI-SDK print once
+#     the `type` field is stripped), so it must still trip the cap.
+#   OVER-detection  — but `Overloaded` matching ANYWHERE also hits `case "Overloaded":`, a test name or a
+#     comment, and ACE's own domain is a codebase where the model WRITES Anthropic 529 retry handling into
+#     the log tail we are scanning.
+# The discriminator is POSITION, not vocabulary: the provider's own shapes (JSON error type, an `Error:`
+# lead-in) or the message ALONE ON ITS LINE. Embedded in code punctuation it is source, not an incident.
+_CAP_RE_CS='(overloaded_error|[Ee]rror:[[:space:]]*Overloaded|^[[:space:]]*Overloaded[[:space:]]*$)'
+# claude_limit_hit <logfile> [tail-lines]
+claude_limit_hit(){ [ -f "$1" ] || return 1; local _t; _t="$(tail -n "${2:-$CAP_TAIL_LINES}" "$1" 2>/dev/null)"; grep -qiE "$_CAP_RE" <<<"$_t" || grep -qE "$_CAP_RE_CS" <<<"$_t"; }
 handle_claude_limit(){
   [ "$(orch_provider)" = deepseek ] && return 1   # not on Claude -> not a subscription cap, let it surface
   [ -n "$ORCH_MODEL_OVERRIDE" ]     && return 1   # already delegated to DeepSeek -> a real failure
@@ -778,7 +854,7 @@ drive(){
   # was unreachable AND stale — it claimed 30m where the real default is 7200s (2h, per configuration.md).
   # One number, one place; a second literal here can only ever be a lie waiting to be read as the truth.
   local base="$OPENCODE_TIMEOUT" budget="$OPENCODE_TIMEOUT" tries=0 rtries=0 rc kp rdiag task="$2"
-  local dstart lbl mc mb; dstart=$(date +%s); lbl="$(printf '%s' "$1" | tr ',\n' '; ' | cut -c1-60)"; printf '0 0' > .opencode/.step-budget
+  local dstart lbl mc mb; dstart=$(date +%s); lbl="$(printf '%s' "$1" | tr ',\n' '; ' | cut -c1-60)"; printf '0 0\n' > .opencode/.step-budget
   while :; do
     # ACTIVE-WORK budget: run opencode in the background and PAUSE the budget clock while a known-slow
     # deterministic step (container build, dependency install, compile, test run) is in its subtree — those
@@ -794,7 +870,11 @@ drive(){
         # E3: a NEW commit = real progress (E2's per-increment checkpoints) → reset the active-work budget so a
         # steadily-committing worker is never killed for "no progress"; the hard OPENCODE_WALL_MAX still caps.
         nh="$(git rev-parse HEAD 2>/dev/null||echo none)"; [ "$nh" != "$lasthead" ] && { lasthead="$nh"; charged=0; }
-        printf '%s %s' "$charged" "$credited" > .opencode/.step-budget 2>/dev/null   # surfaced to the per-step metric
+        # TRAILING NEWLINE IS LOAD-BEARING: the reader below is `read -r mc mb`, and read returns 1 on a
+        # final line with no newline — so an unterminated file made the reader's fallback fire on EVERY
+        # step, recording active_s=0/build_s=0 for all of them and printing "~0m active-think · ~0m builds"
+        # in every single run summary. The numbers were being measured correctly all along and thrown away here.
+        printf '%s %s\n' "$charged" "$credited" > .opencode/.step-budget 2>/dev/null   # surfaced to the per-step metric
         sincep=$(( sincep + d ))
         if [ "$sincep" -ge "${HEARTBEAT:-60}" ]; then sincep=0; e=$(( now - start )); act=$(current_activity "$op"); \
           printf '\033[0;36m[auto-loop %s]   … %dm%02ds wall (active %dm/%dm · +%dm build/review · ~%dm left) · now: %s\033[0m\n' \
@@ -846,8 +926,10 @@ drive(){
         # build/review progress (credited). Kill EARLY (~CAP_DETECT_AFTER, not the full escalating budget) and
         # route to the cheap wait, instead of mis-reading it as a BIG TASK. Gated on credited<60 so a legit long
         # build is never touched. In a swarm, raise the shared flag so peers/coordinator hold too (one cap, all wait).
+        # Uses the SAME claude_limit_hit predicate as the post-hoc check (kept at the historical 40-line
+        # window here — this fires mid-run, so only the freshest output can be evidence).
         if [ "$charged" -ge "${CAP_DETECT_AFTER:-150}" ] && [ "$credited" -lt 60 ] \
-           && tail -n 40 .opencode/last-run.log 2>/dev/null | grep -qiE 'usage limit|rate.?limit|too many requests|429|limit reached|resets? (at|in)|overloaded|529|quota'; then
+           && claude_limit_hit .opencode/last-run.log 40; then
           printf '\033[0;33m[auto-loop %s]   ⏸ provider cap (429, no build progress) — pausing for reset instead of burning the budget.\033[0m\n' "$(date +%H:%M:%S)"
           [ -n "${SWARM_WORKER:-}" ] && [ -n "${SWARM_DIR:-}" ] && : > "$SWARM_DIR/provider-capped" 2>/dev/null
           : > .opencode/.capped; kill_tree "$op" TERM; sleep 3; kill_tree "$op" KILL; break
@@ -896,7 +978,15 @@ drive(){
     fi
     if [ "$rc" = 0 ]; then WAITED=0; report_context
       [ -n "${SWARM_DIR:-}" ] && rm -f "$SWARM_DIR/provider-capped" 2>/dev/null   # #61: a successful step means the cap cleared → peers/coordinator may resume
-      read -r mc mb 2>/dev/null < .opencode/.step-budget || { mc=0; mb=0; }
+      # Preset, then read: `read` also returns 1 on a missing/empty file, and on a partial write it can
+      # leave one field set and the other stale from the previous step. Default first, then validate both
+      # as integers, so a torn write degrades to 0 instead of injecting junk into the metrics CSV.
+      # 2>/dev/null comes FIRST on purpose (same rule core.sh:22 documents): redirections are applied
+      # left-to-right and a FAILED one aborts the rest, so with the file missing `< file 2>/dev/null` would
+      # leak the shell error to stderr — into the tee'd run log, and into any caller capturing it.
+      mc=0; mb=0; read -r mc mb 2>/dev/null < .opencode/.step-budget || true
+      case "${mc:-}" in ''|*[!0-9]*) mc=0 ;; esac
+      case "${mb:-}" in ''|*[!0-9]*) mb=0 ;; esac
       metric "step,$AGENT,$lbl,$(( $(date +%s) - dstart )),${mc:-0},${mb:-0},0"
       return 0; fi
     if [ "$rc" = 124 ]; then
@@ -1009,13 +1099,49 @@ _main_head_red(){
   esac
 }
 
-# returns: 0 merged now · 2 nothing to merge (already merged / no PR / on main) · 1 PR present but not mergeable -> caller should stop
+# returns: 0 merged now · 2 nothing to merge (CONFIRMED already-merged / no PR / on main — the caller may
+# safely leave this branch) · 1 did not merge and it is NOT safe to leave the branch (checks pending/failed,
+# not mergeable, fence yield, held review-debate, or GitHub could not be asked) -> caller stops
+# · 3 conflicts with main · 4 main is RED on its own.
+# The 1/2 split is load-bearing: the caller's rc-2 arm does `git checkout -f main`, so ONLY a positively
+# confirmed "there is nothing here" may return 2. Uncertainty is always 1.
 # When LOCAL_VOUCHED=1 (remote CI blocked but the local VPS-parity gate is GREEN) it skips the
 # failed-check guard and merges with --admin (in case a required check is later configured).
 merge_if_ready(){
-  local pr; pr="$(gh pr view --json number -q .number 2>/dev/null)"
-  [ -z "$pr" ] && { say "no PR for $(branch) — nothing to merge"; return 2; }
-  local st hd; st="$(gh pr view --json state -q .state 2>/dev/null)"; hd="$(gh pr view --json headRefName -q .headRefName 2>/dev/null)"
+  # "no PR" and "could not ask GitHub" are DIFFERENT answers and must not share a code path. The old form
+  # took an empty `gh pr view` as proof that no PR exists, but gh also prints nothing to stdout when the
+  # network is down, the token expired or the API 5xx'd — and the caller's rc-2 arm then does
+  # `git checkout -f main`, ABANDONING an unmerged feature branch on a transient gh blip.
+  # `gh pr list` is the discriminator the bare `gh pr view` cannot be: it exits 0 with an EMPTY array when
+  # the branch genuinely has no open PR, and non-zero only when the question could not be answered. Retried
+  # (same 3× idiom as the merge call below) so a single blip does not stop the run; if it still cannot be
+  # answered we fail CLOSED — no merge, no branch switch, keep the work.
+  # stderr goes to its OWN channel, never into $pr. `2>&1` would fold gh's diagnostics into the captured
+  # value: gh exits 0 while writing to stderr (GH_DEBUG=api prints a full HTTP trace; "!"/Warning lines
+  # appear on ordinary successful commands), so the PR number would become a log blob, `gh pr view` would
+  # fail, and the `[ "$st" = OPEN ]` arm would return 2 — the abandon-the-branch path this function exists
+  # to close. The stderr text is used ONLY for the rc!=0 diagnostic.
+  local pr="" _prc=1 _perr="" _perr_f=""
+  _perr_f="$(mktemp 2>/dev/null)" || _perr_f=""
+  for _ in 1 2 3; do
+    pr="$(gh pr list --head "$(branch)" --state open -L1 --json number -q '.[0].number' 2>"${_perr_f:-/dev/null}")"; _prc=$?
+    [ "$_prc" = 0 ] && break
+    sleep 4
+  done
+  [ -n "$_perr_f" ] && { _perr="$(head -1 "$_perr_f" 2>/dev/null)"; rm -f "$_perr_f"; }
+  if [ "$_prc" != 0 ]; then
+    say "could not ask GitHub whether $(branch) has an open PR (gh failed 3×, rc=$_prc: ${_perr:-no stderr captured}) — treating as UNKNOWN, NOT as 'no PR'. Not merging and not leaving this branch."
+    return 1
+  fi
+  pr="$(printf '%s' "$pr" | tr -d '[:space:]')"
+  [ -z "$pr" ] && { say "no open PR for $(branch) — nothing to merge"; return 2; }
+  # rc 0 with a non-numeric payload is not "no PR" either — it is gh answering something we do not
+  # understand. Same rule as above: uncertainty is 1, only a positively confirmed nothing-here is 2.
+  case "$pr" in *[!0-9]*)
+    say "gh returned a non-numeric PR id for $(branch) ($(printf '%.60s' "$pr")) — treating as UNKNOWN, NOT as 'no PR'. Not merging and not leaving this branch."
+    return 1;;
+  esac
+  local st hd; st="$(gh pr view "$pr" --json state -q .state 2>/dev/null)"; hd="$(gh pr view "$pr" --json headRefName -q .headRefName 2>/dev/null)"
   [ "$st" = OPEN ] || { say "PR #$pr is $st (not open) — nothing to merge"; return 2; }
   [ "$hd" = "$(branch)" ] || { say "PR #$pr head ($hd) != current branch ($(branch)) — refusing to merge the wrong PR"; return 1; }
   # ALL checks must be passing — no failures, none still pending. (Skipped when a local VPS-parity
@@ -1041,7 +1167,9 @@ merge_if_ready(){
   if [ "${REVIEW_DEBATE:-0}" = 1 ] && [ -f "${_SWARM_SH%swarm.sh}debate.sh" ]; then
     case "$(branch)" in chore/*|main|master) : ;; *)
       local _rev _blk
-      _rev="$(bash "${_SWARM_SH%swarm.sh}debate.sh" review main 2>/dev/null)" || true
+      # Same reasoning as the spec call site: narration + fail-open reasons are on stderr, findings on
+      # stdout. This one gates a MERGE, so "the debate silently did nothing" must be visible in the log.
+      _rev="$(bash "${_SWARM_SH%swarm.sh}debate.sh" review main)" || true
       _blk="$(printf '%s\n' "$_rev" | grep -icE 'DEBATEISSUE[[:space:]]+(blocker|major)' || true)"; _blk="${_blk:-0}"
       if [ "$_blk" -gt 0 ] 2>/dev/null; then
         printf '%s\n' "$_rev" | grep -iE 'DEBATEISSUE' | sed 's/^/    /'
@@ -1219,6 +1347,14 @@ while :; do
         # expensive local container half (the remote branch below no-ops too). See run 260716 wasted gates.
     elif [ "$(gh pr view --json mergeable -q .mergeable 2>/dev/null)" = CONFLICTING ]; then
       : # conflicting PR — let the remote branch's conflict handler resolve it first
+    elif [ ! -e ./ci.sh ]; then
+      # MISSING GATE ≠ RED. Without this guard the `timeout … ./ci.sh --container` below just fails with
+      # "No such file or directory", which reads as a code RED: the loop enters the fix path and hands the
+      # implementer a not-found error as if it were a build failure, forever. Fail OPEN on the LOCAL half
+      # only — the same call the tentative-merge gate makes for the same reason ("a missing gate must not
+      # wedge the merge queue") — and it is safe here precisely because merge_gate=both still REQUIRES the
+      # remote Actions pass below; we are dropping an extra requirement, not the only one.
+      say "merge_gate=both: no ./ci.sh in $(pwd) — skipping the local half (nothing to run); remote GitHub Actions is the gate."
     else
       cstate="$(git rev-parse HEAD 2>/dev/null):$(git status --porcelain 2>/dev/null | sha1sum | cut -c1-12)"
       if [ "$(cat .opencode/.container-green 2>/dev/null)" = "$cstate" ]; then
@@ -1245,6 +1381,16 @@ while :; do
         continue
       fi
       say "PR for $(branch) CONFLICTS and auto-resolve is off/exhausted — resolve manually or re-plan. Stopping."; break
+    fi
+    # MISSING GATE ≠ RED, and here it is also not something we can fail OPEN on. Without this guard the
+    # `./ci.sh --container` below fails with "No such file or directory", which reads as a code RED and
+    # feeds the fixer a not-found error as if it were a build failure. But merge_gate=local means ./ci.sh
+    # IS the merge authority (it is what earns LOCAL_VOUCHED and the `--admin` bypass), so an absent gate
+    # cannot be waved through either — that would self-merge to main with NO verification whatsoever.
+    # Fail CLOSED and say what to do, exactly as preflight does for the same missing file.
+    if [ ! -e ./ci.sh ]; then
+      say "STOPPING: merge_gate=local makes ./ci.sh the merge authority, but there is no ./ci.sh in $(pwd) — nothing can vouch for this branch (and a missing gate is NOT a code RED to fix). Add the gate (ace scaffold / ace upgrade), or switch to merge_gate=remote. Stopping."
+      break
     fi
     # P1 cheap pre-gate check: the container gate (./ci.sh --container) is the expensive step. Skip it when
     # there's NO OPEN PR for this branch — already merged out-of-band / closed / not yet opened / on main. Uses
@@ -1303,7 +1449,15 @@ while :; do
       say "container gate already GREEN for this exact tree (cached) — skipping the rebuild."; run_ok=0; LOCAL_VOUCHED=1
     else
       say "running the local VPS-parity gate (./ci.sh --container) as the authority…"
-      if timeout "${LOCAL_CI_TIMEOUT:-1800}" ./ci.sh --container; then
+      # Third instance of the same trap (see the merge_gate=both/local guards above): with no ./ci.sh the
+      # run below fails "No such file or directory" and the else-arm below calls it "a REAL failure",
+      # sending the fixer after a build break that does not exist. There is nothing to vouch with, so leave
+      # nothing to vouch WITH, and Actions is blocked — no code change can help, so stop once with the real
+      # remedy rather than fall through to the fix path and burn MAX_FIX attempts on a phantom build break.
+      if [ ! -e ./ci.sh ]; then
+        say "STOPPING: Actions is BLOCKED and LOCAL_CI_FALLBACK=1, but there is no ./ci.sh in $(pwd) to vouch with — this is NOT a code RED and no fix attempt can clear it. Add the gate (ace scaffold / ace upgrade), or fix the Actions block (raise the spending limit)."
+        break
+      elif timeout "${LOCAL_CI_TIMEOUT:-1800}" ./ci.sh --container; then
         mkdir -p .opencode; printf '%s\n' "$cstate" > .opencode/.container-green 2>/dev/null || true
         say "local container gate GREEN — accepting it as the pass while remote CI is blocked."; run_ok=0; LOCAL_VOUCHED=1
       else say "local container gate RED too — this is a REAL failure; entering the fix path."; fi
@@ -1389,7 +1543,10 @@ while :; do
           break
         fi
       else
-        say "green run, but the PR isn't fully ready to merge (checks pending/failed) — stopping for your review."; break
+        # rc 1 is the catch-all "did not merge, and it is not a conflict": checks pending/failed, not
+        # mergeable, a swarm fence yield, a held review-debate, or gh being unreachable. merge_if_ready has
+        # already said WHICH — don't overwrite that with a guess.
+        say "green run, but the PR did not merge (see the reason above) — stopping for your review."; break
       fi
     else
       # auto_merge OFF (profile auto_merge:false / AUTOMERGE=0): the documented contract is "opens a PR and

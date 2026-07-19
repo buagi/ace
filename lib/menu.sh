@@ -175,21 +175,34 @@ debate_rounds_menu() {
     6) return ;;
   esac
 }
+# Does an env var currently OVERRIDE the stored toggle? ./ace records that at startup (before it exports
+# the config value), because after the export we can no longer tell env-set from config-set apart. Shown
+# per row so the screen never claims a setting is in force when this session's env says otherwise.
+_debate_envnote() { case " ${_ACE_DEBATE_FROM_ENV:-} " in *" $1 "*) printf ' [env %s=%s overrides this session]' "$1" "${!1:-}" ;; esac; }
 debate_settings_menu() {
   while true; do
     banner   # screen clears the previous (no scroll-back clutter)
-    local a b
+    # ${x:-default} is the ONLY working idiom here: config_get always exits 0 (core.sh), so the
+    # `config_get X || echo N` form this screen used to use could never fire and rendered blanks.
+    local a b mn mx hm
     a="$(config_get DEBATE_MODEL_A)"; b="$(config_get DEBATE_MODEL_B)"
+    mn="$(config_get DEBATE_MIN)"; mx="$(config_get DEBATE_MAX)"; hm="$(config_get DEBATE_HARD_MAX)"
     menu "Settings · Cross-model debate" \
-      "Spec debate (planning)::$(_debate_onoff SPEC_DEBATE) — two models pressure-test each spec before build" \
-      "Review debate (pre-merge)::$(_debate_onoff REVIEW_DEBATE) — debate the branch diff before merging" \
+      "Spec debate (planning)::$(_debate_onoff SPEC_DEBATE) — two models pressure-test each spec before build$(_debate_envnote SPEC_DEBATE)" \
+      "Review debate (pre-merge)::$(_debate_onoff REVIEW_DEBATE) — debate the branch diff before merging$(_debate_envnote REVIEW_DEBATE)" \
       "Defender model (A)::${a:-overseer default ($(orch_model 2>/dev/null))} · your side" \
       "Challenger model (B)::${b:-unset — debate is a no-op until set} · the OTHER model" \
-      "Rounds & limits::min $(config_get DEBATE_MIN || echo 2) · max $(config_get DEBATE_MAX || echo 4) · hard $(config_get DEBATE_HARD_MAX || echo 10)" \
+      "Rounds & limits::min ${mn:-2} · max ${mx:-4} · hard ${hm:-10}" \
       "← back::"
     case "$MENU_CHOICE" in
-      1) _debate_toggle SPEC_DEBATE;   ok "Spec debate → $(_debate_onoff SPEC_DEBATE)." ;;
-      2) _debate_toggle REVIEW_DEBATE; ok "Review debate → $(_debate_onoff REVIEW_DEBATE)." ;;
+      # These two are LIVE: ./ace exports the stored value into the environment every run, so flipping one
+      # on here really does spend credits (and, for REVIEW_DEBATE, sends the branch diff to the challenger's
+      # provider) on the next run. Say so — the toggle used to be inert, and a user who set it long ago may
+      # not expect it to start firing. An env var set for a given run still wins over this value.
+      1) _debate_toggle SPEC_DEBATE
+         ok "Spec debate → $(_debate_onoff SPEC_DEBATE) — applies to the next run (env SPEC_DEBATE=… still overrides)." ;;
+      2) _debate_toggle REVIEW_DEBATE
+         ok "Review debate → $(_debate_onoff REVIEW_DEBATE) — applies to the next run; it sends the branch DIFF to the challenger's provider." ;;
       3) ask "Defender model (A) — Enter to use the overseer" "$a" "$_DEBATE_MODEL_HINT"; config_set DEBATE_MODEL_A "$ASK_REPLY"; _debate_key_hint "$ASK_REPLY" ;;
       4) ask "Challenger model (B)" "$b" "$_DEBATE_MODEL_HINT"; config_set DEBATE_MODEL_B "$ASK_REPLY"; _debate_key_hint "$ASK_REPLY" ;;
       5) debate_rounds_menu ;;
@@ -283,6 +296,29 @@ build_menu() {
     7) : ;;
   esac
 }
+# Keep-awake submenu. The main list entry used to call `awake_ctl status` unconditionally, so the only
+# on/off control reachable from bare `ace` could report the state but never change it.
+# NB: awake_ctl takes its optional duration from $ACE_ARG2 (the CLI's positional slot), NOT from $2 — so
+# the timed variant sets that variable rather than passing an argument. `local` keeps it out of the
+# exported environment the rest of the session sees.
+awake_menu() {
+  banner   # screen clears the previous (every other submenu does this; without it this list drew under "Run the loop")
+  local ACE_ARG2="" st
+  systemctl --user is-active ace-awake.service >/dev/null 2>&1 && st=ON || st=OFF
+  menu "Keep machine awake  (currently: $st)" \
+    "Turn ON::no idle-sleep / lid-suspend — stays reachable from Hermes/Signal until you turn it off" \
+    "Turn ON for a duration::auto-releases afterwards (e.g. 4h) — kinder to a battery" \
+    "Turn OFF::restore normal sleep/suspend" \
+    "Status::show the active inhibitor" \
+    "← back::"
+  case "$MENU_CHOICE" in
+    1) awake_ctl on ;;
+    2) ask "Duration (systemd sleep syntax, e.g. 4h · 90m)" "4h"; ACE_ARG2="$ASK_REPLY"; awake_ctl on ;;
+    3) awake_ctl off ;;
+    4) awake_ctl status ;;
+    5) : ;;
+  esac
+}
 run_menu() {
   banner   # screen clears the previous (no scroll-back clutter)
   menu "Run the loop" \
@@ -290,7 +326,7 @@ run_menu() {
     "Resume after a stop::rescue gate-green work + continue" \
     "Explain delivery policy::resolved merge_gate/auto_merge/deploy_kind (no run)" \
     "Loop as a service::systemd user service — start/stop/restart/status/logs" \
-    "Keep machine awake::reachable while away" \
+    "Keep machine awake::on / on for a duration / off / status — reachable while away" \
     "← back::"
   case "$MENU_CHOICE" in
     1) autoloop_run; pause ;;
@@ -301,7 +337,7 @@ run_menu() {
          "Stop::" "Restart::" "Status::" "Logs (tail)::" "← back::"
        case "$MENU_CHOICE" in 1) loop_ctl start ;; 2) loop_ctl stop ;; 3) loop_ctl restart ;; 4) loop_ctl status ;; 5) loop_ctl logs ;; 6) : ;; esac
        pause ;;
-    5) awake_ctl status; pause ;;
+    5) awake_menu; pause ;;   # entry 5 = "Keep machine awake" — keep this arm number aligned with the list above
     6) : ;;
   esac
 }
