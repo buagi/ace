@@ -97,14 +97,28 @@ JSON
   elif printf '%s' "$out" | grep -qiE 'already exists|name.*exists'; then
     # RECONCILE: a ruleset from an older ACE may LACK bypass_actors (→ --admin can't merge) or carry a now-wrong
     # required check. PUT our current definition over it so an upgraded repo SELF-HEALS instead of staying wedged.
-    local rid; rid="$(gh api "repos/$slug/rulesets" -q '.[] | select(.name=="ace: protect main") | .id' 2>/dev/null | head -1)"
-    if [ -n "$rid" ] && gh api -X PUT "repos/$slug/rulesets/$rid" --input "$tmp" >/dev/null 2>&1; then
-      ok "main protection reconciled (ruleset #$rid: bypass${checkmsg:- + no required check}${checkmsg})."
+    local rid perr; rid="$(gh api "repos/$slug/rulesets" -q '.[] | select(.name=="ace: protect main") | .id' 2>/dev/null | head -1)"
+    # UI-012/PW-7: `${checkmsg:- …}` ALREADY expands to $checkmsg when it is set — the extra ${checkmsg}
+    # printed the CI clause twice. Same paired idiom as the step line above, single expansion.
+    if [ -z "$rid" ]; then
+      warn "A ruleset named 'ace: protect main' exists but its id could not be read — its bypass_actors cannot be verified, so an --admin merge may be BLOCKED."
+      say  "  ${C_GREY}$out${C_RESET}"
+    elif perr="$(gh api -X PUT "repos/$slug/rulesets/$rid" --input "$tmp" 2>&1)"; then
+      ok "main protection reconciled (ruleset #$rid: bypass${checkmsg:- + no required check})."
     else
-      ok "main is already protected (ruleset exists)."
+      # UI-006: a FAILED reconcile used to report `ok "main is already protected"`. That hides the exact
+      # wedge this reconcile exists to clear — a legacy ruleset WITHOUT bypass_actors blocks even
+      # `gh pr merge --admin`, so the loop stalls forever on a green PR while ACE claims success.
+      warn "main IS protected (ruleset #$rid) but could NOT be reconciled — if it predates bypass_actors, '--admin' merges will wedge."
+      say  "  ${C_GREY}$perr${C_RESET}"
+      say  "  ${C_GREY}Fix: GitHub → Settings → Rules → 'ace: protect main' → add yourself to bypass list, or delete the ruleset and re-run.${C_RESET}"
     fi
-  elif printf '%s' "$out" | grep -qiE 'Pro|upgrade|payment|403'; then
-    warn "GitHub blocked it: rulesets/branch-protection need GitHub Pro on PRIVATE repos."
+  # PW-6: anchor the plan-limit test. The old unanchored 'Pro|upgrade|payment|403' matched the words
+  # "protection"/"protected"/"Improve" in ANY generic API error, so permission/validation failures were
+  # reported as "you need GitHub Pro" and the real $out was thrown away.
+  elif printf '%s' "$out" | grep -qiE 'upgrade to github|github pro|payment required|plan.*not.*support|HTTP 403'; then
+    warn "GitHub blocked it: rulesets/branch-protection need GitHub Pro on PRIVATE repos (or the token lacks admin scope)."
+    say  "  ${C_GREY}$out${C_RESET}"
     say  "  ${C_GREY}Options: upgrade to Pro · make the repo public · rely on local hooks (main-guard).${C_RESET}"
   else
     warn "Could not set protection:"; say "  ${C_GREY}$out${C_RESET}"
@@ -116,8 +130,17 @@ JSON
 #  - main-guard : block direct commits to main (prepended into pre-commit if present)
 install_gitflow_hooks() {
   local dir="$1" hd
+  dir="$(cd "$dir" 2>/dev/null && pwd)" || { err "not a directory: $1"; return 1; }
+  # Resolve the hooks dir ABSOLUTELY. `git rev-parse --git-path hooks` prints a path relative to the
+  # repo it runs in, but the `cd` happens inside a command-substitution SUBSHELL — so the caller then
+  # wrote ".git/hooks" relative to ITS OWN cwd and installed the hooks (and core.hooksPath) into
+  # whatever repo the operator was standing in, never into $dir. Same for the bare `[ -d .githooks ]`.
   hd="$(cd "$dir" && git rev-parse --git-path hooks 2>/dev/null)"
-  [ -d .githooks ] && hd=".githooks"   # prefer repo-tracked hooks if present
+  hd="${hd:-.git/hooks}"   # keep RELATIVE: git resolves core.hooksPath against the worktree top, so
+                           # ".git/hooks" survives a `mv` of the project dir while an absolute path
+                           # silently stops matching and disables the main-guard entirely.
+  [ -d "$dir/.githooks" ] && hd="$dir/.githooks"   # prefer repo-tracked hooks if present
+  local _gf_msg=0 _gf_guard=0
   [ "$ACE_DRY_RUN" = 1 ] && { info "[dry-run] would install commit-msg + main-guard hooks in $hd"; return; }
   mkdir -p "$hd"
 
@@ -133,14 +156,12 @@ echo "✗ commit message must be Conventional: type(scope): summary" >&2
 echo "  e.g. feat(auth): add google login   |   fix(ci): pin pnpm" >&2
 exit 1
 EOF
-  chmod +x "$hd/commit-msg"
+  chmod +x "$hd/commit-msg" && _gf_msg=1 || warn "could not install $hd/commit-msg"
+
 
   # main-guard: refuse direct commits on main (use a feature branch + PR)
-  if [ -f "$hd/pre-commit" ] && ! grep -q 'ace:main-guard' "$hd/pre-commit"; then
-    local tmp; tmp="$(mktemp)"
-    {
-      head -1 "$hd/pre-commit"
-      cat <<'EOF'
+  local guard
+  guard=$(cat <<'EOF'
 # ace:main-guard — never commit straight to the integration branch
 b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 if [ "$b" = "main" ]; then
@@ -149,9 +170,29 @@ if [ "$b" = "main" ]; then
   exit 1
 fi
 EOF
-      tail -n +2 "$hd/pre-commit"
-    } > "$tmp" && mv "$tmp" "$hd/pre-commit" && chmod +x "$hd/pre-commit"
+)
+  if [ ! -f "$hd/pre-commit" ]; then
+    # PW-5/SC-02: the guard used to be PREPENDED only when a pre-commit already existed, yet the
+    # "main-guard installed" line below printed unconditionally — on any repo without a pre-commit
+    # (every brownfield / non-ACE repo reached via `ace gitflow` or the menu) ACE claimed a guard it
+    # had never written, and direct commits to main sailed through. Write a standalone hook instead.
+    { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$guard"; } > "$hd/pre-commit" \
+      && chmod +x "$hd/pre-commit" && _gf_guard=1 || warn "could not write $hd/pre-commit — main-guard NOT installed"
+  elif ! grep -q 'ace:main-guard' "$hd/pre-commit"; then
+    local tmp; tmp="$(mktemp)"
+    # keep the existing hook's shebang first, then the guard, then the rest of the original hook
+    { head -1 "$hd/pre-commit"; printf '%s\n' "$guard"; tail -n +2 "$hd/pre-commit"; } > "$tmp" \
+      && mv "$tmp" "$hd/pre-commit" && chmod +x "$hd/pre-commit" \
+      && _gf_guard=1 || { rm -f "$tmp"; warn "could not update $hd/pre-commit — main-guard NOT installed"; }
   fi
-  run git config core.hooksPath "$hd"
-  ok "hooks: commit-msg (conventional) + main-guard installed"
+  # -C "$dir" for the same reason: without it the hooksPath was written to the CALLER's repo config.
+  run git -C "$dir" config core.hooksPath "$hd"
+  # Only claim what actually landed. Printing "installed" unconditionally is the same fail-open this
+  # function was fixed for: a read-only hooks dir left NO pre-commit while still reporting success.
+  if [ "${_gf_msg:-0}" = 1 ] && [ "${_gf_guard:-0}" = 1 ]; then
+    ok "hooks: commit-msg (conventional) + main-guard installed in $hd"
+  else
+    warn "hooks PARTIALLY installed in $hd (commit-msg=${_gf_msg:-0} main-guard=${_gf_guard:-0}) — commits to main are NOT blocked"
+    return 1
+  fi
 }

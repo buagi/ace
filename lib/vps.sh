@@ -150,11 +150,19 @@ vps_wire_ci() {
   local slug; slug="$(repo_slug)"
   [ -z "$slug" ] && die "run this inside a repo with a GitHub 'origin' (use Scaffold/Git-flow first)."
   step "Wire GitHub Actions deploy secrets → $slug"
-  run gh secret set VPS_HOST --body "$VPS_HOST"
-  run gh secret set VPS_USER --body "$VPS_USER"
-  run gh secret set VPS_PORT --body "${VPS_PORT:-22}"
+  # vps-3/UI-004: every `gh secret set` here is rc-gated and the summary line is only reached when
+  # ALL of them landed. Previously a failed VPS_SSH_KEY upload (no admin scope / repo not found /
+  # unreadable key) still printed "Deploy secrets set", so the deploy job silently failed to
+  # authenticate later and the failure was misattributed to the VPS.
+  run gh secret set VPS_HOST --body "$VPS_HOST" || { err "could not set VPS_HOST"; return 1; }
+  run gh secret set VPS_USER --body "$VPS_USER" || { err "could not set VPS_USER"; return 1; }
+  run gh secret set VPS_PORT --body "${VPS_PORT:-22}" || { err "could not set VPS_PORT"; return 1; }
   if [ "$ACE_DRY_RUN" = 1 ]; then info "[dry-run] gh secret set VPS_SSH_KEY < $VPS_KEY"
-  else gh secret set VPS_SSH_KEY < "$VPS_KEY" && ok "VPS_SSH_KEY set"; fi
+  else
+    [ -r "$VPS_KEY" ] || { err "SSH key not readable: $VPS_KEY — deploy secrets NOT set."; return 1; }
+    gh secret set VPS_SSH_KEY < "$VPS_KEY" && ok "VPS_SSH_KEY set" \
+      || { err "could not set VPS_SSH_KEY (gh auth / repo admin rights?) — deploy secrets NOT set."; return 1; }
+  fi
   ok "Deploy secrets set. The deploy job (on push to main) can now reach the VPS."
 }
 
@@ -184,10 +192,16 @@ vps_provision() {
 
   info "Cloning / updating repo on the VPS…"
   local gitssh="GIT_SSH_COMMAND='ssh -i ~/.ssh/ace_deploy -o StrictHostKeyChecking=accept-new'"
-  vssh "mkdir -p \$(dirname $ddir); if [ -d $ddir/.git ]; then cd $ddir && $gitssh git fetch origin && git reset --hard origin/main; else $gitssh git clone git@github.com:$slug $ddir; fi" \
+  # $ddir is DOUBLE-quoted on the remote side, not printf %q'd like sibling vps_check does: ddir
+  # deliberately carries a LITERAL \$HOME (the default is "\$HOME/apps/<name>") that must expand on
+  # the VPS, and %q would escape that $ into a literal path component. Double quotes keep the
+  # expansion while stopping word-splitting/globbing on a VPS_DEPLOY_DIR containing spaces. $slug is
+  # a pure value with nothing to expand, so it gets the stronger %q treatment.
+  local qslug; qslug="$(printf %q "$slug")"
+  vssh "mkdir -p \"\$(dirname \"$ddir\")\"; if [ -d \"$ddir/.git\" ]; then cd \"$ddir\" && $gitssh git fetch origin && git reset --hard origin/main; else $gitssh git clone git@github.com:$qslug \"$ddir\"; fi" \
     && ok "Repo on VPS at $ddir" || { err "clone/pull failed"; return 1; }
 
-  if vssh "test -x $ddir/scripts/deploy.sh"; then
+  if vssh "test -x \"$ddir/scripts/deploy.sh\""; then
     confirm "Run first deploy now (scripts/deploy.sh on VPS)?" Y && vps_run_deploy_script "$ddir"
   else
     warn "No scripts/deploy.sh in repo yet — generate one with 'ace scaffold' (it adds CI + deploy.sh)."
@@ -196,7 +210,7 @@ vps_provision() {
 
 vps_run_deploy_script() {
   local ddir="$1"
-  spin "Deploying on $VPS_HOST" vssh "cd $ddir && ./scripts/deploy.sh" \
+  spin "Deploying on $VPS_HOST" vssh "cd \"$ddir\" && ./scripts/deploy.sh" \
     && ok "Deployed." || { err "deploy.sh failed — see: ace logs"; return 1; }
   vps_healthcheck
 }
@@ -215,7 +229,10 @@ vps_healthcheck() {
   timeout="${VPS_HEALTH_TIMEOUT:-90}"
   interval="${VPS_HEALTH_INTERVAL:-3}"
   unit="${VPS_SERVICE_UNIT:-}"                  # set => systemd service; empty => podman container
-  step "Health check → $url (${unit:+service '$unit'}${unit:+, }${unit:-container '$name'}; up to ${timeout}s)"
+  # One precomputed label. `${unit:+A}${unit:-B}` printed BOTH when unit was set (the :- fallback
+  # expands to $unit itself), so the line read "service 'app', app".
+  local svc; if [ -n "$unit" ]; then svc="service '$unit'"; else svc="container '$name'"; fi
+  step "Health check → $url ($svc; up to ${timeout}s)"
   [ "$ACE_DRY_RUN" = 1 ] && { info "[dry-run] would poll $url for ≤${timeout}s on the VPS"; return 0; }
 
   # one SSH session runs the whole poll loop remotely. HTTP answering is the authoritative signal.
@@ -242,7 +259,20 @@ done
 echo "HTTP=\$http CODE=\$code URL=\$goodurl"
 if [ \$http -ne 1 ]; then
   # classify the failure so the caller can tell a CONFIG/probe issue from a real code crash
-  active="n/a"; [ -n "\$unit" ] && active=\$(systemctl is-active "\$unit" 2>/dev/null || echo unknown)
+  # Liveness must be derived from the ACTUAL process model. ACE's DEFAULT deploy is a podman
+  # container (no systemd unit), and the old code left active="n/a" in that case, so the CONFIG and
+  # RUNTIME branches below were UNREACHABLE and every podman failure was classified CODE — telling
+  # the loop "the app crashed, redevelop it" when the real fault was a wrong health URL or a
+  # non-binding port. podman inspect gives the same up/down signal systemctl gives for a unit.
+  if [ -n "\$unit" ]; then
+    active=\$(systemctl is-active "\$unit" 2>/dev/null || echo unknown)
+  else
+    case "\$(podman inspect -f '{{.State.Running}}' "\$name" 2>/dev/null)" in
+      true)  active=active ;;
+      false) active=inactive ;;
+      *)     active=unknown ;;   # no such container (never started / wrong name) — treated as CODE below
+    esac
+  fi
   port=\$(printf '%s' "\$url" | sed -E 's#.*://[^/:]+:([0-9]+).*#\1#'); case "\$port" in ''|*[!0-9]*) port=3000 ;; esac
   listen=\$( { ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null; } | grep -c ":\$port " )
   if [ "\$active" = active ] && [ "\$listen" -gt 0 ]; then echo "CLASS=CONFIG"
@@ -273,7 +303,7 @@ EOF
     RUNTIME) err "Service is active but nothing is serving the port — the app isn't binding (runtime/config: start command, port, env). Check the unit, not the code first." ;;
     CODE)    err "Service is NOT running — the app crashed (code/runtime error). This needs a FIX/redevelop — see the logs below." ;;
     *)       [ "$rc" = 124 ] && err "Health check TIMED OUT (ssh budget ${timeout}s+30) — $VPS_HOST unreachable or app never came up." \
-                             || err "Health check FAILED after ${timeout}s — nothing serving $url (${unit:+service $unit}${unit:-container $name})." ;;
+                             || err "Health check FAILED after ${timeout}s — nothing serving $url ($svc)." ;;
   esac
   printf '%s\n' "$out" | sed 's/^/  /'
   return 1
@@ -324,14 +354,22 @@ vps_deploy() {
   # Use the ace deploy key for git ONLY if it was provisioned; otherwise fall back to the repo's
   # existing git auth on the VPS (e.g. a CI-provisioned deploy key / stored credential / agent).
   local rcmd
-  rcmd="cd $ddir || { echo '[deploy] missing $ddir — run: ace vps -> Provision'; exit 1; }; "
+  rcmd="cd \"$ddir\" || { echo '[deploy] missing $ddir — run: ace vps -> Provision'; exit 1; }; "
   rcmd+='if [ -f "$HOME/.ssh/ace_deploy" ]; then export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ace_deploy -o StrictHostKeyChecking=accept-new"; fi; '
   rcmd+='git fetch origin && git reset --hard origin/main && ./scripts/deploy.sh'
   spin "Syncing code + running deploy.sh" vssh "$rcmd" \
     || { err "Deploy failed — see: ace logs (git auth on the VPS? run: ace vps -> Provision, or check the repo's remote/creds on the server)"; return 1; }
   ok "Deployed latest."
-  [ "$gate" = release ] && [ -n "$latest" ] && config_set DEPLOY_LAST_TAG "$latest"
-  vps_healthcheck "$slug"
+  # B4: the health check IS the release gate — record DEPLOY_LAST_TAG only AFTER it passes.
+  # Recording first marked a FAILED release as shipped, so every retry short-circuited at the
+  # "$last already deployed" branch above with exit 0 and the fix NEVER reached the VPS (a broken
+  # tag stayed live until someone manually forced a deploy). Matches docs/deploy.md:27.
+  vps_healthcheck "$slug" || return 1
+  if [ "$gate" = release ] && [ -n "$latest" ]; then
+    config_set DEPLOY_LAST_TAG "$latest" \
+      || warn "could not record DEPLOY_LAST_TAG=$latest — the next 'ace deploy' will simply ship this tag again."
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------- post-deploy verification agent
@@ -345,11 +383,17 @@ vps_verify() {
   local name unit health endpoints report
   name="$(repo_slug)"; name="${name##*/}"
   unit="${VPS_SERVICE_UNIT:-}"                  # set => systemd service; empty => podman container named $name (matches vps_healthcheck)
-  health="${VPS_HEALTH_URL:-http://127.0.0.1:3000/api/system/status}"
+  # Same default as vps_healthcheck / vps_check / vps_configure. It used to default to
+  # /api/system/status, an endpoint most projects do not have, so an unconfigured VPS_HEALTH_URL made
+  # verify report a healthy app as "unreachable" — and the triage agent filed that phantom outage
+  # into ROADMAP.md, sending the loop off to fix a service that was never down.
+  health="${VPS_HEALTH_URL:-http://127.0.0.1:3000/}"
   endpoints="${VERIFY_ENDPOINTS:-$health}"   # space-separated list of URLs to probe ON the VPS
   report=".opencode/vps-verify-report.md"
   mkdir -p .opencode
-  step "Verify deployment → $VPS_HOST (${unit:+systemd service '$unit'}${unit:-container '$name'})"
+  # same single-expansion label as vps_healthcheck (the :+/:- pair both fired when unit was set)
+  local svc; if [ -n "$unit" ]; then svc="systemd service '$unit'"; else svc="container '$name'"; fi
+  step "Verify deployment → $VPS_HOST ($svc)"
   [ "$ACE_DRY_RUN" = 1 ] && { info "[dry-run] would collect VPS facts → $report, then triage into ROADMAP.md"; return 0; }
 
   # ---- phase 1: collect (one read-only SSH session) ----
@@ -395,9 +439,19 @@ EOF
   have opencode || { warn "opencode not found — can't triage. Report at $report."; return 0; }
 
   step "Triage — agent curates errors + improvements into ROADMAP.md"
-  local findings
-  findings="$(opencode run --agent "${AGENT:-orchestrator}" </dev/null "Read the post-deploy verification report at $report and cross-check the codebase. Identify ONLY real, verifiable problems (unreachable/erroring endpoints, broken or unconnected integrations, service restarts/crashes, TLS expiring soon, missing wiring) AND concrete high-value improvements toward a professional, money-making portal. SYMPTOM CLOSURE: first read .opencode/memory/changelog.md (recent ships); if a problem in the report is the SAME symptom a recently-shipped item claimed to fix, the fix did NOT take effect live — prefix that item with 'RE-OPENED: fix did not take effect live — ' instead of filing a fresh duplicate. Skip anything already listed (unchecked) in ROADMAP.md. Output ONLY a GitHub-Markdown checklist — one '- [ ] <specific, actionable item> (evidence: <short cite from report>)' per finding, nothing else. If everything is healthy, output nothing." 2>/dev/null)"
-  findings="$(printf '%s\n' "$findings" | grep -E '^- \[ \] ')"
+  # vps-5/UI-005: capture the agent rc AND its stderr. The old call discarded both (2>/dev/null) and
+  # then grepped an EMPTY string, so an auth failure / bad model id / rate limit produced zero
+  # findings and ACE printed "Verification clean — no new backlog items". A triage that never ran is
+  # NOT a clean bill of health: warn, show the tail, and return non-zero so callers can react.
+  local findings raw trc
+  raw="$(opencode run --agent "${AGENT:-orchestrator}" </dev/null "Read the post-deploy verification report at $report and cross-check the codebase. Identify ONLY real, verifiable problems (unreachable/erroring endpoints, broken or unconnected integrations, service restarts/crashes, TLS expiring soon, missing wiring) AND concrete high-value improvements toward a professional, money-making portal. SYMPTOM CLOSURE: first read .opencode/memory/changelog.md (recent ships); if a problem in the report is the SAME symptom a recently-shipped item claimed to fix, the fix did NOT take effect live — prefix that item with 'RE-OPENED: fix did not take effect live — ' instead of filing a fresh duplicate. Skip anything already listed (unchecked) in ROADMAP.md. Output ONLY a GitHub-Markdown checklist — one '- [ ] <specific, actionable item> (evidence: <short cite from report>)' per finding, nothing else. If everything is healthy, output nothing." 2>&1)"; trc=$?
+  if [ "$trc" -ne 0 ]; then
+    warn "Triage agent FAILED (rc=$trc) — findings were NOT collected. This is NOT 'verification clean'; check opencode auth/model/rate limits, then re-run: ace vps verify"
+    printf '%s\n' "$raw" | tail -5 | sed 's/^/  /'
+    info "Raw report is still at $report."
+    return 1
+  fi
+  findings="$(printf '%s\n' "$raw" | grep -E '^- \[ \] ')"
   if [ -n "$findings" ]; then
     [ -f ROADMAP.md ] || printf '# Roadmap\n\n## Next\n' > ROADMAP.md
     printf '\n### From post-deploy verify (%s)\n%s\n' "$(date -u +%F)" "$findings" >> ROADMAP.md

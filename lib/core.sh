@@ -17,7 +17,10 @@ log_init() {
   ACE_LOG_FILE="$ACE_LOG_DIR/ace-$(date +%Y%m%d).log"
   log "──── session start (v${ACE_VERSION:-?}, distro=${ACE_DISTRO:-?}, dry=${ACE_DRY_RUN}) ────"
 }
-log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$ACE_LOG_FILE" 2>/dev/null || true; }
+# 2>/dev/null comes FIRST on purpose: redirections are applied left-to-right, so if the >> open fails
+# (log dir missing / read-only / bad ACE_LOG_FILE) the shell's own error message must already have a
+# sink, otherwise it leaks onto the terminal and corrupts command substitutions that capture stderr.
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" 2>/dev/null >> "$ACE_LOG_FILE" || true; }
 
 # ---- failsafes -----------------------------------------------------------
 die() { err "$*"; log "FATAL: $*"; exit 1; }
@@ -30,10 +33,30 @@ retry() {
     warn "attempt $i/$n failed; retrying…"; sleep 2; i=$((i+1))
   done
 }
-ACE_TMP=()
-cleanup() { local d; for d in "${ACE_TMP[@]:-}"; do [ -n "$d" ] && rm -rf "$d" 2>/dev/null || true; done; }
+# Temp-dir registry (CA-06). mktmp is ALWAYS called as `$(mktmp)` — i.e. inside a command-substitution
+# SUBSHELL — so appending to a shell array here died with that subshell and the EXIT trap below had
+# nothing to remove: every run leaked its /tmp dirs. Record the dirs in a FILE instead, because a
+# subshell write IS visible to the parent. This keeps `$(mktmp)` as the calling convention, so no call
+# site changes ($$ stays the top-level shell PID even inside a subshell, so the path is stable).
+# Registry lives under the 0700 per-user config dir, NOT world-writable /tmp: the path is derived from $$
+# and therefore PREDICTABLE, so on a shared host (VPS, CI runner) another user could pre-create it and have
+# cleanup() rm -rf every line it contains as the ACE user. $$ is still the top-level PID inside a subshell,
+# so the path stays stable and $(mktmp) keeps its calling convention.
+mkdir -p "$ACE_CONFIG_DIR" 2>/dev/null || true; chmod 700 "$ACE_CONFIG_DIR" 2>/dev/null || true
+ACE_TMP_REG="$ACE_CONFIG_DIR/.tmpdirs.$$"
+cleanup() {
+  local d
+  if [ -f "$ACE_TMP_REG" ]; then
+    while IFS= read -r d; do [ -n "$d" ] && rm -rf "$d" 2>/dev/null || true; done < "$ACE_TMP_REG"
+    rm -f "$ACE_TMP_REG" 2>/dev/null || true
+  fi
+}
 trap cleanup EXIT
-mktmp() { local d; d="$(mktemp -d)"; ACE_TMP+=("$d"); echo "$d"; }
+mktmp() {
+  local d; d="$(mktemp -d)" || return 1
+  printf '%s\n' "$d" >> "$ACE_TMP_REG" 2>/dev/null || true   # best-effort: a lost registry line only leaks, never breaks the caller
+  printf '%s\n' "$d"
+}
 
 # run CMD... — executes (logged), or prints in dry-run mode
 run() {
@@ -87,11 +110,39 @@ hermes_to() { local t="${HERMES_TO:-$(config_get HERMES_TO 2>/dev/null || true)}
 
 config_init() { run mkdir -p "$ACE_CONFIG_DIR"; [ "$ACE_DRY_RUN" = 1 ] || chmod 700 "$ACE_CONFIG_DIR" 2>/dev/null || true; }
 config_get()  { [ -f "$ACE_CONFIG" ] && grep -E "^$1=" "$ACE_CONFIG" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+# Atomic, lock-guarded rewrite of ONE key in a line-oriented store (CFG-1/2/3).
+# The old config_set/secret_set did a read-modify-write through a FIXED "$file.tmp": two ACE processes
+# (the autoloop and the menu, or two swarm workers) raced on the SAME temp path, and BOTH the grep and
+# the mv were unchecked (`|| true`), so a half-written temp could be renamed over the live store while
+# the function still returned 0 — a silently truncated config/secrets file. Now: one lock per store,
+# a UNIQUE mktemp in the same directory (so the mv stays an atomic same-filesystem rename), and every
+# step rc-gated — on ANY failure we bail out non-zero leaving the live file untouched.
+# _store_put <file> <drop-regex> <new-line|empty-to-delete>
+_store_put() {
+  local file="$1" re="$2" line="$3"
+  mkdir -p "$(dirname "$file")" || return 1
+  [ -e "$file" ] || { : > "$file" || return 1; }
+  (
+    # flock serializes concurrent writers. It is best-effort: where util-linux is absent we still get
+    # the atomic mktemp+rename (no torn file), just without mutual exclusion — strictly better than before.
+    if have flock; then flock 9 || exit 1; fi
+    local tmp rc
+    tmp="$(mktemp "$file.XXXXXX")" || exit 1
+    # grep exits 1 when NOTHING matches, which is the normal "store has no other keys" case; only an
+    # rc>1 is a real read error. Refusing to rename a short read is the whole point of this gate.
+    grep -v -E "$re" "$file" > "$tmp" 2>/dev/null; rc=$?
+    [ "$rc" -le 1 ] || { rm -f "$tmp"; exit 1; }
+    if [ -n "$line" ]; then printf '%s\n' "$line" >> "$tmp" || { rm -f "$tmp"; exit 1; }; fi
+    # mktemp is 0600; both stores live in a 0700 dir and one holds API keys, so keep it that way.
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$file" || { rm -f "$tmp"; exit 1; }
+  ) 9>"$file.lock"
+}
 config_set()  {
   config_init
   [ "$ACE_DRY_RUN" = 1 ] && { printf '%s set %s=%s\n' "${C_YELLOW}[dry-run]${C_RESET}" "$1" "$2"; return; }
-  touch "$ACE_CONFIG"; grep -v -E "^$1=" "$ACE_CONFIG" > "$ACE_CONFIG.tmp" 2>/dev/null || true
-  printf '%s=%s\n' "$1" "$2" >> "$ACE_CONFIG.tmp"; mv "$ACE_CONFIG.tmp" "$ACE_CONFIG"
+  _store_put "$ACE_CONFIG" "^$1=" "$(printf '%s=%s' "$1" "$2")" \
+    || { warn "could not write $1 to $ACE_CONFIG (left unchanged)"; return 1; }
 }
 # Single source of truth for the EFFECTIVE overseer (orchestrator) model id: an explicit per-agent
 # MODEL_orchestrator override wins; else the ORCH_PROVIDER brain alias (opus|sonnet|gpt|deepseek); else the
@@ -112,10 +163,15 @@ orch_model_short() { local m; m="$(orch_model)"; printf '%s' "${m##*/}"; }   # e
 secret_set() {  # <NAME> <VALUE>
   config_init
   [ "$ACE_DRY_RUN" = 1 ] && { printf '%s set secret %s\n' "${C_YELLOW}[dry-run]${C_RESET}" "$1"; return; }
-  mkdir -p "$(dirname "$ACE_SECRETS")"; touch "$ACE_SECRETS"
-  grep -v -E "^export $1=" "$ACE_SECRETS" > "$ACE_SECRETS.tmp" 2>/dev/null || true
-  [ -n "${2:-}" ] && printf 'export %s=%s\n' "$1" "$2" >> "$ACE_SECRETS.tmp"
-  mv "$ACE_SECRETS.tmp" "$ACE_SECRETS"; chmod 600 "$ACE_SECRETS"
+  local line=""
+  # %q, NOT bare interpolation (CA-02/SEC-003). secrets.env is SOURCED by every login shell via the
+  # managed bashrc block, so an unquoted value containing whitespace/;/$(…) truncated the assignment
+  # and EXECUTED the remainder at every shell start — a paste of a key with a stray space was enough.
+  # vps_save below already does this. install.sh's reader (grep '^export CONTEXT7_API_KEY=.') still
+  # matches a %q-quoted value, so no reader needs to change.
+  [ -n "${2:-}" ] && line="$(printf 'export %s=%q' "$1" "$2")"
+  _store_put "$ACE_SECRETS" "^export $1=" "$line" \
+    || { warn "could not write secret $1 to $ACE_SECRETS (left unchanged)"; return 1; }
 }
 
 # Write a managed, idempotent block into ~/.bashrc (works on Arch + Silverblue;
@@ -130,12 +186,21 @@ write_bashrc_block() {
     printf '%s update managed block in %s\n' "${C_YELLOW}[dry-run]${C_RESET}" "$BASHRC"; return
   fi
   touch "$BASHRC"
-  cp "$BASHRC" "$BASHRC.ace.bak" 2>/dev/null && log "backed up $BASHRC -> $BASHRC.ace.bak"
-  # strip any existing block
+  # CA-09: back up the PRISTINE bashrc ONCE. Copying on every run meant run #2 overwrote the pre-ACE
+  # backup with an already-ACE-managed one, so the user's original bashrc became unrecoverable.
+  if [ ! -e "$BASHRC.ace.bak" ]; then
+    cp "$BASHRC" "$BASHRC.ace.bak" 2>/dev/null && log "backed up pristine $BASHRC -> $BASHRC.ace.bak"
+  fi
+  # strip any existing block — rc-gated so a failed awk/append never gets renamed over the live bashrc
+  local tmp; tmp="$(mktemp "$BASHRC.ace.XXXXXX")" || { warn "could not create a temp file next to $BASHRC"; return 1; }
   awk -v b="$ACE_MARK_BEGIN" -v e="$ACE_MARK_END" '
-    $0==b{skip=1} !skip{print} $0==e{skip=0}' "$BASHRC" > "$BASHRC.ace.tmp"
-  { printf '%s\n%s\n%s\n' "$ACE_MARK_BEGIN" "$body" "$ACE_MARK_END"; } >> "$BASHRC.ace.tmp"
-  mv "$BASHRC.ace.tmp" "$BASHRC"
+    $0==b{skip=1} !skip{print} $0==e{skip=0}' "$BASHRC" > "$tmp" \
+    || { rm -f "$tmp"; warn "could not rewrite $BASHRC — left unchanged"; return 1; }
+  printf '%s\n%s\n%s\n' "$ACE_MARK_BEGIN" "$body" "$ACE_MARK_END" >> "$tmp" \
+    || { rm -f "$tmp"; warn "could not rewrite $BASHRC — left unchanged"; return 1; }
+  # mktemp is 0600; keep the bashrc's own mode so a rewrite never silently tightens/loosens it
+  chmod --reference="$BASHRC" "$tmp" 2>/dev/null || chmod 644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$BASHRC" || { rm -f "$tmp"; warn "could not replace $BASHRC — left unchanged"; return 1; }
 }
 
 # Detect whether the current shell will see a freshly-installed tool.
