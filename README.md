@@ -154,7 +154,7 @@ A running loop rarely needs babysitting, but you can watch and steer it from cha
 |-------|---------|--------------|
 | **Notify** | `HERMES_NOTIFY=1 ace autorun` | milestone events (started · merged · deployed · CI-red · stopped) texted to you |
 | **Command-back** | `ace hermes` → enable | text `ace loop status` / `restart` / `tail the log`; the bot runs it on the host, locked to your id |
-| **Approve from chat** | `MERGE_APPROVAL=hermes` | the loop pauses before every merge and waits for `ace approve <tok> yes` — a human gate (deny with the exact word `no`; see the caveat in [remote-control.md](docs/remote-control.md#approve-merges-from-chat-human-in-the-loop)) |
+| **Approve from chat** | `MERGE_APPROVAL=hermes` | the loop pauses before every merge and waits for `ace approve <tok> yes` — a **deny-by-default** human gate: only an explicit approval word merges, anything unrecognised denies, and a missing decision is an error ([details](docs/remote-control.md#approve-merges-from-chat-human-in-the-loop)) |
 | **Ground the agent** | `ace hermes mcp` | chat code questions answered from *your* code (Serena/GitNexus), not guessed |
 | **Schedule** | `ace schedule '0 9 * * 1-5'` | a recurring autorun via Hermes cron + an idle-silent status digest |
 | **Run as a service** | `ace loop start\|stop\|status\|logs` | the loop as a detached systemd user service, surviving terminal-close + sleep |

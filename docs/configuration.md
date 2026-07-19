@@ -70,7 +70,7 @@ Both dials are stored as plain keys in `~/.config/ace/config` and can be set dir
 |-----|---------|--------------|
 | `AUTOMERGE` | profile `auto_merge` | `1` self-merges a PR once the gate is green and mergeable. `0` opens ONE PR and stops for review (does not keep building on the branch). |
 | `MERGE_GATE` | profile `merge_gate` | What authorizes a merge: `remote` (wait for Actions green) · `local` (merge on `./ci.sh --container` green) · `both` (require both). |
-| `MERGE_APPROVAL` | *(empty)* | `hermes` pauses before every merge and waits for a chat `ace approve <tok> yes`. An explicit deny, a timeout, or no `hermes` binary on `PATH` leaves the PR open and stops the loop. Empty = self-merge per `AUTOMERGE`. **See the caveat below — an ambiguous reply currently records an approval.** |
+| `MERGE_APPROVAL` | *(empty)* | `hermes` pauses before every merge and waits for a chat `ace approve <tok> yes`. **Deny-by-default** — see the note below. An explicit deny, a timeout, or an undeliverable request (no `hermes` binary, or a failed `hermes send`) leaves the PR open and stops the loop. Empty = self-merge per `AUTOMERGE`. |
 | `APPROVAL_TIMEOUT` / `APPROVAL_POLL` | `3600` / `15` | How long the loop waits for a decision, and how often it re-checks `.opencode/approvals/`. Timeout is treated as a denial. |
 | `DEPLOY` | `0` | `1` runs `ace deploy` after each merge. Needs `deploy_kind=service` + a configured VPS, else a no-op with a warning. |
 | `DEPLOY_GATE` | `always` | `release` ships only when `origin/main` carries a new `v*` tag (milestone-gated); the last shipped tag is tracked as `DEPLOY_LAST_TAG` in `~/.config/ace/config`. Mark one with `ace release --tag vX.Y.Z`. |
@@ -84,8 +84,10 @@ Both dials are stored as plain keys in `~/.config/ace/config` and can be set dir
 > [!IMPORTANT]
 > Every gate — including `local` — still pushes a branch and opens a PR, so the loop needs a GitHub `origin` remote. "Local gate" means "don't wait on Actions", not "no remote".
 
-> [!WARNING]
-> **`MERGE_APPROVAL=hermes` is not yet a deny-by-default gate.** The *loop* side is strict — an explicit deny, a timeout, and a missing chat channel all stop it. The *recording* side is not: `ace approve` treats only a short list of tokens (`no` `n` `deny` `denied` `reject` `rejected` `0` `❌`) as a denial and records **anything else — including an unrecognised or free-text reply — as an approval**. So a chat answer like "no thanks", "nope", or "hold off" merges the PR. Until this flips to deny-by-default, reply with the exact word `no` (or run `ace approve <tok> no` locally) to deny, and don't rely on the gate as a security boundary. The deny-default fix is landing; this note will be replaced when it ships.
+> [!NOTE]
+> **`MERGE_APPROVAL=hermes` is deny-by-default on both sides.** The *recording* side (`ace approve`) merges only on an explicit approval word — `yes` `y` `approve` `approved` `ok` `1` `✅`, case-insensitive. Every other decision string, including an unrecognised or free-text reply, is recorded as a **deny** and warns that it was not understood so you can re-answer while the request is still pending; a *missing* decision (`ace approve <tok>`, or bare `ace approve`) is an error that records nothing. The *loop* side approves only on the literal `yes` it wrote, so a truncated decision file also denies, and it treats an explicit deny, a timeout, and an undeliverable request as stop conditions.
+>
+> `APPROVAL_TIMEOUT` bounds only a request that *was* delivered. The loop tests the `hermes send` and, if delivery fails, removes the request and returns "no usable chat channel" at once — it never spends an hour waiting for an answer to a message nobody received.
 
 ### Generated-project gates
 
@@ -318,7 +320,7 @@ The planner researches `[value]` features (how comparable products build them + 
 | `FIRECRAWL_API_URL` | `http://127.0.0.1:3002` | the self-hosted endpoint the MCP + reachability gate use; unreachable ⇒ MCP disabled. |
 | `FIRECRAWL_PORT` | `3002` | loopback port the local crawler listens on. |
 | `FIRECRAWL_DIR` | `~/firecrawl` | where the Firecrawl compose lives (`ace firecrawl up` runs `compose up -d` there). |
-| `ACE_RESEARCH_MAX_FETCHES` | `6` | shared search+scrape page budget per feature (keeps research bounded). |
+| `ACE_RESEARCH_MAX_FETCHES` | `6` | shared search+scrape page budget per feature (keeps research bounded). Resolved **env > config > `6`** and **stamped into the generated prompts at generation time**, so a change only takes effect after `ace opencode` (or `ace install`) regenerates them — it is not read at run time. The researcher's own budget and the global `AGENTS.md` rule are stamped from the same value, so they cannot drift. A non-numeric or zero value falls back to `6`. |
 
 > [!NOTE]
 > There is **no** API-key knob. ACE talks to Firecrawl over plain loopback and never sends an auth header, so an instance configured to *require* auth is unreachable to ACE — the MCP auto-disables and research falls back to `webfetch`. Run the self-hosted instance without auth, the way `ace firecrawl up` sets it up.
@@ -335,14 +337,15 @@ Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<
 | `SPEC_RUBRIC` | `0` | **Off by default.** An optional one-call LLM rubric that judges a lint-green spec on 7 criteria (only for HIGH-RISK `[value]` features). Enable per project only after calibrating against the goldens. |
 | `SPEC_RUBRIC_MODEL` | `deepseek-v4-pro` | Which model the rubric runs on. It does **not** follow your overseer: the rubric is a direct `curl` to `https://api.deepseek.com/chat/completions` and needs `DEEPSEEK_API_KEY`, so this value must be a **DeepSeek** model id (bare, no provider prefix). Pointing it at a Claude/OpenAI slug will not route. |
 | `SPEC_RUBRIC_TIMEOUT` | `90` | Wall-clock cap (s) on that single rubric call (`curl --max-time`). On timeout the rubric returns nothing and the pipeline proceeds (fail-open). |
-| `SPEC_DEBATE` | `0` | **Off by default.** The heavier alternative to the rubric: a cross-model **debate** on each lint-green HIGH-risk spec (see below). When on, it *subsumes* `SPEC_RUBRIC`. Agreed gaps route into the re-spec channel. |
-| `REVIEW_DEBATE` | `0` | **Off by default.** A cross-model debate over the branch diff *before* a PR self-merges; agreed [blocker]/[major] findings hold the merge for a fix. Fail-open. |
+| `SPEC_DEBATE` | `0` | **Off by default.** The heavier alternative to the rubric: a cross-model **debate** on each lint-green HIGH-risk spec (see below). When on, it *subsumes* `SPEC_RUBRIC`. Agreed gaps route into the re-spec channel. Resolves **env > config > `0`** — see below. |
+| `REVIEW_DEBATE` | `0` | **Off by default.** A cross-model debate over the branch diff *before* a PR self-merges; agreed [blocker]/[major] findings hold the merge for a fix. Fail-open. Resolves **env > config > `0`** — see below. |
 | `DEBATE_MODEL_A` | *(overseer)* | The **defender** (owns the artifact) — defaults to your overseer model (Claude via subscription, no API key). |
 | `DEBATE_MODEL_B` | *(unset)* | The **challenger** — a **provider-prefixed** model slug. The prefix picks the route: `openrouter/vendor/model` (e.g. `openrouter/openai/gpt-5.5`, needs `OPENROUTER_API_KEY`) · `openai/model` (needs OpenAI auth) · `anthropic/model` (needs the Claude subscription login). **Required to enable** any debate; unset ⇒ silent no-op. A bare `gpt-5.5` (no prefix) won't route. |
 | `DEBATE_MIN` / `DEBATE_MAX` / `DEBATE_HARD_MAX` | `2` / `4` / `10` | Debate rounds: at least MIN before it may converge, MAX by default, extend to HARD_MAX only while a side flags `NEEDS-MORE`. |
 | `DEBATE_TIMEOUT` | `600` | Per-turn wall-clock cap (s). |
 | `DEBATE_WALL_MAX` | `1800` | Total debate wall-clock backstop (s). A non-converging pair can't stall the synchronous planning gate past this — it stops and synthesizes what it has. |
-| `DEBATE_ONLY` | *(unset)* | **Trial scoping.** A comma-list of slugs to limit the debate to (e.g. `checkout,authz,webhook`) — the simple, editable way to try it on a few features. Unset ⇒ every eligible artifact. Set in `~/.config/ace/config`. |
+| `DEBATE_ONLY` | *(unset)* | **Trial scoping for SPEC debates only.** A comma-list of **spec slugs** to limit the spec debate to (e.g. `checkout,authz,webhook`) — the simple, editable way to try it on a few features. Unset ⇒ every eligible spec. Scopes *nothing else*: it has no effect on the `REVIEW_DEBATE` pre-merge gate. Set in `~/.config/ace/config`. |
+| `REVIEW_DEBATE_ONLY` | *(unset)* | **Trial scoping for REVIEW debates.** The separate comma-list for the pre-merge gate, matched against the **branch name** with `/` folded to `-` (a `feat/checkout` branch is the slug `feat-checkout`). Unset ⇒ every eligible branch. Kept distinct from `DEBATE_ONLY` on purpose: a single shared list was compared against spec slugs in one mode and branch names in the other, so setting spec slugs silently disabled the whole review gate — fail-open, with nothing in the log saying so. |
 | `DEBATE_F1_MIN` | `750` | Effectiveness go/no-go (per-mille; 0.750). `ace debate score` prints GO iff F1 ≥ this on the labeled sandbox. |
 
 ### Cross-model debate
@@ -350,6 +353,16 @@ Every `[value]` feature is planned as **one canonical spec** (`.opencode/specs/<
 `SPEC_DEBATE` / `REVIEW_DEBATE` run a **grounded adversarial dialogue between two *different* LLMs** over an artifact (a spec, or a diff). The **defender** (`DEBATE_MODEL_A`, your overseer — Claude, who planned it) and the **challenger** (`DEBATE_MODEL_B`, an OpenRouter model) exchange citations, concede correct points, and refute weak ones, converging on the issues **both accept**. A point becomes a fix **only when the defender concedes it** — so a strong argument promotes it and a hallucinated one is refuted by the other model. Both run **read-only** (the `debater` agent) so they can fact-check each other against the actual repo — the anti-hallucination lever. The full transcript is saved to `.opencode/cache/{spec,review}-debate-<slug>.md` so you can read the argument, and one structured **metrics** record per debate (rounds · per-round accepted/disputed/converged/timing · duration · issues · wall-capped) is appended to `.opencode/cache/debate-metrics.jsonl` — analyze it with **`ace debate report`**. To trial it on just a few features, set `DEBATE_ONLY=slug1,slug2,…`. **Cost:** opt-in, HIGH-risk-only, hard round + per-turn + total-wall (`DEBATE_WALL_MAX`) caps. **Enable only after** `tests/spec-debate-goldens.sh --calibrate` prints **GO** on your labeled set. Standalone: `ace debate spec <file>` / `ace debate review [base]`.
 
 All of these are settable in the UI — **`ace settings` → Cross-model debate**: the spec/review toggles, the defender/challenger models (with greyed per-provider format examples — `openrouter/vendor/model` · `openai/model` · `anthropic/model`), and the round/timeout/wall caps. No hand-editing `~/.config/ace/config` required.
+
+**Precedence — `SPEC_DEBATE` / `REVIEW_DEBATE`.** Most specific wins:
+
+```
+environment variable   >   ~/.config/ace/config   >   the built-in default (0)
+```
+
+The `ace` entrypoint exports the stored config value once, before any flow is dispatched, so both the solo loop and the swarm coordinator (a child process) inherit it. An environment variable that is already set is left untouched — and when one is, the settings screen labels that toggle `[env … overrides this session]`, so the menu never claims to control a value the environment owns. An absent or empty config key exports nothing and the consumer's own default of `0` applies. The stored value is never coerced: the config holds `0`/`1`, and anything else reaches the consumers verbatim, where the `= 1` tests treat it as off.
+
+This precedence is what makes the menu toggle real. Previously the screen persisted the toggle to config while every consumer read the environment only, so it could show **ON** while every run silently skipped the debate. If you toggled it on before this shipped, the next run genuinely will debate — and will spend credits accordingly.
 
 > [!IMPORTANT]
 > **Privacy:** the debate sends the spec (or the full branch **diff**) to your `DEBATE_MODEL_B` provider (OpenRouter). For a repo with sensitive code, that's your code leaving to a third party — the debaters are read-only (they can't act), but the artifact text itself is transmitted. Choose `DEBATE_MODEL_B` accordingly, and don't enable `REVIEW_DEBATE` on a repo whose diffs you can't share externally.

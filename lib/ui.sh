@@ -337,8 +337,21 @@ spin() {
   type log >/dev/null 2>&1 && log "RUN: $*"
   if [ "${ACE_DRY_RUN:-0}" = "1" ]; then printf '%s %s\n' "${C_YELLOW}[dry-run]${C_RESET}" "$*"; return 0; fi
   local sink="${ACE_LOG_FILE:-/dev/null}"
-  if ! [ -t 1 ]; then "$@" >>"$sink" 2>&1; return $?; fi
-  local frames='✶✸✹✺✹✷' i=0 pid rc
+  local rc
+  # NON-TTY (piped run, CI capture, systemd unit, agent transcript): a spinner is impossible, but the
+  # STEP TRACE must not vanish with it. The old form ran the command and returned bare, so a redirected
+  # run printed nothing at all AND skipped the `EXIT rc` log line — while the dry-run branch two lines
+  # up does print. That is exactly backwards: a redirected run is the one where the reader has no
+  # screen to look at, and `ace logs` is the only record. Emit the same ✓/✗ verdict (no \r — nothing
+  # to overwrite off-TTY; the C_* vars are already empty here unless ACE_FORCE_COLOR=1) and log EXIT.
+  if ! [ -t 1 ]; then
+    "$@" >>"$sink" 2>&1; rc=$?
+    if [ "$rc" -eq 0 ]; then printf '%s %s\n' "${C_GREEN}${C_BOLD}✓${C_RESET}" "$msg"
+    else printf '%s %s %s\n' "${C_RED}${C_BOLD}✗${C_RESET}" "$msg" "${C_GREY}(see: ace logs)${C_RESET}"; fi
+    type log >/dev/null 2>&1 && log "EXIT $rc: $*"
+    return "$rc"
+  fi
+  local frames='✶✸✹✺✹✷' i=0 pid
   ( "$@" >>"$sink" 2>&1 ) & pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     i=$(( (i+1) % ${#frames} ))

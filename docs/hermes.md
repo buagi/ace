@@ -88,7 +88,7 @@ Verify each side separately:
 | `ace hermes mcp` | Registers this repo's code-graph servers (Serena `--project`, GitNexus best-effort) with the Hermes agent, so chat questions are grounded. Same servers OpenCode uses. |
 | `ace hermes webhook` | Subscribes a Hermes webhook route for GitHub CI/PR events → chat, and prints the route to add to the repo's GitHub webhooks. Needs a publicly-reachable gateway. |
 | `ace publish [name]` | Creates and pushes the repo's private GitHub `origin` so the loop can run. Re-runnable: re-pushes if origin is set, and offers use / rename / abort if the name already exists. |
-| `ace approve [tok] yes\|no` | Answers a pending merge-approval request (paired with `MERGE_APPROVAL=hermes`). No token = the newest pending request. |
+| `ace approve [tok] yes\|no` | Answers a pending merge-approval request (paired with `MERGE_APPROVAL=hermes`). No token = the newest pending request. The decision is **required** and deny-by-default: only an explicit approval word approves. |
 | `ace schedule '<when>'` | Registers a recurring autorun for this repo via Hermes cron (`'0 9 * * 1-5'` · `'every 6h'` · `'30m'`). |
 | `ace brain` | Files ACE's cross-project host-lessons and this repo's `.opencode/lessons.md` into gbrain. |
 | `ace snap [--to <chan>]` | Screenshots the themed CLI to a PNG and sends it as a media attachment. |
@@ -142,16 +142,22 @@ What each outcome does today:
 
 | Reply | Result |
 |---|---|
-| `ace approve <tok> yes` | merge proceeds on green |
-| `ace approve <tok> no` | PR left open, loop stops |
+| `ace approve <tok> yes` — or `y` `approve` `approved` `ok` `1` `✅`, any casing | merge proceeds on green |
+| `ace approve <tok> no` — or `n` `deny` `denied` `reject` `rejected` `0` `❌`, any casing | PR left open, loop stops |
+| **anything else** (free text, a typo, "no thanks", an LLM paraphrase) | **denied** — recorded as a deny, with a warning naming the word it did not recognise |
+| `ace approve <tok>` with no decision, or a bare `ace approve` | **error — nothing is recorded**; a missing decision is not consent |
 | no reply within `APPROVAL_TIMEOUT` (default 1 h) | treated as denied, loop stops |
-| no reachable channel (no `hermes` on `PATH`) | PR left open, loop stops |
-| **anything else** (free text, a typo, "no thanks") | ⚠️ **recorded as an approval — the merge proceeds** |
+| no reachable channel (no `hermes` on `PATH`, **or** a failed `hermes send`) | PR left open, loop stops **immediately** |
+
+> [!NOTE]
+> **This is a deny-by-default gate.** Only an explicit approval word merges; everything else denies. Both the token and the decision slot are case-folded against the same vocabulary, so `No`, `YES` and `Approve` behave as written and the two slots can no longer disagree. The loop itself accepts only the literal string `yes` from the decision file — the sole approving value `ace approve` ever writes — so a truncated or half-written file denies too.
+>
+> One ordering rule: with two arguments, the first is the **token** and the second the **decision**. A malformed `ace approve yes no` therefore looks for a request named `yes`, finds none, and records nothing rather than letting the leading `yes` override the trailing `no`.
 
 > [!WARNING]
-> **This is not yet a deny-by-default gate.** `ace approve` treats only `no` `n` `deny` `denied` `reject` `rejected` `0` `❌` as a denial; every other decision string — including one an LLM relay paraphrased — becomes a `yes`. Because the chat bot relays your words into this command, a natural-language refusal can merge the PR. **Deny with the exact word `no`.** The deny-default fix is landing; this warning will be replaced when it ships.
+> **What deny-by-default does and does not buy you.** It closes the *paraphrase* hole: a refusal the relay rewrote as "no thanks" or "hold off" now denies instead of merging. It does **not** make the chat path a security boundary. Whatever reaches `ace approve` still executes with your privileges, and the relay is an LLM — a prompt-injected or simply mistaken one can emit the literal word `yes`. The bot's **user allowlist** remains the actual boundary (see [Security model](#security-model)); this gate is a correctness fix on top of it, not a replacement for it. For a merge you truly need to control, run `ace approve` from the host rather than from chat.
 
-The decision is filesystem-backed (`.opencode/approvals/<tok>.{request,decision}`), so you can also run `ace approve` locally if the chat send fails. Without `MERGE_APPROVAL=hermes` the loop self-merges on green per `AUTOMERGE` — see [autorun.md](autorun.md).
+The decision is filesystem-backed (`.opencode/approvals/<tok>.{request,decision}`), so you can also run `ace approve` locally. Note that a *delivery* failure does not leave a request to answer: the loop tests the `hermes send`, and on failure removes the request file and stops with rc 2 (`no usable chat channel`) rather than polling for an hour — so fix the channel (`hermes gateway status`, `HERMES_TO`) and `ace resume`. Without `MERGE_APPROVAL=hermes` the loop self-merges on green per `AUTOMERGE` — see [autorun.md](autorun.md).
 
 ## Grounding the chat agent — `ace hermes mcp`
 
