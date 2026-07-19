@@ -58,3 +58,6 @@ jobs:
       # WIP is lost while the stop message still claims it was preserved. Pinned by intercepting the SENDS.
       - name: swarm stop signal ORDER (B5 — leaders TERMed before opencode trees)
         run: bash tests/killorder-selftest.sh
+      # The research backend must track reality at run start, and must never fall back SILENTLY.
+      - name: firecrawl MCP auto-spin (flag tracks reality · fallback is narrated · config never corrupted)
+        run: bash tests/firecrawl-selftest.sh

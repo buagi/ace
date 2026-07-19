@@ -16,7 +16,7 @@ Maintainer reference for work ACE intentionally leaves unbuilt, with enough cont
 | Swarm next-round backlog (10 ranked fixes) | Post-validation throughput/resilience work, ranked by lever | Ranked below under *Swarm: next fixing round* |
 | Cross-family model for the launch gate | Blocked on the "prompts before models" model-routing deferral | The model-routing deferral lifts (Part D / D4) |
 | Blue-green / canary + multi-region DR | ACE targets a single VPS | ACE promotes beyond one VPS, or needs zero-downtime deploys |
-| Firecrawl auto-spin + startup presentation | Firecrawl is manual (`ace firecrawl up`) and its MCP enable/disable is baked at `ace opencode` time, not surfaced at run start | A run needs richer research, or the `up`→`opencode` ordering trips a user |
+| ~~Firecrawl auto-spin + startup presentation~~ **SHIPPED 2026-07-19** (`firecrawl_ensure`, lib/consistency.sh) — auto-starts at run start, flips the MCP flag to match reality, and always narrates which research backend the run got | ~~Firecrawl is manual and its MCP enable/disable is baked at `ace opencode` time~~ | A run needs richer research, or the `up`→`opencode` ordering trips a user |
 
 ## Swarm: serialized merge and the semantic re-gate
 

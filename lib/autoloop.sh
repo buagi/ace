@@ -636,6 +636,10 @@ preflight(){
   # artifact dir after this repo was adopted, its ignore rule is missing and the rescue would sweep it into a
   # commit. Back-fill the rules + untrack anything already swept, so a stop/kill can never dirty the repo.
   command -v ace_repo_hygiene >/dev/null 2>&1 && ace_repo_hygiene || true
+  # Research backend, decided HERE rather than frozen at `ace opencode` time: bring Firecrawl up and make the
+  # live MCP flag match reality BEFORE any agent launches. Fail-open (research degrades to webfetch, the run
+  # is never blocked) but never SILENT — it always states which backend this run actually got.
+  command -v firecrawl_ensure >/dev/null 2>&1 && firecrawl_ensure || true
   refresh_version_cache
   # STALE-BRANCH GUARD: if this branch's work is already shipped (a MERGED PR for its head), don't
   # reprocess it — return to main, delete the stale branch (local + remote), and continue from there.
