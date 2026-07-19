@@ -3338,7 +3338,7 @@ if [ "${ATLAS_NARRATIVE:-0}" = 1 ] && command -v opencode >/dev/null 2>&1; then
   NARR="$(CI=1 timeout -k 10 300 opencode run --agent "${ATLAS_AGENT:-cartographer}" </dev/null \
     "For '$NAME', fill the Role column of this module table from REAL code (one grounded phrase each; keep Module/Layer/Used by/Depends on exactly as given; output ONLY the markdown table):
 $MODULE_TABLE" </dev/null 2>/dev/null || true)"
-  printf '%s' "$NARR" | grep -q '| Module ' && MODULE_TABLE="$NARR"
+  grep -q '| Module ' <<<"$NARR" && MODULE_TABLE="$NARR"
 fi
 
 # ---- 3. assemble docs/atlas.md -------------------------------------------------------------------

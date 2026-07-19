@@ -188,7 +188,11 @@ md_has(){ # <fixed-string> — must appear inside the GENERATED AGENTS.md heredo
   # comment behind rendered an AGENTS.md with the lesson GONE while this gate still printed PASS.
   local body; body="$(awk "/cat > \"\\\$1\" <<'MD'/{f=1;next} f&&/^MD\$/{f=0} f" "$IN")"
   [ -n "$body" ] || { bad "could not extract the AGENTS.md heredoc from $IN — the anchor moved"; return; }
-  printf '%s' "$body" | grep -qF -- "$1" || bad "generated AGENTS.md lost \"$1\" in $IN"
+  # A4 -- and this gate shipped WITH the very trap it was written to enforce. $body is the whole heredoc (tens
+  # of KB), so grep -q exits on the match while printf is still writing, printf takes SIGPIPE, and under
+  # `set -o pipefail` the pipeline returns 141: a spurious FAIL on roughly 1 run in 8. A here-string has no
+  # second process to kill. Measured, revert-proved: old shape 2 failures / 60 runs; here-string 0 / 60.
+  grep -qF -- "$1" <<<"$body" || bad "generated AGENTS.md lost \"$1\" in $IN"
 }
 md_has "## Audit lessons (2026-07-18" "the audit-lessons section header"
 for _sec in "### A. Bash traps" "### B. Fix + review discipline" "### C. Design + reporting defaults"; do
