@@ -24,7 +24,8 @@ git_flow_apply() {
     ok "current branch: $cur"
   fi
 
-  install_gitflow_hooks "$dir"
+  # returns 1 on a PARTIAL install; surface it rather than continuing as if the guard were in place.
+  install_gitflow_hooks "$dir" || warn "hook install incomplete — main-guard may not be active in $dir"
 
   mkdir -p .github
   if [ ! -f .github/PULL_REQUEST_TEMPLATE.md ] && [ "$ACE_DRY_RUN" != 1 ]; then
