@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # bash-traps.sh — STATIC gate over ACE's own shell for the mechanically-findable bash traps from the
-# 2026-07-18 audit (lessons A1-A11). Converts "remember this" into "cannot recur".
+# 2026-07-18 audit. Converts "remember this" into "cannot recur" -- for the SEVEN traps that are
+# statically detectable at acceptable precision (A1 A2 A4 A5 A6 A8 A11). A3/A7/A9/A10/A12/A13 are NOT
+# enforced here and are caught by review only: a green run is not clearance for the whole A-list.
 #
 # WHY A STATIC GATE AND NOT A CHECKLIST: every one of these traps was found by REPRODUCTION, never by
 # reading — three generations of fixes each re-introduced the class they were fixing (lesson B8). A human
-# reviewer demonstrably cannot hold A1-A11 in working memory across a 152-defect audit. A grep can.
+# reviewer demonstrably cannot hold the A-list in working memory across a 152-defect audit. A grep can.
 #
 # DESIGN RULE — PRECISION OVER RECALL. This runs at ERROR level in CI, so one false positive blocks every
 # PR, and a gate that blocks every PR gets disabled, and a disabled gate protects nothing. Every pattern

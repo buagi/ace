@@ -611,6 +611,7 @@ _swarm_plan_sync() {
       # 2) OPTIONAL quality layer on the now lint-GREEN specs, folding agreed GAPS into a SEPARATE report. Both
       # default OFF, fail-open. SPEC_DEBATE (cross-model dialogue) subsumes the single-shot SPEC_RUBRIC.
       local _extra=""
+      [ "${SPEC_DEBATE:-0}" = 1 ] || echo "  planning: spec-debate DISABLED (SPEC_DEBATE=0) — specs are NOT being cross-model debated."
       if [ "${SPEC_DEBATE:-0}" = 1 ]; then
         echo "  planning: spec-debate — cross-model dialogue pressure-testing the feature spec(s) (SPEC_DEBATE=1)…"
         local _rsp _deb

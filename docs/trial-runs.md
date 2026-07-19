@@ -19,6 +19,20 @@ ace status              # must end in READY
 tests/spec-debate-goldens.sh --calibrate   # optional: only enable auto-gates once this prints GO
 ```
 
+> [!IMPORTANT]
+> **This Setup enables nothing on its own.** `SPEC_DEBATE` and `REVIEW_DEBATE` both default to **0 (off)** in
+> every consumer (`lib/autoloop.sh:458` spec gate, `lib/autoloop.sh:1210` pre-merge gate, `lib/swarm-run.sh:614`
+> coordinator gate). Setting `DEBATE_MODEL_B` + `DEBATE_ONLY` only says *which* model and *which* slugs — a run
+> with neither toggle set to `1` does the whole pipeline with **no debate at all**, and there is no summary line
+> telling you so. The per-run commands below set them explicitly; keep it that way. (Persisting them via
+> `ace settings → Cross-model debate` also works — `ace` exports the stored value into the environment before
+> dispatch, see the `ACE_DEBATE_ENV` block at `ace:17-26`.) The one exception is `ace reanalyze`, which
+> defaults `SPEC_DEBATE=1` for its plan-only re-derivation (`ace:405`).
+>
+> Two more gates sit in front of a SPEC debate, both silent no-ops: `opencode` must be on PATH, and the spec
+> must be marked **`risk: HIGH`** — `lib/debate.sh:88` returns 0 for anything else. REVIEW debates have no risk
+> gate; they run on every eligible branch diff.
+
 **Where the data lives** (per run, in the repo): `.opencode/cache/*-debate-*.md` (transcripts) · `.opencode/cache/debate-metrics.jsonl` (metrics) · `.opencode/metrics.csv` + `~/.config/ace/logs/` (loop/step timing) · `ace stats` (tokens/cost) · `ace quality` (critic FP/retry). Archive each run's `.opencode/cache/` between runs so you can compare.
 
 ---
@@ -36,7 +50,7 @@ SPEC_DEBATE=0 REVIEW_DEBATE=0 MAX_FEATURES=3 ace autorun --yes
 | 1 | Spec gate runs on `[value]` features | # specs written to `.opencode/specs/` | ≥1 per value feature | `ls .opencode/specs/` |
 | 2 | Deterministic lint gates before dispatch | `SPECGAP` count trends ↓ across re-spec | 0 gaps at dispatch after the 2 re-spec rounds (the count is fixed by the pipeline, not a knob) | coordinator/loop log `planning: spec-lint …` |
 | 3 | Per-increment **slice** reaches the implementer | slice files present | 1 per dispatched increment | `ls .opencode/cache/spec-slice.*.md` |
-| 4 | **Solo == swarm** pipeline (unification) | same gate lines appear in a `par=1` run | present | run once with 1 flow, once with ≥2 |
+| 4 | **Solo == swarm** pipeline (unification) | same gate lines appear in a `par=1` run | present | `ace autorun` for the 1-flow side, `SWARM_MAX=2 ace swarm start` for the ≥2 side — `autorun` is always solo (see Run 3) |
 | 5 | Dashboard **phase tags** live, never static | phase label changes across research→spec-gate→implement | tags observed, spinner animates | `ace dash` during the run |
 | 6 | No stalls / hangs | longest silent gap | < `HANG_AFTER` (8m) without a kill | `ace loop stats` · dashboard beat |
 | 7 | Merge gate holds | merges only on green | 0 red-main merges | PR history |
@@ -58,7 +72,7 @@ ace debate report
 
 | # | Check | Metric | Pass line | Read it |
 |---|-------|--------|-----------|---------|
-| 1 | Debate fires ONLY on the 5 slugs | # debates | = 5 (no others) | `ace debate report` (SLUG column) |
+| 1 | Debate fires ONLY on the 5 slugs | # debates | ≤ 5, and no slug outside the list — only the `risk: HIGH` ones of the 5 debate (`lib/debate.sh:88`), so pick 5 HIGH specs or expect fewer | `ace debate report` (SLUG column) |
 | 2 | Debates **converge** (not just hit the cap) | convergence rate | ≥ 60% converged (not wall-capped) | report: `converged` / `wall_capped` |
 | 3 | Rounds are sane | avg rounds | 2–4 (only complex ones near 10) | report: `avg_rounds` |
 | 4 | Arguments are **grounded** (anti-hallucination) | cited-vs-uncited points in transcript | every accepted issue cites spec/repo | read `.opencode/cache/spec-debate-<slug>.md` |
@@ -77,17 +91,27 @@ ace debate report
 Goal: the parallel path + the pre-merge code debate + the failure modes.
 
 ```bash
-SPEC_DEBATE=1 REVIEW_DEBATE=1 SWARM_MAX=3 ace autorun --yes    # (or: ace swarm start)
+SPEC_DEBATE=1 REVIEW_DEBATE=1 SWARM_MAX=3 ace swarm start
 ```
+
+> [!WARNING]
+> This run needs `ace swarm start`, **not** `ace autorun`. `autorun` dispatches `autoloop_run` in-process
+> (`ace:376`) and never reaches `lib/swarm-run.sh`, which is the only reader of `SWARM_MAX` — so
+> `SWARM_MAX=3 ace autorun` runs a normal solo loop and the "parallel path" half of this run is not exercised.
+> `ace swarm start` sets `SWARM_LIVE=1 DRY_RUN=0` itself (`ace:411-412`); invoking `swarm-run.sh` directly
+> without `SWARM_LIVE=1` refuses to spend credits (`lib/swarm-run.sh:737`). `SWARM_MAX` defaults to **2** and is
+> hard-clamped to `SWARM_CEIL` (default **5**) at `lib/swarm-run.sh:22-29`. Each worker runs the same autoloop
+> in its own worktree (`lib/swarm-run.sh:101-105`), so `REVIEW_DEBATE` — which lives in the autoloop merge gate,
+> not the coordinator — applies to swarm workers too.
 
 | # | Check | Metric | Pass line | Read it |
 |---|-------|--------|-----------|---------|
 | 1 | Swarm pre-dispatch panel names the phase | research/spec-gate/plan-gate labels | shown, beating | `ace swarm dash` / `ace dash` |
 | 2 | REVIEW_DEBATE runs pre-merge, doesn't stall siblings | merge-lock hold time | debate runs BEFORE the lock; no sibling starvation | coordinator log + merge timing |
 | 3 | Agreed blocker/major **holds** the merge | held PRs | held + surfaced on the bus for a fix | `review-debate: … held` in the log |
-| 4 | Fail-open holds | kill a debate mid-run (drop the key) | the run PROCEEDS, no gaps, no crash | unset `DEBATE_MODEL_B` mid-run |
+| 4 | Fail-open holds | kill a debate mid-run (drop the key) | the run PROCEEDS, no gaps, no crash | **comment `DEBATE_MODEL_B` out of `~/.config/ace/config`** — `unset` in your shell is not enough, `_debate_model_b` falls back to the config file (`lib/debate.sh:33`) and Setup put it there |
 | 5 | Path-disjoint, no cross-worker collisions | merge conflicts | ~0 (plan-lint + hot-file chaining working) | swarm bus `needs-attention` |
-| 6 | Goldens still green | nightly-style check | PASS | `bash tests/spec-debate-goldens.sh --calibrate` |
+| 6 | Goldens still green | nightly-style check | PASS | `bash tests/spec-debate-goldens.sh --calibrate` — the goldens are **nightly only** (`.github/workflows/agent-goldens.yml`, 06:00 UTC + `workflow_dispatch`), never per-PR, so run it by hand here |
 | 7 | Aggregate debate signal | full `ace debate report` | convergence ≥60%, sane rounds/cost across all runs | `ace debate report` (accumulates across runs) |
 
 ---
@@ -102,7 +126,8 @@ After the 3 runs, with `ace scorecard` + `.opencode/cache/debate-metrics.jsonl` 
 2. **Quality** — did the debate catch issues the deterministic lint + rubric missed? Cross-reference `DEBATEISSUE` lines against escaped bugs (`ace quality`). If it only restates lint findings, it isn't earning its cost.
 3. **Cost** — Δ($/feature) Run 2 vs Run 1 against the drop in review/fix rounds. Tune: lower `DEBATE_MAX`, a cheaper `DEBATE_MODEL_B`, or narrow `DEBATE_ONLY`.
 4. **Optimise knobs** — `DEBATE_MIN/MAX/HARD_MAX`, `DEBATE_TIMEOUT`, `DEBATE_WALL_MAX` from the observed round/timing distribution. Keep `SPEC_DEBATE`/`REVIEW_DEBATE` **off** by default until `--calibrate` says GO on a labelled set.
-5. **File findings** — anything that misbehaved (a hallucinated-but-accepted issue, a stall, a mis-scoped debate) → a ROADMAP item; fix, then re-run the affected step.
+5. **Re-derive without spending a run** — `ace reanalyze` re-runs research→spec→lint→debate→slice over your OPEN features **plan-only** and `ace reanalyze report` shows before→after (`lib/reanalyze.sh`). Cheapest way to test a knob change on real features. Caveat: it is plan-only by construction, but `lib/scorecard.sh` has no plan-only mode — the levels that count implemented/merged results will read as empty on such a run, so don't read that as a regression.
+6. **File findings** — anything that misbehaved (a hallucinated-but-accepted issue, a stall, a mis-scoped debate) → a ROADMAP item; fix, then re-run the affected step.
 
 > Keep each run's `.opencode/cache/` archived so Run 1↔2↔3 are comparable, and so the debate metrics aggregate cleanly in `ace debate report`.
 

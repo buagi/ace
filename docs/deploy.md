@@ -19,10 +19,12 @@ flowchart TD
   M[Self-merge lands on main] --> D{"DEPLOY=1?"}
   D -- no --> X[no deploy]
   D -- yes --> G{"DEPLOY_GATE"}
-  G -- "always (default)" --> S["ace deploy over SSH"]
+  G -- "always (default)" --> L
   G -- release --> T{"new v* tag on origin/main?"}
   T -- no --> N[no-op, loop continues]
-  T -- yes --> S
+  T -- yes --> L
+  L{"LAUNCH_GATE: ci.sh --launch"} -- "NO-GO" --> B["promote BLOCKED (rc 1)"]
+  L -- "GO / no --launch tier" --> S["ace deploy over SSH"]
   S --> H{"healthcheck 2xx in time?"}
   H -- yes --> OK["live · record DEPLOY_LAST_TAG"]
   H -- no --> F{"STOP_ON_DEPLOY_FAIL=1?"}
@@ -37,6 +39,8 @@ flowchart TD
 | `DEPLOY_GATE` | `always` (default) | deploy now |
 | `DEPLOY_GATE` | `release`, no new `v*` tag | no-op, loop continues |
 | `DEPLOY_GATE` | `release`, new `v*` tag | deploy now |
+| Launch-readiness | `LAUNCH_GATE=1` (default) **and** the project's `ci.sh` has a `--launch` tier | `ci.sh --launch` runs; a NO-GO **blocks the promote** (fail-closed) |
+| Launch-readiness | no `ci.sh --launch` tier here | gate is skipped with a warning — nothing is enforced |
 | `ace deploy` (SSH) | `git fetch` → `git reset --hard origin/main` → `scripts/deploy.sh` | new bits on the VPS |
 | Healthcheck | 2xx within `VPS_HEALTH_TIMEOUT` | mark live, record `DEPLOY_LAST_TAG` |
 | Healthcheck fails | `STOP_ON_DEPLOY_FAIL=1` (default) | halt the loop → `ace resume` |
@@ -87,7 +91,14 @@ ace deploy --force              # or: DEPLOY_FORCE=1 ace deploy
 ```
 
 > [!NOTE]
-> `DEPLOY_GATE` lives in global ACE config, so flipping it takes effect on the loop's **next** `ace deploy` call — no loop restart needed (the loop shells out to the global `ace` binary).
+> `DEPLOY_GATE` resolves env-first, then global ACE config (`DEPLOY_GATE` → stored config → `always`). Because `ace loop start` does *not* capture `DEPLOY_GATE` into `loop.env`, setting it in global config takes effect on the loop's **next** `ace deploy` call — no loop restart needed (the loop shells out to the global `ace` binary).
+
+## The launch-readiness gate — `LAUNCH_GATE`
+
+Before it touches the VPS, `ace deploy` runs the project's `./ci.sh --launch` tier (pre-promotion evidence: tested-restore result, rollback runbook, SLO/runbook presence). It is **fail-closed** — a NO-GO returns non-zero and the deploy never happens, which in-loop counts as a deploy failure and so halts the loop under the default `STOP_ON_DEPLOY_FAIL=1`.
+
+> [!IMPORTANT]
+> The gate only bites if the project actually has one. If `ci.sh` is missing or has no `--launch` tier, ACE prints a warning and **proceeds with the deploy** — nothing is verified. Do not read a clean deploy as evidence that readiness was checked; check for the warning, or that `ci.sh --launch` exists. `LAUNCH_GATE=0` disables the gate outright.
 
 ## On deploy failure
 
@@ -158,7 +169,7 @@ It classifies the failure so a bad probe URL isn't mistaken for a crash:
 `VERIFY=1` additionally runs the `ace verify` agent after a deploy. It collects live facts read-only and triages real problems + improvements into `ROADMAP.md`, so the loop fixes them next pass.
 
 > [!NOTE]
-> Verify still runs per-merge even when a deploy was gate-skipped. Set `VERIFY=0` if you want it only on real deploys.
+> Verify still runs per-merge even when a deploy was gate-skipped — a gate-skip exits 0, so the loop carries on into the verify step. It does **not** run when `DEPLOY=0` or `deploy_kind` isn't `service`: the whole block is inside the `DEPLOY=1` branch, so `VERIFY=1` alone does nothing. Set `VERIFY=0` if you want it only on real deploys.
 
 ## Knob reference
 
@@ -167,8 +178,9 @@ It classifies the failure so a bad probe URL isn't mistaken for a crash:
 | `DEPLOY` | `0` | `1` = deploy after each merge (needs `deploy_kind=service` + a configured VPS) |
 | `DEPLOY_GATE` | `always` | `release` = only ship when `origin/main` has a new `v*` tag |
 | `DEPLOY_FORCE` | `0` | `1` = one-shot bypass of the gate (same as `ace deploy --force`) |
+| `LAUNCH_GATE` | `1` | `1` = run `ci.sh --launch` before promoting; a NO-GO blocks the deploy. Skipped with a warning if the project has no `--launch` tier. `0` = off |
 | `STOP_ON_DEPLOY_FAIL` | `1` | `1` = a failed deploy/health-check halts the loop; `0` = log + continue |
-| `VERIFY` | `0` | `1` = run `ace verify` (live triage → `ROADMAP.md`) after a deploy; advisory, never halts |
+| `VERIFY` | `0` | `1` = run `ace verify` (live triage → `ROADMAP.md`) after a deploy; advisory, never halts. Requires `DEPLOY=1` |
 | `VPS_HEALTH_URL` | `http://127.0.0.1:3000/` | post-deploy health probe, on the VPS (Go `api`: `/healthz`) |
 | `VPS_HEALTH_TIMEOUT` | `90` | seconds to become healthy |
 | `VPS_DEPLOY_DIR` | `$HOME/apps` | deploy dir is `<VPS_DEPLOY_DIR>/<name>` |

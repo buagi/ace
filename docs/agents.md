@@ -1,8 +1,8 @@
 # Agents
 
-ACE builds every feature with a fixed set of 12 agents: one **orchestrator** that plans and delegates, plus eleven subagents it calls to research, implement, test, review, and debate the work. The config is written to `~/.config/opencode/opencode.json` by `ace install` / `ace opencode`.
+ACE builds every feature with a fixed set of 12 agents: one **orchestrator** that plans and delegates, ten subagents it calls to research, implement, test, and review the work, and the `debater` — a second `mode: primary` agent the debate engine invokes directly (`opencode run --agent debater`), not one the orchestrator delegates to. The config is written to `~/.config/opencode/opencode.json` by `ace install` / `ace opencode`.
 
-The orchestrator runs on your chosen overseer brain and writes no code — it plans, delegates, and drives the loop. The subagents default to DeepSeek V4; any can be pointed at another provider with `MODEL_<agent>=<provider>/<model>` (e.g. the `cross-review` preset puts the critics on OpenRouter).
+The orchestrator runs on your chosen overseer brain and writes no code — it plans, delegates, and drives the loop. The other agents default to DeepSeek V4; the ten subagents can each be pointed at another provider with `MODEL_<agent>=<provider>/<model>` (e.g. the `cross-review` preset puts the critics on OpenRouter). **The `debater` is the exception** — it is not in `ACE_AGENTS` (`lib/install.sh:421`), so `MODEL_debater` is ignored by the override pass; its two sides are set with `DEBATE_MODEL_A` / `DEBATE_MODEL_B` instead. `opencode.json` is generated, so any `MODEL_<agent>` change only reaches your live crew after you re-run `ace opencode`.
 
 ## The roster
 
@@ -19,7 +19,7 @@ The orchestrator runs on your chosen overseer brain and writes no code — it pl
 | `alignment_reviewer` | every task (planner) + high-risk (critic) | Mission/values/audience critic — judges whether a change serves the [profile](profile.md). |
 | `conflict_resolver` | on a merge conflict | Resolves a PR's conflicts by preserving both sides' intent; escalates UNRESOLVABLE. |
 | `launch_readiness_reviewer` | once, before a live promotion | Operational-readiness gate. Verifies a tested restore, rollback, secrets separation, and spend caps → GO / NO-GO. |
-| `debater` | opt-in (`SPEC_DEBATE` / `REVIEW_DEBATE`), high-risk | Read-only side of a cross-model **debate** — one instance runs on your overseer (defender), one on an OpenRouter model (challenger), pressure-testing a spec or diff until they converge on the issues both accept. Default off; calibrate first. |
+| `debater` | opt-in (`SPEC_DEBATE` / `REVIEW_DEBATE`); spec debates are HIGH-risk-only | Read-only side of a cross-model **debate** — one instance runs on your overseer (defender), one on an OpenRouter model (challenger), pressure-testing a spec or diff until they converge on the issues both accept. `mode: primary` (opencode refuses a subagent here). Default off; calibrate first. **`DEBATE_MODEL_B` has no default** — unset, the debate skips fail-open with zero gaps. |
 
 **One spec, shared by the crew.** For a `[value]` feature the planner writes a single canonical spec to `.opencode/specs/<slug>.md` (filling `.opencode/spec-template.md`) — delegating the drafting to the read-only `researcher` on heavy/high-risk features so the research cost lands in a throwaway context, not the orchestrator's. It's the load-bearing artifact: the **implementer** reads it by path (§3-Out bounds scope, its increment's `AC:` ids are the Definition-of-Done, §C1 contract shapes are law), and the **test_engineer**, **reviewer**, and **verifier** read the same file — so acceptance criteria and cited integration points are one shared vocabulary, not re-derived per agent. A per-task "spec" is a *slice* of that one file (scope + the increment's ACs), never a second document. See [autorun.md → Feature specs](autorun.md#feature-specs--the-research-first-artifact).
 
@@ -28,7 +28,7 @@ The orchestrator runs on your chosen overseer brain and writes no code — it pl
 
 ## Overseer brain
 
-The orchestrator's model is your choice; the eleven subagents default to DeepSeek V4 (any can be repointed per `MODEL_<agent>`).
+The orchestrator's model is your choice; the other eleven agents default to DeepSeek V4 (the ten subagents can be repointed per `MODEL_<agent>`; the `debater` uses `DEBATE_MODEL_A`/`_B`).
 
 | Brain | Model id | Needs |
 |-------|----------|-------|
@@ -59,6 +59,8 @@ A commit lands only on **verifier PASS** and the required critics' **APPROVE**. 
 
 > [!NOTE]
 > When the profile sets `auto_merge: true` (the loop self-merges with no human gate) and the audience is `oss-public`, `end-customer`, or `enterprise`, there is no low-risk fast lane — every change is treated as high-risk.
+>
+> Be precise about what enforces this: the fast-lane suppression is an **instruction in the orchestrator's prompt** (`lib/install.sh:601`, "AUTO-ACCEPT SAFETY RAIL"), so it is as reliable as the overseer model following it — not a mechanical gate. The mechanical half of the same rail is in the generated `ci.sh`: under the same profile condition it promotes the security `[major]` warnings to hard blockers (`ACE_STRICT_SECURITY`, `lib/scaffold.sh:477-481`).
 
 ## The alignment critic
 
@@ -101,7 +103,7 @@ Scaffolded projects ship a shared test-support module to reuse:
 | Node | `tests/` | factories + helpers |
 | Python | `tests/conftest.py` | fixtures |
 
-`./ci.sh` reports **coverage of the changed code** as a signal — there is no blanket-percentage gate, which just invites gaming. High-stakes packages can be mutation-tested (`scripts/mutation.sh`) for a stronger signal than coverage. Tests always ship in the **same PR** as the code they cover.
+`./ci.sh` reports coverage as a signal — there is no blanket-percentage gate, which just invites gaming. What it actually prints is the **whole-project total**, not coverage scoped to the changed code: Go prints `go tool cover -func` on `coverage.out`, Node runs `vitest --coverage` only under `COVERAGE=1`, and Python adds `--cov` only when `pytest-cov` is installed. Reading it as "did the changed code get covered" is a judgement the agents make, not something the gate computes. High-stakes **Go** packages can be mutation-tested — `scripts/mutation.sh` (gremlins) is emitted by the Go scaffold only; Node and Python projects get no equivalent. Tests always ship in the **same PR** as the code they cover.
 
 > [!IMPORTANT]
 > After editing the agent config in `lib/install.sh`, run `ace opencode` to regenerate the live config, then restart opencode — it loads config at launch.
