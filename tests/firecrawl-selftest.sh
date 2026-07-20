@@ -118,7 +118,7 @@ grep -q '^FINAL true$' <<<"$out" || bad "empty-but-set FIRECRAWL_API_URL shadowe
 
 # SELF-HOSTED WINS when both are set (matches firecrawl-mcp), but it must be SAID so a paid key is never
 # silently bypassed.
-m="$(bash -c '. lib/core.sh >/dev/null 2>&1; ACE_SECRETS=/nonexistent; export FIRECRAWL_API_URL=http://127.0.0.1:3002 FIRECRAWL_API_KEY=fc-test; firecrawl_mode')"
+m="$(bash -c '. lib/consistency.sh >/dev/null 2>&1; ACE_SECRETS=/nonexistent; export FIRECRAWL_API_URL=http://127.0.0.1:3002 FIRECRAWL_API_KEY=fc-test; firecrawl_mode')"
 [ "$m" = local ] || bad "with BOTH set, mode must be 'local' (firecrawl-mcp lets the URL win); got: $m"
 
 # NONE: neither configured — disable and name the degraded backend.
@@ -137,6 +137,20 @@ grep -qF '. "$HERE/ui.sh"'   lib/swarm-run.sh || bad "swarm preflight does not S
 grep -qF '. "$HERE/core.sh"' lib/swarm-run.sh || bad "swarm preflight does not SOURCE core.sh — firecrawl_mode undefined ⇒ silent fleet-wide 'none'"
 bash -c 'set --; . lib/ui.sh >/dev/null 2>&1; . lib/core.sh >/dev/null 2>&1; . lib/consistency.sh >/dev/null 2>&1; declare -F firecrawl_mode >/dev/null && declare -F say >/dev/null' \
   || bad "the swarm subshell recipe does not resolve firecrawl_mode + say"
+
+# THE AUTOLOOP CHILD — the context a REAL run exposed and every prior test missed. autoloop.sh runs as a
+# child process (scripts/auto-loop.sh) that CANNOT source core.sh (core installs an EXIT trap), so when
+# firecrawl_mode lived in core.sh, firecrawl_ensure and the SPEC_LINT_NET resolver both got `none` and the
+# run DISABLED research on a valid cloud key. firecrawl_mode + firecrawl_secret now live in consistency.sh,
+# which autoloop.sh:20 sources. Pin it: they must resolve after sourcing ONLY what the autoloop child does.
+_autoloop_ctx="$(bash -c 'set --; . lib/consistency.sh >/dev/null 2>&1
+  command -v firecrawl_mode >/dev/null 2>&1 && command -v firecrawl_secret >/dev/null 2>&1 && echo OK' 2>/dev/null)"
+[ "$_autoloop_ctx" = OK ] \
+  || bad "firecrawl_mode/firecrawl_secret are NOT defined after sourcing consistency.sh alone — the autoloop child (which cannot source core.sh) resolves 'none' and disables research on a valid key"
+# And they must NOT be defined ONLY in core.sh (the regression): sourcing core without consistency is the
+# menu/install path, which is fine, but the autoloop path is consistency-only and is the one that broke.
+grep -qE '^firecrawl_mode\(\)' lib/consistency.sh \
+  || bad "firecrawl_mode is not DEFINED in lib/consistency.sh — it must live where the autoloop child can reach it, not only in core.sh"
 
 # --- ace keys must be able to SET the key (a key you cannot set is not settable) -----------------------
 grep -q 'FIRECRAWL_API_KEY' lib/install.sh || bad "ace keys does not handle FIRECRAWL_API_KEY"
