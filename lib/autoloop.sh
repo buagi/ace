@@ -126,7 +126,22 @@ _wtag(){ # stable per-worker colour (any N) so workers are eye-trackable in tail
   esac
   printf '\033[%sm[worker %s · %s]\033[0m ' "$wc" "${SWARM_WORKER#w}" "${SWARM_FEATURE:-?}"; }
 say(){ local tag=""; [ -n "${SWARM_WORKER:-}" ] && tag="$(_wtag)"
-  printf '\n%s[auto-loop %s]%s %b%s\n' "$_LC_HDR" "$(date +%H:%M:%S)" "$_LC_RST" "$tag" "$*"; _ev "${_LVL:-info}" "$*"; }
+  printf '\n%s[auto-loop %s]%s %b%s\n' "$_LC_HDR" "$(date +%H:%M:%S)" "$_LC_RST" "$tag" "$*"; _ev "${_LVL:-info}" "$*";
+}
+
+# phase <n> <of> <label> [detail] — a PHASE is structurally different from a detail line and must LOOK it.
+# say() colours only the "[auto-loop HH:MM:SS]" prefix and prints the body raw, so every line of a 3-hour
+# run arrived identical and white: no way to tell "starting the debate over 9 specs" from a routine note.
+# This gives the run a visible spine, lights the dashboard cell, and stamps a metric so the phase is
+# attributable afterwards (half of one real run was unattributed wall-clock).
+phase() {
+  local n="$1" of="$2" label="$3" detail="${4:-}"
+  ACE_PHASE_N="$n"; ACE_PHASE_LABEL="$label"; export ACE_PHASE_N ACE_PHASE_LABEL
+  printf '\n%s%s  ▰▰▶  PHASE %s/%s · %s%s\n' "${_LC_HDR}" "${C_BOLD:-}" "$n" "$of" "$label" "${_LC_RST}" >&2
+  [ -n "$detail" ] && printf '%s        %s%s\n' "${C_GREY:-}" "$detail" "${C_RESET:-}" >&2
+  _ev "${_LVL:-info}" "PHASE $n/$of · $label${detail:+ — $detail}"
+  return 0
+}
 # dashboard signal: which agent the bash loop is currently driving (best-effort — the 4 critics run INSIDE
 # opencode and are invisible to this loop, so only orchestrator/implementer/verifier/conflict light up).
 # `ace loop dash` reads .opencode/.agents to colour the grid. Fail-soft; never affects the loop.
@@ -408,6 +423,7 @@ Fix ONLY the flagged gaps in the named '.opencode/specs/<slug>.md' files. Do NOT
   # Bypasses the OBJECTIVES/mtime guards.
   if [ "${REANALYZE:-0}" = 1 ]; then
     [ -f ROADMAP.md ] || { say "reanalyze: no ROADMAP.md — nothing to re-assess."; return 0; }
+    phase 1 5 "snapshot the current plan" "baseline for the before/after comparison"
     . "$(dirname "$_SWARM_SH")/reanalyze.sh" 2>/dev/null && reanalyze_snapshot "$PWD" 2>/dev/null || true
     if ! grep -qE '^[[:space:]]*- \[ \] ' ROADMAP.md 2>/dev/null; then say "reanalyze: no OPEN (uncompleted) ROADMAP items to re-assess."; return 0; fi
     say "reanalyze: re-deriving the OPEN uncompleted ROADMAP items from scratch (research → spec → slice)…"
@@ -442,6 +458,7 @@ spec_gate_solo(){
   _solo_specs(){ grep -oE 'Spec:[[:space:]]*[^ )]+\.md' ROADMAP.md 2>/dev/null | sed -E 's/^Spec:[[:space:]]*//' \
                   | sort -u | while IFS= read -r s; do [ -f "$s" ] && printf '%s\n' "$s"; done; }
   specs="$(_solo_specs)"; [ -n "$specs" ] || return 0
+  phase 3 5 "spec-lint + bounded re-spec" "$(printf '%s\n' "$specs" | grep -c .) spec(s) in scope · deterministic gaps first, so the debate sees lint-clean specs"
   slint="$(REPO="$PWD" bash "$_SWARM_SH" spec-lint $specs 2>/dev/null)"
   # 1) deterministic gaps → bounded re-spec FIRST, so the quality layer below sees lint-CLEAN specs. (Freshly
   # re-derived specs — e.g. a REANALYZE pass — almost always start with a gap; debating BEFORE this step skipped
@@ -457,10 +474,11 @@ spec_gate_solo(){
   local extra=""
   # C1: a check that did NOT run must say so. SPEC_DEBATE defaults to 0, so the common case was a silent
   # branch -- a full run would complete green having debated nothing, with no line anywhere admitting it.
+  phase 4 5 "cross-model debate" "$([ "${SPEC_DEBATE:-0}" = 1 ] && printf '%s spec(s) eligible' "$(printf '%s\n' "$specs" | grep -c .)" || printf 'DISABLED (SPEC_DEBATE=0)')"
   [ "${SPEC_DEBATE:-0}" = 1 ] || say "spec-debate: DISABLED (SPEC_DEBATE=0) — specs are NOT being cross-model debated."
   if [ "${SPEC_DEBATE:-0}" = 1 ]; then
     local _dsh deb; _dsh="$(dirname "$_SWARM_SH")/debate.sh"
-    say "spec-debate: cross-model dialogue on the lint-green HIGH-risk spec(s) — each turn can take minutes; per-turn progress follows."
+    say "spec-debate: cross-model dialogue over the lint-green spec(s) — each turn can take minutes; per-turn progress follows."
     for sp in $specs; do
       grep -q "^SPECGAP $(basename "$sp" .md) " <<<"$slint" && continue   # still gappy after re-spec → skip
       # stderr is NOT noise here: debate.sh puts its whole per-turn narration there (challenger/defender
@@ -1379,12 +1397,13 @@ metric "run_start,,$(orch_provider 2>/dev/null) gate=${MERGE_GATE:-remote},0,0,0
 kanban_sync || true   # opt-in (HERMES_KANBAN=1): mirror the initial ROADMAP to a chat-visible kanban board
 agent_state orchestrator   # dashboard: start with the planner lit (ace loop dash)
 [ "${REANALYZE:-0}" = 1 ] && LOOP_SYNC_ONLY=1   # re-assessment is plan-only by design: re-derive the breakdown, stop, let the user inspect (ace reanalyze report) before implementing
+[ "${REANALYZE:-0}" = 1 ] && phase 2 5 "re-derive the breakdown" "research -> spec -> increments for every OPEN item"
 sync_objectives            # decompose any newly-added OBJECTIVES goal into ROADMAP tasks BEFORE working the queue
 # REANALYZE gets the FULL planning pipeline on the freshly re-derived specs: deterministic spec-lint gate + the
 # cross-model DEBATE (SPEC_DEBATE=1) + one bounded re-spec — the same gate a normal solo run gets, run HERE before
 # the plan-only exit (which would otherwise skip it). No-op unless specs exist; the debate needs SPEC_DEBATE=1 + keys.
 [ "${REANALYZE:-0}" = 1 ] && spec_gate_solo
-[ "${LOOP_SYNC_ONLY:-0}" = 1 ] && { say "plan-only sync done — exiting.$([ "${REANALYZE:-0}" = 1 ] && printf '  Compare: ace reanalyze report')"; write_run_summary 2>/dev/null || true; exit 0; }
+[ "${LOOP_SYNC_ONLY:-0}" = 1 ] && { phase 5 5 "report" "before/after comparison"; say "plan-only sync done — exiting.$([ "${REANALYZE:-0}" = 1 ] && printf '  Compare: ace reanalyze report')"; write_run_summary 2>/dev/null || true; exit 0; }
 spec_gate_solo             # Part H: solo gets the same deterministic spec gate (+ optional rubric) the swarm coordinator runs
 while :; do
   # janitor: reconcile drift + reclaim disk — git main↔origin sync, gitnexus stale branch-graph prune

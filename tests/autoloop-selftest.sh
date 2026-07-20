@@ -214,4 +214,23 @@ grep -q 'SPEC_LINT_NET' lib/menu.sh \
   && ok "SPEC_LINT_NET is settable from 'ace settings'" \
   || no "SPEC_LINT_NET is not in ace settings — an undiscoverable knob is an unused knob"
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "run display:"
+# The plan-only path called agent_state ONCE and emitted no stage markers, so `ace loop dash` showed the
+# orchestrator lit and nothing changing for 3.5 hours, and say() coloured only the timestamp prefix — every
+# line of a long run arrived identical and white. Phases give the run a visible spine.
+grep -qE '^phase\(\) \{' "$AL" \
+  && ok "phase() exists (a run has a visible spine, not one undifferentiated colour)" \
+  || no "no phase() — the plan-only run has no stage markers at all"
+_ph_count="$(grep -cE '(^|[[:space:]])phase [0-9]+ 5 ' <<<"$(sed -E 's/(^|[[:space:]])#.*$//' "$AL")")"
+[ "${_ph_count:-0}" -eq 5 ] \
+  && ok "all 5 plan-only phases are wired ($_ph_count call sites)" \
+  || no "expected 5 phase call sites in the plan-only path, found ${_ph_count:-0} — a skipped number reads as a lost stage"
+# 3 and 4 must fire even on the clean/disabled paths, or the spine develops holes exactly when a run is
+# uneventful — which is when a silent screen is most alarming.
+grep -qE '^\s+phase 3 5 ' <<<"$(sed -E 's/(^|[[:space:]])#.*$//' "$AL")" \
+  && ok "phase 3 is emitted before the gap branch (fires whether or not there are gaps)" \
+  || no "phase 3 is inside a conditional — a clean spec set would skip the number"
+
 [ "$fail" = 0 ] && { echo "✓ autoloop selftest OK"; exit 0; } || { echo "✗ autoloop selftest FAILED"; exit 1; }
