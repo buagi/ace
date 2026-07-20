@@ -21,7 +21,34 @@
 # code alone is worthless when the block is served as a successful page.
 _RESEARCH_DENY_RE='access denied|requires javascript|enable javascript|just a moment|checking your browser|verify you are human|are you a robot|captcha|cf-browser-verification|attention required|request blocked|rate limit exceeded|too many requests|403 forbidden|unusual traffic'
 
-# research_url_status <url> -> prints: live | blocked | dead | unchecked
+# A TITLE that announces an auth wall. Title-scoped ON PURPOSE: bodies mention "sign in" everywhere (every
+# nav bar has a link), so a body-scoped rule would flag half the web. A <title> of "Sign in to GitHub" is
+# decisive. Measured: github.com/settings/profile returns 200 with 1249 chars and exactly this title.
+# An auth/error wall's title IS the announcement ("Sign in to GitHub"); a documentation page's title is a
+# TOPIC ("Error handling", "Login flow design notes", "404 pages: best practice"). So the phrase must fill
+# the WHOLE first title segment, not merely start it. A prefix match flagged all three of those real pages
+# and still missed "Page Not Found" -- too loose and too tight at once.
+_RESEARCH_AUTHTITLE_RE='^(sign ?in|log ?in|signin|login|sign ?up|register|authenticate)( to .*)?$|^(page )?not found$|^40[0-9]([[:space:]]*[-–—:]?[[:space:]]*(forbidden|not found|unauthorized|error))?$|^(access )?(denied|forbidden|unauthorized)$|^error$'
+
+# research_title_segment <title> — the first segment, before a site-name separator, trimmed and lowercased.
+# "Sign in to GitHub · GitHub" -> "sign in to github";  "Error handling | Docs" -> "error handling".
+research_title_segment() {
+  printf '%s' "${1:-}" | sed -E 's/[[:space:]]*[|·—–][[:space:]]*.*$//' \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | tr 'A-Z' 'a-z'
+}
+
+# research_same_page <requested> <effective> — 0 when the effective URL is the SAME document.
+# Normalises the differences that carry no meaning: scheme, a trailing slash, a leading www, case in the
+# host, and the fragment. Everything else -- a changed PATH above all -- means a different document.
+# Without this, example.com -> example.com/ would read as a redirect and flag every clean fetch.
+research_same_page() {
+  # LOWERCASE FIRST: stripping `www.` before folding case left "WWW.Example.com" intact, so a purely
+  # cosmetic host difference read as a redirect — which would have flagged clean fetches as failures.
+  _rn(){ printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/^https?:\/\///; s/#.*$//; s/^www\.//; s/\/+$//'; }
+  [ "$(_rn "${1:-}")" = "$(_rn "${2:-}")" ]
+}
+
+# research_url_status <url> -> prints: live | blocked | authwall | redirected | dead | unchecked
 #   live      2xx and the body does not look like a denial/challenge page
 #   blocked   reachable but served a denial/challenge (INCLUDING a 200 that says "Access denied")
 #   dead      4xx/5xx, DNS failure, connection refused
@@ -38,20 +65,22 @@ research_url_status() {
   # Range still finish inside --max-time.
   body="$(curl -sL --max-time "${RESEARCH_URL_TIMEOUT:-8}" -r 0-65535 \
             -A "${RESEARCH_UA:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36}" \
-            -w '\n__CODE__%{http_code}' "$url" 2>/dev/null)"
+            -w '\n__CODE__%{http_code}__EFF__%{url_effective}' "$url" 2>/dev/null)"
+  local eff="${body##*__EFF__}"
+  body="${body%__EFF__*}"
   code="${body##*__CODE__}"
   body="${body%__CODE__*}"
   # Judge the STATUS, not curl's exit code: a truncated read is a successful read for our purposes.
   # 206 Partial Content is the expected reply to the range request. Classification itself lives in
   # research_classify so it can be tested offline.
-  research_classify "$code" "$body"
+  research_classify "$code" "$body" "$url" "$eff"
 }
 
 # research_classify <http-code> <body> -> live | blocked | dead
 # Split out from research_url_status so the RULES can be tested without a network round-trip. A test that
 # re-implements the logic it is testing proves only that the copy agrees with itself.
 research_classify() {
-  local code="${1:-}" body="${2:-}"
+  local code="${1:-}" body="${2:-}" want="${3:-}" got="${4:-}" title
   case "$code" in
     2*) ;;
     *)  printf 'dead'; return ;;
@@ -59,6 +88,15 @@ research_classify() {
   # A 2xx that reads like a challenge is NOT content. Only the first 4000 chars: a denial page is short and
   # says so up front, while a long legitimate document could mention "captcha" in passing.
   if grep -qiE "$_RESEARCH_DENY_RE" <<<"${body:0:4000}"; then printf 'blocked'; return; fi
+  # LAYER: the TITLE announces an auth/error wall. A login page arrives at 200 with plenty of real text and
+  # no denial phrase -- measured at 1249 chars -- so neither the status code nor the body regex sees it.
+  title="$(grep -oiE '<title[^>]*>[^<]{0,120}' <<<"$body" | head -1 | sed -E 's/<title[^>]*>//I')"
+  if [ -n "$title" ] && grep -qE "$_RESEARCH_AUTHTITLE_RE" <<<"$(research_title_segment "$title")"; then printf 'authwall'; return; fi
+
+  # LAYER: we did not land where we asked. A redirect to a DIFFERENT path means the content is some other
+  # document -- a login page, a generic landing page, a consent wall -- however genuine it looks.
+  if [ -n "$want" ] && [ -n "$got" ] && ! research_same_page "$want" "$got"; then printf 'redirected'; return; fi
+
   # An empty 200 is not evidence of anything either.
   [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ] || { printf 'blocked'; return; }
   printf 'live'
@@ -105,6 +143,8 @@ research_spec_sources() {
       live)      ;;
       blocked)   echo "SPECGAP $slug SRC_LIVE cited source is BLOCKED (denial/challenge page served with a success status): $url — mark the claim 'UNVERIFIED —' or cite a reachable source" ;;
       dead)      echo "SPECGAP $slug SRC_LIVE cited source is UNREACHABLE (4xx/5xx/DNS): $url — invented URL, or the source moved" ;;
+      authwall)  echo "SPECGAP $slug SRC_LIVE cited source is an AUTH/ERROR WALL (title: sign-in or error page, served at 200): $url — the content is not the document; mark 'UNVERIFIED —' or cite a public source" ;;
+      redirected) echo "SPECGAP $slug SRC_LIVE cited source REDIRECTS to a different page (you get some other document, however genuine it looks): $url" ;;
       unchecked) echo "SPECGAP $slug SRC_LIVE UNCHECKED — could not verify: $url" ;;
     esac
   # Trailing punctuation is NOT part of the URL. `(source: https://x.org/, daily bars)` captured the comma,

@@ -46,6 +46,37 @@ done
 long="$(printf 'Legitimate documentation. %.0s' $(seq 1 300))captcha"
 [ "$(research_classify 200 "$long")" = live ] || bad "a long legitimate doc mentioning 'captcha' late was misclassified as blocked"
 
+# --- AUTH-WALL + REDIRECT layers (offline, via the real classifier) --------------------------------------
+# A login wall arrives at HTTP 200 with 1249 chars of genuine text and no denial phrase, so neither the
+# status code nor the body regex sees it. Two mechanical signals do: the TITLE, and landing on a different
+# path than requested.
+_html(){ printf '<html><head><title>%s</title></head><body>%s</body></html>' "$1" "genuine looking documentation body text"; }
+
+# Recall: real walls must be caught.
+for t in "Sign in to GitHub · GitHub" "Log in — Example" "Page Not Found" "Sign in" "Unauthorized"; do
+  [ "$(research_classify 200 "$(_html "$t")" 'https://x.test/p' 'https://x.test/p')" = authwall ] \
+    || bad "auth/error wall title not caught: '$t'"
+done
+
+# Precision: a docs page whose TOPIC is auth or errors must NOT be flagged. The first regex matched all
+# three of these — a prefix match cannot tell an announcement from a topic.
+for t in "Error handling | Firecrawl Docs" "Login flow design notes" "404 pages: best practice" "Sign-in UX patterns (blog)" "Errors and retries — API reference"; do
+  got="$(research_classify 200 "$(_html "$t")" 'https://x.test/p' 'https://x.test/p')"
+  [ "$got" = live ] || bad "legitimate docs page flagged as '$got' by its title: '$t'"
+done
+
+# Redirect: a changed PATH is a different document; cosmetic differences are not.
+[ "$(research_classify 200 "$(_html 'Docs')" 'https://github.com/settings/profile' 'https://github.com/login?return_to=x')" = redirected ] \
+  || bad "a redirect to a different PATH was not detected — this is how a login page passes as the document"
+for pair in "https://example.com|https://example.com/" \
+            "http://example.com/a|https://example.com/a" \
+            "https://WWW.Example.com/a|https://example.com/a" \
+            "https://example.com/a|https://example.com/a#frag"; do
+  w="${pair%|*}"; g="${pair#*|}"
+  [ "$(research_classify 200 "$(_html 'Docs')" "$w" "$g")" = live ] \
+    || bad "cosmetic URL difference treated as a redirect ($w -> $g) — this would flag every clean fetch"
+done
+
 # --- citation extraction: precision, no network ----------------------------------------------------------
 d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
 cat > "$d/s.md" <<'MD'
@@ -111,6 +142,8 @@ grep -qF "CHECK metadata.statusCode ON EVERY FETCH" lib/install.sh \
   || bad "agents are not told to check metadata.statusCode — a 404 returns success=true WITH plausible content"
 grep -qF "sign-in/login page" lib/install.sh \
   || bad "agents are not told a login/consent/paywall page is a failed fetch — it arrives at 200 with real text"
+grep -qF "COMPARE metadata.sourceURL" lib/install.sh \
+  || bad "agents are not told to compare sourceURL with url — a redirect to a login page is otherwise invisible to them"
 
 if [ "$fail" = 0 ]; then
   echo "research-honesty-selftest: PASS — denial pages classified as blocked (even at 200/success), precision pins hold, gate wired opt-in, agents instructed$([ "$skipped" = 1 ] && printf ' (network tests SKIPPED — offline)')"
