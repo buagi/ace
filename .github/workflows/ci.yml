@@ -65,3 +65,7 @@ jobs:
       # cross-model dialogue per spec per run. Both directions are pinned.
       - name: debate eligibility (HIGH-risk + user-facing · exclusions · knobs · skips narrated)
         run: bash tests/debate-eligibility-selftest.sh
+      # A denial page served with HTTP 200 + success=true is indistinguishable from content to every layer
+      # downstream. Pins the classifier, its precision, and that the agents are told.
+      - name: research honesty (denial pages · citation precision · agent rules)
+        run: bash tests/research-honesty-selftest.sh

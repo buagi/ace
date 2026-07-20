@@ -549,6 +549,22 @@ swarm_spec_lint() {
     awk '/^## 1\./{f=1} /^## 7\./{f=0} f' "$f" | grep -qE '(^|[^A-Za-z])(TBD|TODO|FIXME|XXX)([^A-Za-z]|$)' \
       && _gap NO_TBD "TBD/TODO/FIXME/XXX inside §1-§6 (allowed only in §7)"
     _sec 2 "$f" | grep -qE '\(source:' || _gap SOURCED "§2 prior-art missing a '(source: …, …)' citation"
+      # SRC_LIVE — the external twin of CITE_REAL. CITED/CITE_REAL prove in-repo claims; nothing proved a
+      # claim about the outside world, so a fabricated API contract passed every gate. Worse, Firecrawl
+      # CLOUD returns success+200 for a body that says "Access denied" (measured on stooq.com), so the
+      # agent that wrote the citation could not tell either. OPT-IN because it makes network calls inside
+      # a gate: SPEC_LINT_NET=1. Fail-open and bounded; it reports UNCHECKED rather than clean when it
+      # cannot decide.
+      if [ "${SPEC_LINT_NET:-0}" = 1 ] && [ -f "${_ACE_LIB:-$(dirname "${BASH_SOURCE[0]}")}/research.sh" ]; then
+        # shellcheck disable=SC1090
+        . "${_ACE_LIB:-$(dirname "${BASH_SOURCE[0]}")}/research.sh" 2>/dev/null || true
+        if command -v research_spec_sources >/dev/null 2>&1; then
+          while IFS= read -r _srcgap; do
+            [ -n "$_srcgap" ] || continue
+            _gap SRC_LIVE "${_srcgap#SPECGAP * SRC_LIVE }"
+          done < <(research_spec_sources "$f" 2>/dev/null | sed -E 's/^SPECGAP [^ ]+ SRC_LIVE //')
+        fi
+      fi
   done
   printf 'spec-lint: %d spec(s) · %d gap(s)\n' "$n" "$gaps"
   [ "$gaps" -eq 0 ]

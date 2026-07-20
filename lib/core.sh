@@ -377,3 +377,42 @@ vps_save() {
     printf 'export VPS_DOMAIN=%q\n' "${VPS_DOMAIN:-}"; } > "$ACE_VPS"
   chmod 600 "$ACE_VPS"; log "saved VPS config to $ACE_VPS"
 }
+
+# ---------------------------------------------------------------------------------------------------
+# firecrawl_mode — the SINGLE source of truth for which research backend this machine has.
+#
+# Three layers used to decide this independently and could disagree: write_opencode_config probed a
+# hardcoded loopback URL, firecrawl_ensure probed again at run start, and nothing knew about a cloud key
+# at all. Divergent copies of one decision is how the MCP ended up disabled while the crawler was running.
+#
+#   local  — FIRECRAWL_API_URL points somewhere (self-hosted). Reachability is a SEPARATE question.
+#   cloud  — no URL, but an API key: firecrawl-mcp defaults to the cloud endpoint (Fire-engine, anti-bot).
+#   none   — neither: research degrades to webfetch (single URL, no JS render, no search).
+#
+# URL WINS when both are set, because that is what firecrawl-mcp itself does ("If not provided, the cloud
+# API will be used"). Callers narrate that case so a paid cloud key is never silently bypassed by a stale
+# self-hosted URL -- exactly the state this machine was in.
+#
+# EMPTY-BUT-SET IS NOT SET. `export FIRECRAWL_API_URL=` leaves the variable defined-and-empty; treating
+# that as a self-hosted target would silently override a cloud key with a URL pointing nowhere. Whitespace
+# is stripped for the same reason (a trailing space from a hand-edited secrets.env is not a URL).
+firecrawl_mode() {
+  local url key
+  url="$(firecrawl_secret FIRECRAWL_API_URL)"
+  key="$(firecrawl_secret FIRECRAWL_API_KEY)"
+  if   [ -n "$url" ]; then printf 'local'
+  elif [ -n "$key" ]; then printf 'cloud'
+  else                     printf 'none'
+  fi
+}
+
+# firecrawl_secret <VAR> — the live env value, falling back to secrets.env, whitespace-stripped.
+# The fallback matters: a headless/systemd run does not source ~/.bashrc, so a key saved by `ace keys`
+# would be invisible and the run would silently drop to webfetch.
+firecrawl_secret() {
+  local v="${!1:-}"
+  if [ -z "$(printf '%s' "$v" | tr -d '[:space:]')" ]; then
+    v="$(grep -E "^export $1=" "${ACE_SECRETS:-$HOME/.config/ace/secrets.env}" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'')"
+  fi
+  printf '%s' "$(printf '%s' "$v" | tr -d '[:space:]')"
+}
