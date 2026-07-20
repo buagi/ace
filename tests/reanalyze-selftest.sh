@@ -89,6 +89,68 @@ printf '%s' "$outsq" | grep -qF "spec-lint GAPS/spec $rb → $ra" \
 printf '%s' "$out" | grep -q 'MORE spec gaps per spec' \
   || { bad "a measured rate increase ($rb → $ra) must produce the regression verdict"; printf '%s\n' "$out" | grep -i verdict; }
 
+# 3b) THE GATE SCOPE (D1). The headline gaps number and the verdict must be computed over the specs the run
+# will ACTUALLY act on — the ones a ROADMAP item points at via `Spec:` (autoloop.sh `_solo_specs`, shared as
+# swarm.sh `swarm_roadmap_specs`) — NOT over `.opencode/specs/*.md`. Measured on trading-portal those are 10
+# files carrying 1 gap versus 157 carrying 2638, so the report printed a headline and a VERDICT for a
+# population 15x the gate's, ~147 of them pre-template specs no run will ever touch.
+#
+# The decisive fixture is an UNLINKED, maximally-gappy legacy spec: it is in the tree, so a whole-tree lint
+# must see it, and it is in no ROADMAP item, so the gate must not. Assert the gate number is UNMOVED by it and
+# the legacy number moves a lot. Compare against the lint run DIRECTLY over the roadmap-linked set, so the
+# assertion is pinned to the gate's real output rather than to a constant that would need updating.
+gate_only="$ga"; legacy_only="$(_jget legacy_gaps_after "$js")"
+printf 'a pre-template legacy spec, no template tag, no sections at all — nothing but this line.\n' \
+  > "$d/.opencode/specs/legacy-orphan.md"
+js2="$(RA_REPO="$d" bash -c 'source "'"$ROOT"'/lib/reanalyze.sh"; ace_reanalyze_report --json' 2>&1)"
+ga2="$(_jget gaps_after "$js2")"; lg2="$(_jget legacy_gaps_after "$js2")"; act2="$(_jget active_specs_after "$js2")"
+[ "$ga2" = "$gate_only" ] \
+  || bad "GATE SCOPE BROKEN: adding an UNLINKED spec to the tree changed the headline gaps ($gate_only → $ga2). The report is measuring .opencode/specs/*.md, not the ROADMAP-linked set the gate lints"
+[ "${lg2:-0}" -gt "${legacy_only:-0}" ] 2>/dev/null \
+  || bad "the legacy backlog number must SEE the whole tree (expected > $legacy_only, got $lg2) — otherwise the two rows are the same measurement twice"
+[ "$act2" = 2 ] || bad "active_specs_after must count only ROADMAP-linked specs (expected 2, got '$act2')"
+# ...and the gate number must equal what the gate itself computes, run directly. This is the acceptance
+# criterion in the form the reader can re-run by hand.
+gate_direct="$( cd "$d" && REPO="$d" bash "$ROOT/lib/swarm.sh" spec-lint \
+                  $(bash "$ROOT/lib/swarm.sh" roadmap-specs ROADMAP.md) 2>/dev/null | grep -c '^SPECGAP' )"
+[ "$ga2" = "$gate_direct" ] \
+  || bad "reported gate-scope gaps ($ga2) ≠ swarm.sh spec-lint over the roadmap-linked specs ($gate_direct)"
+# the whole-tree lint must genuinely DIFFER here, or the assertion above proves nothing
+tree_direct="$( cd "$d" && REPO="$d" bash "$ROOT/lib/swarm.sh" spec-lint .opencode/specs/*.md 2>/dev/null | grep -c '^SPECGAP' )"
+[ "$tree_direct" != "$gate_direct" ] \
+  || bad "FIXTURE TOO WEAK: whole-tree gaps ($tree_direct) == gate-scope gaps ($gate_direct), so this test could not tell the two populations apart"
+# the rendered report must LABEL the legacy number as unjudged — an unlabelled second number is the defect
+outsq2="$(RA_REPO="$d" bash -c 'source "'"$ROOT"'/lib/reanalyze.sh"; ace_reanalyze_report' 2>&1 | tr -s ' ')"
+printf '%s' "$outsq2" | grep -qF "legacy backlog gaps" || bad "the whole-tree number must still be shown, as a labelled legacy backlog"
+printf '%s' "$outsq2" | grep -qF "NOT judged"           || bad "the legacy backlog row must say it does not feed the verdict"
+printf '%s' "$outsq2" | grep -qF "ACTIVE specs"         || bad "the report must show the gate's scope (ACTIVE specs) as its own row"
+rm -f "$d/.opencode/specs/legacy-orphan.md"
+
+# 3c) ZERO ROADMAP-LINKED SPECS is an explicit state, never a 0-gaps all-clear. A tree full of specs that no
+# ROADMAP item references means the gate would lint NOTHING on the next run — reporting that as "0 gaps" would
+# be the most misleading output this module could produce, since it is indistinguishable from a clean gate.
+z="$(mktemp -d)"; mkdir -p "$z/.opencode/specs"
+printf '# ROADMAP\n## Next\n- [ ] do a thing  Files: src/a.ts\n' > "$z/ROADMAP.md"
+cp "$ROOT/tests/debate-sandbox/specs/vague-acs.md" "$z/.opencode/specs/vague.md"
+RA_REPO="$z" bash -c 'source "'"$ROOT"'/lib/reanalyze.sh"; reanalyze_snapshot "'"$z"'"' >/dev/null 2>&1
+cp "$ROOT/tests/debate-sandbox/specs/strong-authz.md" "$z/.opencode/specs/authz.md"   # tree grows, still unlinked
+outz="$(RA_REPO="$z" bash -c 'source "'"$ROOT"'/lib/reanalyze.sh"; ace_reanalyze_report' 2>&1)"
+jsz="$(RA_REPO="$z" bash -c 'source "'"$ROOT"'/lib/reanalyze.sh"; ace_reanalyze_report --json' 2>&1)"
+[ "$(_jget gaps_after "$jsz")" = null ] \
+  || bad "with NO roadmap-linked specs, gaps_after must be null (unmeasured), not a number: '$(_jget gaps_after "$jsz")'"
+[ "$(_jget active_specs_after "$jsz")" = 0 ] || bad "active_specs_after must be 0 when the ROADMAP links nothing"
+case "$(_jget legacy_gaps_after "$jsz")" in ''|null) bad "the legacy backlog must still be MEASURED when the gate scope is empty — the tree has specs" ;; esac
+printf '%s' "$outz" | grep -q 'NO ACTIVE SPECS' \
+  || { bad "an empty gate scope must be named explicitly as 'NO ACTIVE SPECS'"; printf '%s\n' "$outz" | grep -i verdict; }
+printf '%s' "$outz" | grep -qE 'cleaner breakdown|same gaps/spec|MORE spec gaps' \
+  && { bad "REGRESSION: an empty gate scope produced a comparison verdict — nothing was measured"; printf '%s\n' "$outz" | grep -i verdict; }
+printf '%s\n' "$outz" | tr -s ' ' | grep -qF 'spec-lint GAPS 0' \
+  && bad "REGRESSION: an empty gate scope rendered as 0 gaps — indistinguishable from a clean gate"
+rm -rf "$z"
+
+printf '%s' "$out" | grep -q 'MORE spec gaps per spec' \
+  || { bad "a measured rate increase ($rb → $ra) must produce the regression verdict"; printf '%s\n' "$out" | grep -i verdict; }
+
 # 4) --json parses + carries the structural deltas
 if command -v jq >/dev/null 2>&1; then
   printf '%s' "$js" | jq -e '.captured==true and .specs_new==1 and .specs_changed==1 and .open_before==2 and .open_after==3

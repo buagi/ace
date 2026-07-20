@@ -42,7 +42,7 @@ Two rules from it bind directly on this page:
 - **A test that nothing runs is not a gate** (B2). Wire it into `.github/workflows/ci.yml` in the **same commit**. A suite once existed, passed locally against a dirty tree, and was in no workflow — main was red while CI was green.
 
 > [!WARNING]
-> **Not gates today.** `tests/hygiene-selftest.sh`, `tests/scorecard-selftest.sh` and `tests/reanalyze-selftest.sh` are present in `tests/` but appear in **no workflow**. Run them by hand until they're wired; don't read a green CI as covering them. Nightly `flake-check` does invoke all three, but only checks that they decide *consistently* — a stably-RED suite passes it (see [below](#flake-check--the-gate-that-watches-the-gates)).
+> **Not gates today.** `tests/hygiene-selftest.sh`, `tests/scorecard-selftest.sh` and `tests/reanalyze-selftest.sh` are present in `tests/` but appear in **no workflow**. Run them by hand until they're wired; don't read a green CI as covering them. Nightly `flake-check` does invoke all three, and since 2026-07-20 a stably-RED suite **fails** it (see [below](#flake-check--the-gate-that-watches-the-gates)) — so a permanently-broken suite is caught there even while it sits in no per-PR workflow.
 
 ### `bash-traps` — what the static gate does and does not cover
 
@@ -69,40 +69,40 @@ bash tests/flake-check.sh --runs 10       # each suite N times (default 8); fail
 ### `flake-check` — the gate that watches the gates
 
 Tier 1 runs each suite **once**, so a suite that fails a few percent of the time merges green and then reds
-somebody else's unrelated PR, where it reads as *"your change broke it"*. `flake-check` runs each suite N times
-and fails any suite that doesn't decide the same way every time. It distinguishes **flaky** (mixed exit codes)
-from **stable RED** (a real failure) — conflating the two sends people hunting a race that isn't there.
+somebody else's unrelated PR, where it reads as *"your change broke it"*. `flake-check` runs each suite N
+times (default **8**) and fails any suite that doesn't decide the same way every time.
 
-It exists because it caught one: `prompt-contracts` shipped a `printf "$body" | grep -qF` under `set -o
-pipefail`, which returns 141 when grep exits before printf finishes writing — **2 failures in 60 runs**, invisible
-to single-run CI. Deliberately **empirical, not static**: the static rule for that shape was prototyped and
-measured at 95 repo-wide hits (58 even when tightened to unbounded variables), nearly all safe because the data
-sits far below the 64 KB pipe buffer. An error-level gate at that false-positive rate gets switched off, and a
-switched-off gate protects nothing. Running the suites repeatedly costs minutes and catches the whole class —
-SIGPIPE races, clock/timezone dependence, ordering, temp-path collisions, concurrency.
+It distinguishes **flaky** (mixed exit codes) from **stable RED** (a real failure) in the *message*, because
+conflating them sends people hunting a race that isn't there — but **both fail the gate**. That was not true
+until 2026-07-20: a stably-RED suite printed `stable RED` and then `PASS`, exit 0, and the nightly job went
+green with a suite failing every single run. The docs were corrected to admit that behaviour before the code
+was fixed, which is the wrong order and is called out here so it isn't repeated.
+
+It exists because it caught a real one: `prompt-contracts` shipped a `printf "$body" | grep -qF` under
+`set -o pipefail`, which returns 141 when grep exits before printf finishes — **2 failures in 60 runs**,
+invisible to single-run CI. Deliberately **empirical, not static**: the static rule for that shape measured
+95 repo-wide hits (58 even when tightened), nearly all safe because the data sits far below the 64 KB pipe
+buffer. An error-level gate at that false-positive rate gets switched off, and a switched-off gate protects
+nothing.
+
+`--runs` and `--suites` now require a value: `shift 2` with one argument left returns 1 *without shifting*,
+so the arg loop spun forever with zero output and a scheduled run burned its entire ceiling in silence.
 
 Run it by hand before merging anything that touches a test harness. Its own selftest asserts it fires on a
-known-flaky fixture and does *not* misreport a stable-red one (`tests/flake-check.sh:82-94`).
+known-flaky fixture and does *not* misreport a stable-red one.
 
-Its default set is **12 named suites** (`tests/flake-check.sh:25-26`) — the Tier-1 gates plus `hygiene-`,
-`reanalyze-` and `scorecard-selftest`, which are not gates anywhere else (see the warning above), so nightly
-flake-check is currently the *only* automation that runs those three at all. It still isn't a gate for them:
-it only asserts they decide **consistently**, so a suite that is stably RED passes flake-check while failing.
-`swarm-selftests` is deliberately excluded — it shells out to the others, so N runs of it multiply wall-clock
-without adding coverage.
+### `reanalyze-acceptance.sh` — judging a real run
 
-| Golden | Asserts |
-|--------|---------|
-| `agent-goldens` (critics) | never green-lights a seeded bug · never cries wolf on a clean diff · ux_reviewer doesn't invent findings on a backend diff · abstains (UNVERIFIED) when evidence is missing |
-| `agent-goldens` (researcher) | the returned spec parses under `swarm_spec_lint` and cites only files that exist (no fabricated citations) |
-| `spec-rubric-goldens` | rubric JSON schema (7 criteria 1-3 · verdict) + ≥90% agreement with human labels over ≥4 goldens → the go/no-go for enabling `SPEC_RUBRIC=1` |
-| `spec-debate-goldens` | the cross-model debate's final verdict (FLAGGED/SOUND) schema + ≥90% agreement with human labels over ≥4 goldens → the go/no-go for enabling `SPEC_DEBATE=1` / `REVIEW_DEBATE=1` |
-| `debate-effectiveness` | precision/recall/**F1** of the debate against the labeled sandbox (`DEBATE_F1_MIN`), plus a trend point |
+`tests/reanalyze-acceptance.sh <repo> [run_id]` reads a finished run's durable artifacts and answers "did
+this run go fine?" mechanically. It exists because three real runs were read as fine and were not: one spent
+**50% of its wall-clock in a phase that appears in no metrics row**, and its report compared a 157-spec
+population against a 10-spec gate.
 
-> [!IMPORTANT]
-> **A `HOLD` verdict is a FAILED calibration and exits non-zero** — the nightly goes red. These harnesses used to print `HOLD` and still exit `0`, so `agent-goldens.yml` stayed green through any regression, and deleting the hard goldens shrank the denominator into a green `100%` that still said HOLD. Label disagreement, an unparseable verdict, and a **missing fixture** (a row in the labels file with no recorded `.out`) are all failures now, not warnings — a deleted fixture must not quietly shrink the denominator or the trend file's basis.
->
-> Expect red before you expect green: a HOLD means the calibration genuinely has not passed on your labeled set, which is exactly the signal that should block enabling the gate.
+Nine criteria: completion · no failmode · wall-clock attributed (≥85% in metric rows) · gate-scoped
+population · debates converged-or-capped · research evidence (a cited source *or* an explicit
+`UNVERIFIED`) · provenance written · no `*.progress.md` ledger polluting the gap count · transcripts from
+earlier runs retained. It reads artifacts only, so it can be pointed at a run after the fact.
+
 
 ## Tier 3 — on-demand (full crew, credits, hours)
 

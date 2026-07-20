@@ -298,6 +298,38 @@ consistency_cmd(){
 }
 
 # ---------------------------------------------------------------------------------------------------
+# firecrawl_url / firecrawl_probe — the ONE endpoint resolution + ONE reachability probe (D2).
+#
+# THE DEFECT THIS REPLACES: firecrawl_ensure resolved `${FIRECRAWL_API_URL:-http://127.0.0.1:$port}`
+# while `_fc_up` in lib/install.sh (behind `ace firecrawl status`) hardcoded `http://127.0.0.1:$port`
+# and IGNORED FIRECRAWL_API_URL entirely. With a self-hosted crawler on any non-default endpoint the two
+# DISAGREED: ensure enabled the MCP saying "UP", status said "DOWN" — and ensure's own degraded-path
+# message points the user at `ace firecrawl status`, the one command guaranteed to contradict it.
+#
+# Endpoint resolution matches firecrawl_mode (lib/core.sh): it goes through firecrawl_secret, so a URL
+# saved in secrets.env by `ace firecrawl up` is honoured in a headless run that never sourced ~/.bashrc,
+# and empty-but-set / whitespace-only is treated as UNSET (same rule that keeps a cloud key from being
+# shadowed). Falling back to the loopback default only when nothing is configured.
+firecrawl_url() {
+  local u
+  if declare -F firecrawl_secret >/dev/null 2>&1; then
+    u="$(firecrawl_secret FIRECRAWL_API_URL)"
+  else
+    u="$(printf '%s' "${FIRECRAWL_API_URL:-}" | tr -d '[:space:]')"   # core.sh absent: same strip rule
+  fi
+  [ -n "$u" ] || u="http://127.0.0.1:${FIRECRAWL_PORT:-3002}"
+  printf '%s' "${u%/}"
+}
+# firecrawl_probe [url] [timeout] — reachable? Defaults to the resolved endpoint above; callers pass an
+# explicit url ONLY when they mean a different question (install.sh's `up` waits on the container it just
+# started, which is a local-port question, not a "which backend will ACE use" question).
+firecrawl_probe() {
+  local u="${1:-}"
+  [ -n "$u" ] || u="$(firecrawl_url)"
+  curl -fsS -m "${2:-2}" "${u%/}/" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------------------------------
 # firecrawl_ensure — bring the LOCAL research crawler up at run start, and make the MCP actually usable.
 #
 # WHY THIS EXISTS: the enable/disable decision was frozen at `ace opencode` time. write_opencode_config
@@ -317,9 +349,9 @@ consistency_cmd(){
 firecrawl_ensure() {
   local port url cfg n started=0 was_enabled
   port="${FIRECRAWL_PORT:-3002}"
-  url="${FIRECRAWL_API_URL:-http://127.0.0.1:${port}}"
+  url="$(firecrawl_url)"                       # D2: the SAME resolution `ace firecrawl status` uses
   cfg="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
-  _fce_up() { curl -fsS -m 2 "${url%/}/" >/dev/null 2>&1; }
+  _fce_up() { firecrawl_probe; }               # D2: the SAME probe `ace firecrawl status` uses
 
   # No config = nothing to flip; opencode is not wired here at all.
   [ -f "$cfg" ] || return 0
@@ -351,6 +383,14 @@ firecrawl_ensure() {
     return 0
   fi
 
+  # LOCAL from here down. When BOTH a cloud key and a self-hosted URL are set the URL wins (that is what
+  # firecrawl-mcp itself does) — SAY it, or a paid cloud key is silently bypassed by a stale URL and the
+  # run looks identical to a cloud run that simply degraded. core.sh's firecrawl_mode header promises the
+  # callers narrate this case; this is the caller that has to keep the promise.
+  if declare -F firecrawl_secret >/dev/null 2>&1 && [ -n "$(firecrawl_secret FIRECRAWL_API_KEY)" ]; then
+    say "research: Firecrawl LOCAL (self-hosted $url) — BOTH a CLOUD key and a self-hosted URL are set; the URL WINS (firecrawl-mcp's own rule) and the cloud key is NOT used. Unset FIRECRAWL_API_URL to use the cloud."
+  fi
+
   if ! _fce_up; then
     if [ "${FIRECRAWL_AUTO:-1}" != 1 ]; then
       say "research: Firecrawl DOWN and FIRECRAWL_AUTO=0 — research falls back to webfetch (single URL, no search+scrape)."
@@ -379,23 +419,59 @@ firecrawl_ensure() {
 
   # Reachable. Make the live config agree — this is the half that was missing.
   if [ "$was_enabled" = true ]; then
-    say "research: Firecrawl UP ($url · loopback-only) — MCP already enabled."
+    say "research: Firecrawl LOCAL (self-hosted) UP ($url) — MCP already enabled."
   else
     _fce_set true "$cfg" \
-      && say "research: Firecrawl UP ($url · loopback-only) — MCP ENABLED for this run (was disabled; no 'ace opencode' needed)." \
-      || say "research: Firecrawl UP but the MCP could not be enabled (config write failed) — falling back to webfetch."
+      && say "research: Firecrawl LOCAL (self-hosted) UP ($url) — MCP ENABLED for this run (was disabled; no 'ace opencode' needed)." \
+      || say "research: Firecrawl LOCAL (self-hosted) UP but the MCP could not be enabled (config write failed) — falling back to webfetch."
   fi
   return 0
 }
 
 # _fce_set <true|false> <cfg> — flip mcp.firecrawl.enabled, atomically. Never leaves a truncated config:
 # a half-written opencode.json breaks every agent, which is far worse than the wrong research backend.
+# The atomicity + metadata preservation live in _ace_json_edit (below), shared with lib/install.sh.
 _fce_set() {
-  local want="$1" cfg="$2" tmp cur
+  local want="$1" cfg="$2" cur
   cur="$(jq -r 'if (.mcp|type)=="object" and (.mcp|has("firecrawl")) and (.mcp.firecrawl|type)=="object" and (.mcp.firecrawl|has("enabled")) then (.mcp.firecrawl.enabled|tostring) else "absent" end' "$cfg" 2>/dev/null)"
   [ "$cur" = "$want" ] && return 0
-  tmp="$(mktemp)" || return 1
-  jq --argjson v "$want" '.mcp.firecrawl.enabled=$v' "$cfg" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
-  jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }   # never install unparseable JSON
-  mv "$tmp" "$cfg" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  _ace_json_edit "$cfg" '.mcp.firecrawl.enabled=$v' --argjson v "$want"
+}
+
+# _ace_clone_meta <src> <dst> — give <dst> the mode + ownership of <src>, so replacing <src> with <dst>
+# does not silently re-permission the user's file.
+_ace_clone_meta() {
+  local m
+  chmod --reference="$1" "$2" 2>/dev/null || {
+    m="$(stat -c %a "$1" 2>/dev/null)"
+    [ -n "$m" ] && chmod "$m" "$2" 2>/dev/null
+  } || true
+  chown --reference="$1" "$2" 2>/dev/null || true
+  return 0
+}
+
+# _ace_json_edit <file> <jq-filter> [jq-args…] — apply a jq filter to a JSON file IN PLACE, atomically,
+# without changing its mode or owner. The ONE writer for every generated-config flip (opencode.json).
+#
+# WHY THE TEMP FILE MUST BE A SIBLING (D1): a bare `mktemp` lands in $TMPDIR, which is routinely a
+# DIFFERENT filesystem (tmpfs) from ~/.config. `mv` across filesystems is not rename(2) — it is
+# copy-then-unlink, so a crash or ENOSPC mid-copy leaves exactly the truncated opencode.json the old
+# comment here promised could not happen. A sibling temp makes `mv` a real rename: the target is either
+# the whole old file or the whole new one, never a prefix of either.
+#
+# WHY THE MODE IS CLONED (D1): `mktemp` creates 0600 by design, and `mv` carries that mode onto the
+# destination — so every flip silently tightened a 0644 opencode.json to 0600. Measured, not theorised.
+# Same pattern as lib/core.sh's `mktemp "$ACE_LESSONS_SHARED.XXXXXX"`.
+#
+# Fails CLOSED: on any error the ORIGINAL file is left byte-identical and the temp is removed.
+_ace_json_edit() {
+  local f="$1" filter="$2"; shift 2
+  local tmp
+  [ -f "$f" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  tmp="$(mktemp "$f.XXXXXX")" || return 1     # SIBLING of the target — see above
+  _ace_clone_meta "$f" "$tmp"
+  jq "$@" "$filter" "$f" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  jq -e . "$tmp" >/dev/null 2>&1             || { rm -f "$tmp"; return 1; }   # never install unparseable JSON
+  mv -f "$tmp" "$f" 2>/dev/null              || { rm -f "$tmp"; return 1; }
 }

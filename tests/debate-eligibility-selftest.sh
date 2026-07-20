@@ -83,6 +83,74 @@ yes_ "$t" "DEBATE_MIN_RISK=LOW did not widen to a trivial spec"     export DEBAT
 no_  "$(spec ux2 'risk: LOW · tier: FAST' C3 'Settings page with owner/non-owner states.')" \
      "DEBATE_SCOPE=high still debated a non-HIGH spec — the cost-constrained escape hatch is broken" export DEBATE_SCOPE=high
 
+# --- D6: THE RISK SEVERITY TABLE -------------------------------------------------------------------------
+# The gate tested only `risk: HIGH` and let every other value fall through to the trivial path, INVERTING
+# severity: `risk: critical` was classified trivial and never debated while `risk: HIGH` was debated.
+# `risk: medium` is not hypothetical — compliance-legal-pages.md in the live trading-portal repo carries it,
+# written by ACE's own re-spec. Only an explicit LOW-end value may count as low; everything else, including
+# values nobody anticipated, must resolve toward debating. Each row is an otherwise-TRIVIAL spec (tier: FAST,
+# all C1-C6 dead) so the risk marker is the ONLY thing that can decide it.
+while read -r rv exp note; do
+  [ -n "${rv:-}" ] || continue
+  sp="$(spec "risk-$exp-$(printf '%s' "$rv" | tr -cd 'A-Za-z0-9')" "risk: $rv · tier: FAST" C3 'N/A — none.')"
+  r="$(elig "$sp")"
+  case "$exp:$r" in
+    yes:YES*|no:NO*) ;;
+    *) bad "risk: $rv — expected $exp, got '${r%% *}' ($note)"$'\n'"  $r" ;;
+  esac
+done <<'TABLE'
+HIGH       yes  the-original-signal-must-not-regress
+high       yes  the-marker-is-case-insensitive
+critical   yes  MORE-severe-than-high-must-never-be-classified-trivial
+medium     yes  live-repo-value-unknown-must-resolve-toward-debating
+severe     yes  a-severity-word-nobody-added-to-the-list
+P0-blocker yes  an-invented-vocabulary-must-not-silently-exempt
+LOW        no   the-only-value-that-may-count-as-low
+low        no   lowercase-low-is-still-low
+TABLE
+
+# ABSENT must stay its OWN class, never folded into `low`. With NEITHER marker the spec is `undeclared` and
+# debated (asserted above); with `tier: FAST` present and all C-sections dead it stays trivial, because FAST is
+# itself a positive declaration. Pinned here so a future "simplification" cannot collapse absent into low —
+# which would make every unmarked legacy spec look trivially skippable again.
+# OPEN QUESTION (deliberately NOT changed here, out of D6's scope — D6 is about risk VALUES): the module's
+# stated rule is `trivial == risk: LOW AND tier: FAST AND dead sections`, and this arm skips on a FAST tier
+# with no risk marker at all. Exactly 1 spec tree-wide on trading-portal is in that shape and it is not
+# ROADMAP-linked, so nothing a run touches is affected today. Flagged for the owner rather than widened.
+r="$(elig "$(spec risk-absent-fast 'tier: FAST' C3 'N/A — none.')")"
+case "$r" in NO*) ;; *) bad "tier: FAST + dead sections + no risk marker changed classification — if this was intentional, update the OPEN QUESTION note above: $r";; esac
+grep -qi 'no risk marker' <<<"$r" || bad "that skip must still report the absent marker honestly: $r"
+
+# --- D6: the skip reason must quote the spec, never contradict it ----------------------------------------
+# The message was a hardcoded "risk: LOW, tier: FAST" printed regardless of the file, so a reader asking why a
+# critical spec was skipped was told the spec said LOW. A wrong reason ends an investigation; a bare skip only
+# delays one. Only genuinely-trivial specs reach this message, so drive it through DEBATE_SCOPE=high (which
+# skips everything not high-or-above) to get a NON-low spec onto the skip path.
+r="$(elig "$(spec quote-med 'risk: medium · tier: FAST' C3 'N/A — none.')" export DEBATE_SCOPE=high)"
+case "$r" in NO*) ;; *) bad "DEBATE_SCOPE=high must skip a medium-risk spec: $r";; esac
+grep -qi 'risk: medium' <<<"$r" || bad "the skip reason must quote the risk value the spec ACTUALLY declares (medium): $r"
+grep -qi 'risk: LOW'    <<<"$r" && bad "the skip reason claimed 'risk: LOW' for a spec that declares medium — it states a fact the artifact contradicts: $r"
+# a spec with NO markers at all must say so, rather than inventing values for both fields
+r="$(elig "$(spec quote-none '' C3 'N/A — none.')" export DEBATE_SCOPE=high)"
+grep -qi 'no risk marker' <<<"$r" || bad "a spec with no risk marker must say 'no risk marker', not quote a value it lacks: $r"
+grep -qi 'no tier marker' <<<"$r" || bad "a spec with no tier marker must say so: $r"
+
+# --- F9: a knob that restricts spend must never fail OPEN, or fail SILENTLY -------------------------------
+# `DEBATE_SCOPE=hgih` fell through to `nontrivial` — WIDER than the `high` intended — and `DEBATE_MIN_RISK=MEDIUM`
+# was a no-op. Both left the operator believing cost was capped when it was not.
+r="$(elig "$(spec knob-typo 'risk: LOW · tier: FULL' C3 'N/A — none.')" export DEBATE_SCOPE=hgih)"
+grep -qi 'hgih' <<<"$r"        || bad "an unrecognised DEBATE_SCOPE must NAME the bad value: $r"
+grep -qi 'nontrivial' <<<"$r"  || bad "an unrecognised DEBATE_SCOPE must state which default is in use: $r"
+grep -qi 'valid' <<<"$r"       || bad "an unrecognised DEBATE_SCOPE must list the valid values: $r"
+r="$(elig "$(spec knob-mr 'risk: LOW · tier: FULL' C3 'N/A — none.')" export DEBATE_MIN_RISK=MEDIUM)"
+grep -qi 'DEBATE_MIN_RISK' <<<"$r" || bad "an unrecognised DEBATE_MIN_RISK must be reported, not silently ignored: $r"
+grep -qi 'MEDIUM' <<<"$r"          || bad "an unrecognised DEBATE_MIN_RISK must name the bad value: $r"
+# ...and the RECOGNISED values must still work (a validator that rejects everything is not a fix)
+no_ "$(spec knob-ok 'risk: LOW · tier: FAST' C3 'Settings page: owner sees the form.')" \
+    "DEBATE_MIN_RISK=high must still narrow to high-or-above" export DEBATE_MIN_RISK=high
+yes_ "$(spec knob-ok2 'risk: critical · tier: FAST' C3 'N/A — none.')" \
+     "DEBATE_MIN_RISK=high must still admit a critical spec" export DEBATE_MIN_RISK=high
+
 # --- the skip must be NARRATED (C1) ----------------------------------------------------------------------
 r="$(elig "$(spec triv3 'risk: LOW · tier: FAST' C3 'N/A — none.')")"
 grep -qi 'SKIPPED' <<<"$r"      || bad "a skipped spec produced no narration — the run would look fully debated: $r"

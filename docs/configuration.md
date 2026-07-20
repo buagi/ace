@@ -44,6 +44,25 @@ Both dials are stored as plain keys in `~/.config/ace/config` and can be set dir
 
 ### Providers & per-agent models (`ace settings`)
 
+**Verifying cited sources.** `SPEC_LINT_NET=1` makes the spec gate FETCH every externally-cited URL and
+classify it: `live` · `blocked` (a denial or challenge page, **including one served with HTTP 200 and
+`success: true`**) · `authwall` (a sign-in/error page — its *title* is the tell, since a login wall arrives
+at 200 with plenty of real text) · `redirected` (only when the redirect leaves the **site**; a locale or
+version prefix such as MDN's `/en-US` or python.org's `/3` is not a failure) · `dead` (a real 4xx/5xx or
+NXDOMAIN) · `unchecked` (no HTTP response at all — a timeout or proxy failure is *inconclusive*, never
+evidence the URL was invented). Bounded by `RESEARCH_MAX_URLS` (default 8) per spec, and each URL is
+classified once per pass.
+
+It defaults **on** when a research backend exists (`firecrawl_mode` returns `cloud` or `local`) and off
+otherwise, is settable from `ace settings → Cross-model debate → Verify cited sources`, and an explicit
+env value always wins. Until 2026-07-20 it was assigned **nowhere in the codebase**, so the check and the
+provenance writer had never executed once — a gate that cannot run is not a gate.
+
+The verdict travels: `spec-lint` writes `.opencode/cache/provenance-<slug>.txt`, and `spec-slice` puts a
+**SOURCE PROVENANCE** block in front of the implementer alongside any author-written `UNVERIFIED` line. A
+spec that was never checked says so; a clean spec prints nothing, because a warning on every slice trains
+people to ignore warnings.
+
 **Debate scope.** The default is **debate everything except the provably trivial** — a spec is skipped only when it *declares* itself trivial: `risk: LOW` **and** `tier: FAST` **and** every `C1`–`C6` trigger section is dead. Any one live signal forces a debate: **C1 Contract / C2 Data model / C4 NFRs** (architecture), **C5 Security**, **C3 UX flow** (user-facing), **C6 Risk & rollback** (live path). A section counts as dead only when absent, empty, an explicit `N/A`, or the unedited `<…>` placeholder — and `API-only` suppresses C3 alone, since it says nothing about contracts. A spec carrying **no** `tier:`/`risk:` marker (a pre-template spec) is treated as **undeclared, not trivial**, and is debated: absence of a declaration is not a declaration. `DEBATE_SCOPE=high` restores the old security-only allowlist for a cost-constrained run; `DEBATE_SCOPE=all` (or `DEBATE_ALL=1`/`DEBATE_MIN_RISK=LOW`) debates literally everything. Every skip is logged with its reason and how to widen it, so a narrow run never looks like a fully-debated one.
 
 `ace settings → Models & agents` sets which model each of the **11** agents in `ACE_AGENTS` runs (the 12th, `debater`, is NOT in that list — its two sides come from `DEBATE_MODEL_A`/`DEBATE_MODEL_B`, so `MODEL_debater` is silently ignored), independently or via a preset (`overseer-Claude` · `overseer-OpenAI` · `all-DeepSeek` · `mixed` · `cross-review`). Each choice is stored as `MODEL_<agent>` in `~/.config/ace/config`. An unset overseer defaults to Claude Opus; the 11 subagents default to DeepSeek — **the coders (implementer · test_engineer) run `deepseek-v4-pro`; `-flash` is used only for cheap/mechanical roles** (the rathole judge, opencode's `small_model`, and — under the `balanced`/`mixed` presets — the light checks verifier/standards/alignment). To put a coder on flash: `MODEL_implementer=deepseek/deepseek-v4-flash` (cheaper, weaker — measure with Experiment C before adopting).

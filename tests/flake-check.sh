@@ -29,8 +29,12 @@ SUITES="bash-traps prompt-contracts profile-reader supply-chain cli-dispatch-sel
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --runs)     RUNS="${2:-8}"; shift 2 ;;
-    --suites)   SUITES="${2:-}"; shift 2 ;;
+    # `shift 2` with only one argument left returns 1 and does NOT shift, so `while [ $# -gt 0 ]` spun
+    # forever with zero output -- a scheduled run burned the runner's whole ceiling silently.
+    --runs)     [ $# -ge 2 ] || { echo "flake-check: --runs needs a value (e.g. --runs 10)" >&2; exit 2; }
+                RUNS="$2"; shift 2 ;;
+    --suites)   [ $# -ge 2 ] || { echo "flake-check: --suites needs a value (e.g. --suites \"a b\")" >&2; exit 2; }
+                SUITES="$2"; shift 2 ;;
     --selftest) SELFTEST=1; shift ;;
     *) echo "flake-check: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -113,7 +117,11 @@ for s in $SUITES; do
   case "$rcs" in
     0)     printf '  stable green  %s\n' "$s" ;;
     *' '*) bad "$s is FLAKY -- $RUNS runs produced different exit codes: $rcs" ;;
-    *)     printf '  stable RED    %s (rc=%s) -- a real failure, not a flake\n' "$s" "$rcs" ;;
+    # A stably-RED suite is NOT a flake -- and it is NOT a pass either. This arm used to print and move on,
+    # so `flake-check` exited 0 and the nightly job went green with a suite failing every single run. That is
+    # the C1 shape aimed at a check that DID run and failed. Keep the distinction in the MESSAGE (conflating
+    # broken with flaky sends people hunting a race that is not there) but fail the gate.
+    *)     bad "$s is stably RED (rc=$rcs) -- a real failure every run, not a flake" ;;
   esac
 done
 

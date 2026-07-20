@@ -85,9 +85,19 @@ printf '{"mcp":{"firecrawl":{"enabled":false}}}' > "$d/cfg/opencode/opencode.jso
 jq -e . "$d/cfg/opencode/opencode.json" >/dev/null 2>&1 || bad "config left UNPARSEABLE after a failed write — this would break every agent"
 rm -rf "$d"
 
-# --- 7. the hooks exist (a function nothing calls is not a feature) -------------------------------------
-grep -q 'firecrawl_ensure' lib/autoloop.sh   || bad "firecrawl_ensure is not called from the autoloop preflight"
-grep -q 'firecrawl_ensure' lib/swarm-run.sh  || bad "firecrawl_ensure is not called from swarm_preflight"
+# --- 7. the hooks are actually INVOKED (a function nothing calls is not a feature) ----------------------
+# This assertion used to be a bare `grep -q 'firecrawl_ensure' <file>`. Both call sites are introduced by a
+# COMMENT that names the function, so the token survived deleting the call: the whole feature could be
+# removed and this suite still printed "MCP flag tracks reality". Reproduced. Strip comments -- BOTH
+# full-line and trailing -- and require the name in command position after a `&&` or at the start of a
+# statement, so a mention can never stand in for an invocation.
+_code_only(){ sed -E 's/(^|[[:space:]])#.*$//' "$1" | grep -vE '^[[:space:]]*$'; }
+# HERE-STRING, not a pipe: `_code_only … | grep -q` is trap A4. grep exits at the match (line ~642 of
+# ~1700), sed takes SIGPIPE, and under `set -o pipefail` the pipeline returns 141 -- so this assertion
+# failed against correct code while matching fine in isolation. Third time this trap has bitten today.
+_invokes(){ grep -qE '(^|[;&|][[:space:]]*|&&[[:space:]]*)firecrawl_ensure([[:space:]]|$|\))' <<<"$(_code_only "$1")"; }
+_invokes lib/autoloop.sh  || bad "firecrawl_ensure is never INVOKED in lib/autoloop.sh (a comment mentioning it does not count)"
+_invokes lib/swarm-run.sh || bad "firecrawl_ensure is never INVOKED in lib/swarm-run.sh (a comment mentioning it does not count)"
 
 
 # --- MODE RESOLUTION: cloud / self-hosted / none -------------------------------------------------------
@@ -137,6 +147,161 @@ grep -qE 'fck="\$\{FIRECRAWL_API_KEY:-\}"' lib/install.sh || bad "headless ace k
 grep -q 'RESEARCH (you have tools' lib/debate.sh || bad "challenger prompt lost its research directive"
 grep -q 'UNVERIFIED — <claim> (source unreachable' lib/debate.sh || bad "challenger is not required to mark unreachable sources UNVERIFIED"
 grep -q 'GROUNDING: defend a claim about a THIRD-PARTY' lib/debate.sh || bad "defender prompt lost its grounding rule"
+
+# ======================================================================================================
+# D1 — the config write must be ATOMIC and must not re-permission the user's file.
+#
+# THE DEFECT (measured, not hypothesised): _fce_set used a bare `mktemp`, which lands in $TMPDIR. That is
+# routinely a DIFFERENT filesystem from ~/.config, so `mv` was copy-then-unlink, NOT rename(2) — a crash
+# or ENOSPC mid-copy leaves exactly the truncated opencode.json the function's own header promised it
+# could never leave. And `mktemp` creates 0600, which `mv` then carried onto the destination: the user's
+# 0644 opencode.json was silently tightened to 0600 on every single flip.
+# ------------------------------------------------------------------------------------------------------
+
+# D1(a)+(d): mode AND ownership survive a real flip. 644 is the case that regressed; 640 proves we clone
+# the target's mode rather than hardcoding a new one.
+for _m in 644 640; do
+  d="$(mktemp -d)"; cfg="$d/opencode.json"
+  printf '{"mcp":{"firecrawl":{"type":"local","enabled":false}}}' > "$cfg"; chmod "$_m" "$cfg"
+  own_before="$(stat -c %U:%G "$cfg")"
+  ( set --; . lib/consistency.sh >/dev/null 2>&1; _fce_set true "$cfg" ) >/dev/null 2>&1
+  [ "$(stat -c %a "$cfg")" = "$_m" ] \
+    || bad "D1: a flip changed the config's mode $_m -> $(stat -c %a "$cfg") — the write silently re-permissions the user's opencode.json"
+  [ "$(stat -c %U:%G "$cfg")" = "$own_before" ] \
+    || bad "D1: a flip changed the config's ownership $own_before -> $(stat -c %U:%G "$cfg")"
+  [ "$(jq -r '.mcp.firecrawl.enabled' "$cfg" 2>/dev/null)" = true ] \
+    || bad "D1: the mode-preserving write did not actually flip the flag (a write that preserves everything and changes nothing is not a fix)"
+  rm -rf "$d"
+done
+
+# D1(b): the temp file must be a SIBLING of the target, so `mv` is a real rename(2) on one filesystem.
+# Shadow mktemp and inspect the TEMPLATE it is handed: a bare `mktemp` passes no argument at all.
+d="$(mktemp -d)"; cfg="$d/opencode.json"
+printf '{"mcp":{"firecrawl":{"enabled":false}}}' > "$cfg"
+targ="$( ( set --; . lib/consistency.sh >/dev/null 2>&1
+           mktemp(){ printf 'MKTEMPARG[%s]\n' "$*" >&2; command mktemp "$@"; }
+           _fce_set true "$cfg" ) 2>&1 )"
+grep -qF "MKTEMPARG[$cfg." <<<"$targ" \
+  || bad "D1: the temp file is NOT created next to the target — cross-filesystem 'mv' is copy+unlink, so a crash mid-write truncates opencode.json"$'\n'"$targ"
+rm -rf "$d"
+
+# D1(c): a failure mid-write leaves the ORIGINAL byte-identical (not merely 'still parseable'), and drops
+# no temp litter beside it. This is the stronger form of case 6 above.
+d="$(mktemp -d)"; cfg="$d/opencode.json"
+printf '{"mcp":{"firecrawl":{"enabled":false}},"agent":{"builder":{"model":"x"}}}' > "$cfg"
+md5_before="$(md5sum < "$cfg")"
+( set --; . lib/consistency.sh >/dev/null 2>&1
+  jq(){ return 1; }                                    # every jq call fails mid-flight
+  _fce_set true "$cfg" ) >/dev/null 2>&1
+[ "$(md5sum < "$cfg")" = "$md5_before" ] \
+  || bad "D1: a failed write did NOT leave the original config byte-identical — this is the truncation the header promises cannot happen"
+[ "$(ls -1 "$d" | grep -c .)" = 1 ] \
+  || bad "D1: a failed write left temp litter beside the config: $(ls -1 "$d" | tr '\n' ' ')"
+rm -rf "$d"
+
+# D1: the SAME defect existed at two sites in lib/install.sh (write_opencode_config's firecrawl block).
+# Assert against CODE, not comments — the comments there now EXPLAIN the bare-mktemp defect, so an
+# un-stripped grep for 'mktemp' would match the explanation and pass over a reverted fix.
+_fcw="$(grep -F 'mcp.firecrawl.enabled=false' <<<"$(_code_only lib/install.sh)")"
+[ -n "$_fcw" ] || bad "D1: no firecrawl config-write found in lib/install.sh at all"
+grep -qF '$(mktemp)' <<<"$_fcw" \
+  && bad "D1: lib/install.sh still writes the firecrawl flag through a bare \$(mktemp) — same cross-filesystem truncation + 0600 re-permission"$'\n'"$_fcw"
+grep -qF '_ace_json_edit' <<<"$_fcw" \
+  || bad "D1: lib/install.sh's firecrawl writes do not go through the shared atomic writer _ace_json_edit"$'\n'"$_fcw"
+
+# ======================================================================================================
+# D2 — firecrawl_ensure and `ace firecrawl status` must probe the SAME endpoint.
+#
+# THE DEFECT (reproduced): _fc_up in lib/install.sh hardcoded http://127.0.0.1:$port and ignored
+# FIRECRAWL_API_URL, while firecrawl_ensure honoured it. With a self-hosted crawler on a non-default
+# endpoint, ensure enabled the MCP reporting UP and status reported DOWN — and ensure's own degraded-path
+# message tells the user to "Check: ace firecrawl status", the one command guaranteed to contradict it.
+# ------------------------------------------------------------------------------------------------------
+d="$(mktemp -d)"; mkdir -p "$d/cfg/opencode"
+jq -n '{mcp:{firecrawl:{type:"local",enabled:false}}}' > "$d/cfg/opencode/opencode.json"
+agree="$(
+  set --
+  unset FIRECRAWL_API_KEY
+  export FIRECRAWL_API_URL=http://10.0.0.5:9999 XDG_CONFIG_HOME="$d/cfg" HOME="$d"
+  . lib/ui.sh >/dev/null 2>&1; . lib/core.sh >/dev/null 2>&1
+  . lib/consistency.sh >/dev/null 2>&1; . lib/install.sh >/dev/null 2>&1
+  ACE_SECRETS=/nonexistent
+  say(){ :; }; info(){ :; }; err(){ :; }
+  # ONLY the configured non-default endpoint answers. A probe aimed at the hardcoded loopback default
+  # gets connection-refused, which is exactly how the two used to disagree.
+  curl(){ local a; for a in "$@"; do case "$a" in *10.0.0.5:9999*) return 0 ;; esac; done; return 7; }
+  firecrawl_ensure >/dev/null 2>&1
+  printf 'ENSURE=%s ' "$(jq -r '.mcp.firecrawl.enabled' "$d/cfg/opencode/opencode.json" 2>/dev/null)"
+  ok(){ printf 'STATUS=up'; }; warn(){ printf 'STATUS=down'; }
+  firecrawl_cmd status
+)"
+[ "$agree" = "ENSURE=true STATUS=up" ] \
+  || bad "D2: firecrawl_ensure and 'ace firecrawl status' DISAGREE on a non-default FIRECRAWL_API_URL — got [$agree], want [ENSURE=true STATUS=up]"
+rm -rf "$d"
+
+# D2: the endpoint may exist ONLY in secrets.env — a headless/systemd run never sources ~/.bashrc, so
+# `ace firecrawl up` writes the URL there and nothing exports it. Both sides must still resolve it (this
+# is what going through firecrawl_secret buys, and what a raw ${FIRECRAWL_API_URL:-…} expansion misses).
+d="$(mktemp -d)"; mkdir -p "$d/cfg/opencode"
+jq -n '{mcp:{firecrawl:{type:"local",enabled:false}}}' > "$d/cfg/opencode/opencode.json"
+printf 'export FIRECRAWL_API_URL=http://10.0.0.7:8888\n' > "$d/secrets.env"
+agree="$(
+  set --
+  unset FIRECRAWL_API_KEY FIRECRAWL_API_URL          # nothing in the ENV — only in secrets.env
+  export XDG_CONFIG_HOME="$d/cfg" HOME="$d"
+  . lib/ui.sh >/dev/null 2>&1; . lib/core.sh >/dev/null 2>&1
+  . lib/consistency.sh >/dev/null 2>&1; . lib/install.sh >/dev/null 2>&1
+  ACE_SECRETS="$d/secrets.env"                       # AFTER core.sh, which sets it
+  say(){ :; }; info(){ :; }; err(){ :; }
+  curl(){ local a; for a in "$@"; do case "$a" in *10.0.0.7:8888*) return 0 ;; esac; done; return 7; }
+  firecrawl_ensure >/dev/null 2>&1
+  printf 'ENSURE=%s ' "$(jq -r '.mcp.firecrawl.enabled' "$d/cfg/opencode/opencode.json" 2>/dev/null)"
+  ok(){ printf 'STATUS=up'; }; warn(){ printf 'STATUS=down'; }
+  firecrawl_cmd status
+)"
+[ "$agree" = "ENSURE=true STATUS=up" ] \
+  || bad "D2: a FIRECRAWL_API_URL present only in secrets.env is not resolved by both sides — got [$agree], want [ENSURE=true STATUS=up]"
+rm -rf "$d"
+
+# D2: ONE probe implementation, not two. Code-only, for the same reason as above — the comment on _fc_up
+# now describes the hardcoded loopback URL it used to contain.
+_fcup="$(grep -E '_fc_up\(\)[[:space:]]*\{' <<<"$(_code_only lib/install.sh)")"
+grep -qF 'firecrawl_probe' <<<"$_fcup" \
+  || bad "D2: _fc_up in lib/install.sh does not delegate to the shared firecrawl_probe — a second probe implementation will drift again"$'\n'"$_fcup"
+grep -qF '127.0.0.1' <<<"$_fcup" \
+  && bad "D2: _fc_up hardcodes a loopback URL again — it must resolve the endpoint through firecrawl_url"$'\n'"$_fcup"
+
+# ======================================================================================================
+# D3 — mode-resolution regression table (firecrawl_mode lives in lib/core.sh and is NOT edited here; this
+# pins the BEHAVIOUR firecrawl_ensure derives from it). Every row asserts BOTH the resulting MCP enabled
+# flag AND that the narration NAMES the mode — a run that picks the right backend silently is the
+# original defect in a new costume.
+# ------------------------------------------------------------------------------------------------------
+# row: <label>|<initial enabled>|<up|down>|<env>|<expected FINAL>|<narration regex the mode must match>
+while IFS='|' read -r _lbl _init _rch _env _want _says; do
+  [ -n "$_lbl" ] || continue
+  out="$(probe "$_init" "$_rch" "$_env")"
+  grep -q "^FINAL $_want\$" <<<"$out" \
+    || bad "D3[$_lbl]: MCP enabled flag wrong — want $_want"$'\n'"$out"
+  grep -qiE "$_says" <<<"$out" \
+    || bad "D3[$_lbl]: narration does not name the resolved mode (want /$_says/)"$'\n'"$out"
+done <<'ROWS'
+cloud: key only|false|down|export FIRECRAWL_API_KEY=fc-test|true|Firecrawl CLOUD
+cloud: URL set-but-EMPTY must not shadow the key|false|down|export FIRECRAWL_API_KEY=fc-test; export FIRECRAWL_API_URL=|true|Firecrawl CLOUD
+cloud: whitespace-only URL is not a URL|false|down|export FIRECRAWL_API_KEY=fc-test; export FIRECRAWL_API_URL='   '|true|Firecrawl CLOUD
+none: whitespace-only URL, no key|true|down|export FIRECRAWL_API_URL='   '|false|NO Firecrawl backend
+none: neither configured|true|down|unset FIRECRAWL_API_KEY FIRECRAWL_API_URL|false|NO Firecrawl backend
+local: URL only, reachable|false|up|export FIRECRAWL_API_URL=http://127.0.0.1:3002|true|Firecrawl LOCAL
+local: BOTH set — URL wins|false|up|export FIRECRAWL_API_KEY=fc-test; export FIRECRAWL_API_URL=http://127.0.0.1:3002|true|Firecrawl LOCAL
+ROWS
+
+# D3: the both-set row must additionally SAY the cloud key is being bypassed — core.sh's firecrawl_mode
+# header promises its callers narrate this, and a paid key silently ignored is a money-costing silence.
+out="$(probe false up "export FIRECRAWL_API_KEY=fc-test; export FIRECRAWL_API_URL=http://127.0.0.1:3002")"
+grep -qi 'URL WINS' <<<"$out" \
+  || bad "D3: with BOTH a cloud key and a self-hosted URL set, the run does not say the URL wins — the paid key is silently bypassed"$'\n'"$out"
+grep -qi 'cloud key is NOT used' <<<"$out" \
+  || bad "D3: the both-set narration does not state the cloud key goes unused"$'\n'"$out"
 
 if [ "$fail" = 0 ]; then
   echo "firecrawl-selftest: PASS — MCP flag tracks reality, every fallback names its backend, config never corrupted"

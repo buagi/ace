@@ -197,4 +197,55 @@ grep -qE 'bash "\$_dsh" spec "\$sp" 2>/dev/null' "$AL" \
   && no "spec-debate call site still discards debate.sh narration + fail-open reasons" \
   || ok "spec-debate narration reaches the loop log"
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "spec-lint net gate:"
+# SPEC_LINT_NET shipped assigned NOWHERE — not in ace, any lib, CI, settings or docs — so the SRC_LIVE
+# check and the provenance writer had never executed once, while a test asserted the literal string
+# appears in lib/swarm.sh (it matched the COMMENT). Assert the ASSIGNMENT, in code, not a mention.
+_al_code(){ sed -E 's/(^|[[:space:]])#.*$//' "$1" | grep -vE '^[[:space:]]*$'; }
+grep -qE '(^|[[:space:]])SPEC_LINT_NET=' <<<"$(_al_code "$AL")" \
+  && ok "autoloop ASSIGNS SPEC_LINT_NET (the source-verification gate can actually run)" \
+  || no "autoloop never assigns SPEC_LINT_NET — SRC_LIVE + provenance can never execute"
+grep -qE 'export[[:space:]]+SPEC_LINT_NET' <<<"$(_al_code "$AL")" \
+  && ok "SPEC_LINT_NET is exported (swarm.sh runs as a child process and must inherit it)" \
+  || no "SPEC_LINT_NET assigned but not exported — the child spec-lint would not see it"
+grep -q 'SPEC_LINT_NET' lib/menu.sh \
+  && ok "SPEC_LINT_NET is settable from 'ace settings'" \
+  || no "SPEC_LINT_NET is not in ace settings — an undiscoverable knob is an unused knob"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "run display:"
+# The plan-only path called agent_state ONCE and emitted no stage markers, so `ace loop dash` showed the
+# orchestrator lit and nothing changing for 3.5 hours, and say() coloured only the timestamp prefix — every
+# line of a long run arrived identical and white. Phases give the run a visible spine.
+grep -qE '^phase\(\) \{' "$AL" \
+  && ok "phase() exists (a run has a visible spine, not one undifferentiated colour)" \
+  || no "no phase() — the plan-only run has no stage markers at all"
+_ph_count="$(grep -cE '(^|[[:space:]])phase [0-9]+ 5 ' <<<"$(sed -E 's/(^|[[:space:]])#.*$//' "$AL")")"
+[ "${_ph_count:-0}" -eq 5 ] \
+  && ok "all 5 plan-only phases are wired ($_ph_count call sites)" \
+  || no "expected 5 phase call sites in the plan-only path, found ${_ph_count:-0} — a skipped number reads as a lost stage"
+# 3 and 4 must fire even on the clean/disabled paths, or the spine develops holes exactly when a run is
+# uneventful — which is when a silent screen is most alarming.
+grep -qE '^\s+phase 3 5 ' <<<"$(sed -E 's/(^|[[:space:]])#.*$//' "$AL")" \
+  && ok "phase 3 is emitted before the gap branch (fires whether or not there are gaps)" \
+  || no "phase 3 is inside a conditional — a clean spec set would skip the number"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "debate telemetry:"
+# The debate loop was the single biggest wall-clock consumer of a real run (50%) and emitted NO metric
+# row, so run-summary and scorecard under-reported by 2x. Assert each debate call site is TIMED.
+_al_code(){ sed -E 's/(^|[[:space:]])#.*$//' "$1" | grep -vE '^[[:space:]]*$'; }
+grep -qE 'phase_metric debate ' <<<"$(_al_code "$AL")" \
+  && ok "spec-debate call site emits a phase_metric row (its wall-clock is attributable)" \
+  || no "the debate loop emits no phase_metric — half a run's wall-clock lands in no metric row"
+# both the spec AND review debate sites must be timed, or one path stays invisible
+_dbg="$(grep -cE 'phase_metric debate ' <<<"$(_al_code "$AL")")"
+[ "${_dbg:-0}" -ge 2 ] \
+  && ok "both spec-debate and review-debate are timed ($_dbg call sites)" \
+  || no "only ${_dbg:-0} debate call site(s) timed — the other debate path is unattributed"
+
 [ "$fail" = 0 ] && { echo "✓ autoloop selftest OK"; exit 0; } || { echo "✗ autoloop selftest FAILED"; exit 1; }
