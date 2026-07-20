@@ -85,9 +85,19 @@ printf '{"mcp":{"firecrawl":{"enabled":false}}}' > "$d/cfg/opencode/opencode.jso
 jq -e . "$d/cfg/opencode/opencode.json" >/dev/null 2>&1 || bad "config left UNPARSEABLE after a failed write — this would break every agent"
 rm -rf "$d"
 
-# --- 7. the hooks exist (a function nothing calls is not a feature) -------------------------------------
-grep -q 'firecrawl_ensure' lib/autoloop.sh   || bad "firecrawl_ensure is not called from the autoloop preflight"
-grep -q 'firecrawl_ensure' lib/swarm-run.sh  || bad "firecrawl_ensure is not called from swarm_preflight"
+# --- 7. the hooks are actually INVOKED (a function nothing calls is not a feature) ----------------------
+# This assertion used to be a bare `grep -q 'firecrawl_ensure' <file>`. Both call sites are introduced by a
+# COMMENT that names the function, so the token survived deleting the call: the whole feature could be
+# removed and this suite still printed "MCP flag tracks reality". Reproduced. Strip comments -- BOTH
+# full-line and trailing -- and require the name in command position after a `&&` or at the start of a
+# statement, so a mention can never stand in for an invocation.
+_code_only(){ sed -E 's/(^|[[:space:]])#.*$//' "$1" | grep -vE '^[[:space:]]*$'; }
+# HERE-STRING, not a pipe: `_code_only … | grep -q` is trap A4. grep exits at the match (line ~642 of
+# ~1700), sed takes SIGPIPE, and under `set -o pipefail` the pipeline returns 141 -- so this assertion
+# failed against correct code while matching fine in isolation. Third time this trap has bitten today.
+_invokes(){ grep -qE '(^|[;&|][[:space:]]*|&&[[:space:]]*)firecrawl_ensure([[:space:]]|$|\))' <<<"$(_code_only "$1")"; }
+_invokes lib/autoloop.sh  || bad "firecrawl_ensure is never INVOKED in lib/autoloop.sh (a comment mentioning it does not count)"
+_invokes lib/swarm-run.sh || bad "firecrawl_ensure is never INVOKED in lib/swarm-run.sh (a comment mentioning it does not count)"
 
 
 # --- MODE RESOLUTION: cloud / self-hosted / none -------------------------------------------------------

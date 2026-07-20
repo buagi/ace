@@ -158,14 +158,74 @@ rm -rf "$pd"
 grep -qF "PROVENANCE ARRIVES WITH YOUR SLICE" lib/install.sh   || bad "the implementer is not told how to act on a provenance warning"
 grep -qF "make the assumption VISIBLE in the code" lib/install.sh   || bad "the implementer is not told to surface the assumption rather than silently encode it"
 
+# --- the provenance READER (this branch was never executed by any test) ------------------------------------
+# Every earlier assertion hit only the `[ ! -f "$pf" ]` fallback, so mutating the reader to `return 0`, or
+# reintroducing the grep `\t` bug, left the suite GREEN. Build a real provenance file and assert what the
+# recipient actually sees.
+rd="$(mktemp -d)"; mkdir -p "$rd/.opencode/cache"
+printf '# provenance for r\n' > "$rd/.opencode/cache/provenance-r.txt"
+printf 'live\thttps://ok.example.net/a\n'                >> "$rd/.opencode/cache/provenance-r.txt"
+printf 'blocked\thttps://denied.example.net/b\n'         >> "$rd/.opencode/cache/provenance-r.txt"
+printf 'author-unverified\t6:- UNVERIFIED — assumed\n'   >> "$rd/.opencode/cache/provenance-r.txt"
+printf 'SUMMARY\t2 cited source(s), 1 not confirmed live\n' >> "$rd/.opencode/cache/provenance-r.txt"
+printf '# Spec: r (slug: r)\n' > "$rd/r.md"
+blk="$( set --; . lib/research.sh >/dev/null 2>&1; REPO="$rd" research_provenance_block "$rd/r.md" 2>/dev/null )"
+grep -q 'SOURCE PROVENANCE' <<<"$blk" || bad "provenance reader produced no block from a real provenance file"$'\n'"$blk"
+grep -q '2 claim(s)'        <<<"$blk" || bad "provenance count wrong: expected 2 (one blocked + one author-unverified), got:"$'\n'"$blk"
+grep -q 'denied.example.net' <<<"$blk" || bad "the blocked URL is not named in the block the recipient reads"
+grep -q 'SUMMARY'           <<<"$blk" && bad "the SUMMARY bookkeeping line leaked into the user-facing block (the grep -E \\t bug)"
+grep -q 'ok.example.net'    <<<"$blk" && bad "a LIVE source was listed as a problem — only unconfirmed ones belong here"
+# The WRITER must be exercised too: the block above builds its input by hand, so `research_write_provenance`
+# returning early still passed. Stub the classifier (no network) and assert the file it produces.
+wd="$(mktemp -d)"; mkdir -p "$wd/.opencode/cache"
+cat > "$wd/w.md" <<'MD'
+# Spec: w (slug: w)
+## 2. Prior art
+- a (source: https://good.example.net/a, ok)
+- b (source: https://bad.example.net/b, ok)
+- UNVERIFIED — assumed shape (source unreachable: bad.example.net, anti-bot)
+MD
+( set --; . lib/research.sh >/dev/null 2>&1
+  research_url_status(){ case "$1" in *good*) printf live ;; *) printf blocked ;; esac; }
+  REPO="$wd" research_write_provenance "$wd/w.md" ) >/dev/null 2>&1
+pf="$wd/.opencode/cache/provenance-w.txt"
+[ -f "$pf" ] || bad "research_write_provenance produced NO file — the writer is unexercised and can return early unnoticed"
+if [ -f "$pf" ]; then
+  grep -q "^live${TABC:-$(printf '\t')}https://good.example.net/a$"    "$pf" || bad "writer did not record the live source: $(cat "$pf")"
+  grep -q "^blocked${TABC:-$(printf '\t')}https://bad.example.net/b$"  "$pf" || bad "writer did not record the blocked source: $(cat "$pf")"
+  grep -q '^author-unverified' "$pf" || bad "writer dropped the author's UNVERIFIED line — the most honest provenance there is"
+  grep -q '^SUMMARY.*2 cited source(s), 1 not confirmed live' "$pf" || bad "writer SUMMARY wrong: $(grep '^SUMMARY' "$pf")"
+fi
+rm -rf "$wd"
+
+rm -rf "$rd"
+
 # --- the gate must be wired, and opt-in ------------------------------------------------------------------
 grep -q 'SRC_LIVE' lib/swarm.sh      || bad "spec-lint has no SRC_LIVE check — external citations are unverified"
 grep -q 'SPEC_LINT_NET' lib/swarm.sh || bad "SRC_LIVE is not gated behind SPEC_LINT_NET — a lint gate must not make network calls unasked"
 
 # --- the agents must be TOLD (a checker alone cannot make an agent honest) --------------------------------
+# Scoped PER AGENT. The previous loop never used $a -- it ran one file-wide grep three times, so stripping
+# the rule from two of the three prompts left the suite green and #156's entire subject unverified.
+_agent_prompt(){ # <agent> -> that agent's prompt string only
+  python3 - "$1" <<'PYEOF' 2>/dev/null
+import json,re,sys
+src=open('lib/install.sh').read()
+i=src.find('"%s"'%sys.argv[1])
+if i<0: sys.exit(1)
+j=src.find('"prompt": "',i)
+if j<0: sys.exit(1)
+j+=len('"prompt": "')
+k=src.find('"',j)
+while k>0 and src[k-1]=='\\': k=src.find('"',k+1)
+print(src[j:k])
+PYEOF
+}
 for a in researcher orchestrator implementer; do
-  grep -q "RESEARCH HONESTY (non-negotiable)" lib/install.sh \
-    || { bad "no research-honesty rule in the agent prompts"; break; }
+  body="$(_agent_prompt "$a")"
+  [ -n "$body" ] || { bad "could not extract the $a prompt — the extraction anchor moved"; continue; }
+  grep -qF "RESEARCH HONESTY (non-negotiable)" <<<"$body" \
+    || bad "the $a prompt has no research-honesty rule (a file-wide grep hid this: the rule may exist on a DIFFERENT agent)"
 done
 grep -q "success=true with a 200 for bodies that say 'Access denied'" lib/install.sh \
   || bad "the prompt does not warn that a SUCCESS flag can accompany a denial page — the exact trap measured"
