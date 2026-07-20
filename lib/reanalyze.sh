@@ -110,7 +110,8 @@ _ra_gaps(){
   # FAILED (non-zero rc, nothing on stdout) into "0 gaps" — a clean bill of health from a check that never
   # ran, which then reads as "same gaps/spec" in the verdict. A successful lint always prints its
   # "spec-lint: N spec(s) · M gap(s)" summary, so empty output means it did not run.
-  # shellcheck disable=SC2086 — one path per line from swarm_roadmap_specs; word-splitting is intended
+  # word-splitting is intended: $_specs is one path per line from swarm_roadmap_specs.
+  # shellcheck disable=SC2086
   _lint="$(REPO="$repo" bash "$_RA_LIB/swarm.sh" spec-lint $_specs 2>/dev/null)"
   [ -n "$_lint" ] || { printf '—'; return; }
   printf '%s\n' "$_lint" | _ra_c '^SPECGAP'
