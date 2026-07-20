@@ -76,50 +76,92 @@ _debate_log_metric(){
      >> "$(dirname "$trf")/debate-metrics.jsonl" 2>/dev/null || true
 }
 
-# _debate_spec_eligible <spec> — should this spec be debated? Debating every spec is real money, so the
-# gate is a POLICY, not an accident of what was easy to grep.
+# _debate_spec_eligible <spec> — should this spec be debated?
 #
-# It used to be `risk: HIGH` alone. Measured on trading-portal that selected 2 of 9 roadmap-linked specs --
-# both security specs, and the debate found blocker-severity bugs in both, so the targeting was good. But
-# UX and design defects are exactly the kind a single model talks itself into, and they were all excluded:
-# 8 of those 9 specs described a real user-facing surface.
+# POLICY (inverted 2026-07-20, on the owner's call): debate EVERYTHING except the provably trivial. The
+# previous rule was an allowlist -- `risk: HIGH`, later plus a user-facing C3 -- and an allowlist silently
+# excludes whatever nobody thought to add. Measured on trading-portal it debated 2 specs of 9, and the
+# categories it missed were not obscure: UX, and anything architectural. A cross-model challenger is most
+# valuable exactly where one model quietly commits to a shape nobody questioned -- an endpoint contract, a
+# data model, a migration -- which the old gate never looked at.
 #
-# So a spec qualifies on EITHER axis:
-#   * risk: HIGH                       -- the original signal (security/data/money)
-#   * a populated "C3. UX flow"        -- the spec template's OWN marker for a user-facing surface
-#                                         (`<!-- trigger: user-facing surface -->`). Reusing it means one
-#                                         definition of "user-facing", not a second competing one.
-# DEBATE_MIN_RISK=LOW (or DEBATE_ALL=1) widens to every spec, for a deliberate spend-everything pass.
+# So the question is no longer "did it qualify?" but "is there any reason NOT to?". A spec is debated
+# unless it declares itself trivial, and triviality must be DECLARED, never inferred:
 #
-# Every skip is NARRATED (C1). The silent `return 0` is how the old filter hid the fact that it was
-# debating 2 specs out of 156 while the run looked fully covered.
+#     trivial  ==  risk: LOW  AND  tier: FAST  AND  every C1-C6 trigger section is dead
+#
+# The C-sections are the spec template's own conditional triggers, so this reuses the author's declaration
+# rather than inventing a parallel taxonomy that would drift from it:
+#     C1 Contract   -- endpoint / CLI / public function / event   ARCHITECTURE
+#     C2 Data model -- persistence changes                        ARCHITECTURE
+#     C3 UX flow    -- user-facing surface                        DESIGN
+#     C4 NFRs       -- perf / scale / limits                      ARCHITECTURE
+#     C5 Security   -- authz, money, secrets, PII, LLM calls      SECURITY
+#     C6 Risk       -- touches a live path / deploy-visible       BLAST RADIUS
+#
+# A section counts as DEAD when it is absent, empty, an explicit `N/A`, the unedited `<...>` placeholder,
+# or an `API-only` note (C3 only -- API-only is a real statement about UX, not about the other five).
+#
+# DEBATE_SCOPE overrides the default: all | nontrivial (default) | high (the old allowlist, kept so a
+# cost-constrained run can go back to security-only without editing code).
 _debate_spec_eligible() {
-  local sp="$1" why="" c3
-  case "${DEBATE_MIN_RISK:-}" in [Ll][Oo][Ww]|[Aa][Ll][Ll]) why="DEBATE_MIN_RISK=${DEBATE_MIN_RISK}" ;; esac
-  [ -z "$why" ] && [ "${DEBATE_ALL:-0}" = 1 ] && why="DEBATE_ALL=1"
-  [ -z "$why" ] && grep -qiE 'risk:[[:space:]]*HIGH' "$sp" 2>/dev/null && why="risk: HIGH"
-  if [ -z "$why" ] && _debate_spec_is_ux "$sp"; then why="user-facing (C3 UX flow populated)"; fi
+  local sp="$1" why="" sec scope="${DEBATE_SCOPE:-nontrivial}"
+  case "${DEBATE_MIN_RISK:-}" in [Ll][Oo][Ww]|[Aa][Ll][Ll]) scope=all ;; esac
+  [ "${DEBATE_ALL:-0}" = 1 ] && scope=all
+
+  case "$scope" in
+    all) why="DEBATE_SCOPE=all" ;;
+    high)
+      grep -qiE 'risk:[[:space:]]*HIGH' "$sp" 2>/dev/null && why="risk: HIGH"
+      ;;
+    *)  # nontrivial — the default. Any single live signal is enough.
+      # Order matters for the NARRATION, not the verdict: check the substantive triggers before the blunt
+      # `tier: FULL`, so the log says "architecture (C1 populated)" rather than a generic tier line. What
+      # got a spec debated is the first thing you want to know when reading back a run.
+      if grep -qiE 'risk:[[:space:]]*HIGH' "$sp" 2>/dev/null; then why="risk: HIGH"
+      else
+        for sec in C1:architecture/contract C2:architecture/data-model C4:architecture/NFRs C5:security C3:user-facing C6:live-path/rollback; do
+          if _debate_spec_section_live "$sp" "${sec%%:*}"; then why="${sec##*:} (${sec%%:*} populated)"; break; fi
+        done
+        [ -z "$why" ] && grep -qiE 'tier:[[:space:]]*FULL' "$sp" 2>/dev/null && why="tier: FULL (author did not mark it trivial)"
+        # Triviality must be POSITIVELY DECLARED. A spec carrying neither `tier:` nor `risk:` is not a
+        # trivial spec -- it is a spec that predates the template and declares nothing at all. Reading the
+        # ABSENCE of a marker as a declaration of triviality is the same absent-vs-false trap that bit
+        # merge-structured.sh and firecrawl_ensure, and here it silently exempted 147 of 156 real specs.
+        # Unknown resolves toward debating: a wasted debate costs money, a missed one ships the defect.
+        # No `^[^#]*` anchor: the declaration lives in the markdown H1 itself
+        # (`# Spec: x   (slug: x · risk: LOW · tier: FAST)`), so excluding lines starting with # excluded
+        # the only line that ever carries it -- and made EVERY spec look undeclared.
+        if [ -z "$why" ] && ! grep -qiE 'tier:[[:space:]]*(FULL|FAST)' "$sp" 2>/dev/null \
+                         && ! grep -qiE 'risk:[[:space:]]*(LOW|HIGH)' "$sp" 2>/dev/null; then
+          why="undeclared (no tier:/risk: marker — pre-template spec, not provably trivial)"
+        fi
+      fi
+      ;;
+  esac
+
   if [ -n "$why" ]; then
     echo "debate: $(basename "$sp" .md) — eligible ($why)." >&2
     return 0
   fi
-  echo "debate: $(basename "$sp" .md) — SKIPPED (not risk:HIGH, no user-facing C3 UX flow). Widen with DEBATE_MIN_RISK=LOW." >&2
+  # C1: never a silent skip. A run that debated almost nothing must not look like a fully-debated one.
+  echo "debate: $(basename "$sp" .md) — SKIPPED as trivial (risk: LOW, tier: FAST, no live C1-C6 section). Widen with DEBATE_SCOPE=all." >&2
   return 1
 }
 
-# _debate_spec_is_ux <spec> — true when the C3 UX flow section describes a real surface.
-# Deliberately strict about what does NOT count, because a false positive here costs a paid debate on every
-# run: an absent section, the unedited `<Key flow(s) ...>` placeholder, an explicit `N/A -- reason`, and a
-# spec that states it is API-only all mean "no user-facing surface".
-_debate_spec_is_ux() {
-  local sp="$1" c3
-  c3="$(awk '/^##[[:space:]]*C3\./{f=1;next} f&&/^##[[:space:]]/{exit} f' "$sp" 2>/dev/null \
-        | grep -vE '^[[:space:]]*$|^[[:space:]]*<!--' | head -1)"
-  [ -n "$c3" ] || return 1
-  case "$c3" in
-    [Nn]/[Aa]*|'<'*) return 1 ;;                       # explicit N/A, or the untouched template placeholder
+# _debate_spec_section_live <spec> <C1..C6> — true when that conditional section says something real.
+# Strict about what does NOT count: a false positive bills a paid cross-model dialogue per spec per run,
+# and the unedited template placeholder is the single most likely false positive.
+_debate_spec_section_live() {
+  local sp="$1" id="$2" body
+  body="$(awk -v s="^##[[:space:]]*${id}\\\\." '$0 ~ s {f=1;next} f&&/^##[[:space:]]/{exit} f' "$sp" 2>/dev/null \
+          | grep -vE '^[[:space:]]*$|^[[:space:]]*<!--' | head -1)"
+  [ -n "$body" ] || return 1
+  case "$body" in
+    [Nn]/[Aa]*|'<'*) return 1 ;;
   esac
-  grep -qiE '^[[:space:]]*API-only' <<<"$c3" && return 1
+  # "API-only" is a statement about the UX surface specifically; it says nothing about contracts or data.
+  [ "$id" = C3 ] && grep -qiE '^[[:space:]]*API-only' <<<"$body" && return 1
   return 0
 }
 

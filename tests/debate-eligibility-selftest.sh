@@ -1,80 +1,95 @@
 #!/usr/bin/env bash
-# debate-eligibility-selftest — pins WHICH specs get debated. This gate spends real money per spec, so both
-# directions matter: a spec that should be debated and is not is a missed defect; a spec that should not be
-# and is costs a paid cross-model dialogue on every run.
+# debate-eligibility-selftest — pins WHICH specs get debated.
 #
-# HISTORY: the gate was `risk: HIGH` alone. Measured on a real project that selected 2 of 9 roadmap-linked
-# specs. Both were security specs and the debate found blocker-severity bugs in both -- the targeting was
-# good, the reach was not: 8 of those 9 described a real user-facing surface, and UX/design defects are
-# precisely the kind a single model talks itself into. The gate now also fires on the spec template's OWN
-# marker for a user-facing surface (a populated "C3. UX flow"), rather than a second, competing definition.
+# POLICY UNDER TEST (inverted 2026-07-20): debate everything EXCEPT the provably trivial.
+#     trivial == risk: LOW  AND  tier: FAST  AND  every C1-C6 trigger section dead
+#
+# Both directions are load-bearing and both are asserted. A spec wrongly excluded ships its defect; a spec
+# wrongly included bills a paid cross-model dialogue on every run. The exclusion set is deliberately tiny,
+# so most of this file is about the ways a spec must NOT be mistaken for trivial.
+#
+# The history is why the tests below look paranoid. The gate began as `risk: HIGH` alone -- on a real
+# project that was 2 specs of 9, missing every architectural and UX spec. Widening it then introduced the
+# opposite bug: 147 pre-template specs carrying no `tier:`/`risk:` markers at all were read as DECLARED
+# trivial, because absence of a marker was treated as a declaration. Unknown must resolve toward debating.
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
 
 fail=0
 bad(){ echo "FAIL: $*"; fail=1; }
-
 D="$(mktemp -d)" || exit 1
 trap 'rm -rf "$D"' EXIT
 
-# mkspec <name> <risk> <c3-body>
-mkspec(){
-  printf '<!-- ace-spec-template v1 -->\n# Spec: %s   (slug: %s · risk: %s · tier: FULL)\n\n## 3. Scope\nIn: x\n\n## C3. UX flow            <!-- trigger: user-facing surface -->\n%s\n\n## C6. Risk\nn/a\n' \
-    "$1" "$1" "$2" "$3" > "$D/$1.md"
-  printf '%s' "$D/$1.md"
+# spec <name> <header-attrs> <C-section-id> <C-body>  — writes a spec, prints its path.
+# header-attrs is the literal "risk: X · tier: Y" text, or "" for a pre-template spec with no markers.
+spec(){
+  local n="$1" attrs="$2" cid="${3:-C3}" body="${4:-N/A — nothing user-facing.}"
+  { if [ -n "$attrs" ]; then printf '# Spec: %s   (slug: %s · %s)\n' "$n" "$n" "$attrs"
+    else printf '# Spec: %s (ROADMAP L1)\n\n## Root need (3-WHYs)\nWhy: legacy pre-template spec.\n' "$n"; fi
+    printf '\n## 3. Scope\nIn: x\n\n## %s. Section\n%s\n\n## 9. Tail\nend\n' "$cid" "$body"
+  } > "$D/$n.md"
+  printf '%s' "$D/$n.md"
 }
 
-# eligible? -> prints "YES <reason>" / "NO <reason>"; reason comes from the narration on stderr (C1).
 elig(){
   local sp="$1"; shift
-  local extra="$*"          # captured BEFORE `set --`, which clears $@ -- see below
-  ( [ -n "$extra" ] && eval "$extra"      # apply the knob first; it must survive into the sourced lib
-    set --                                # A13: a sourced lib must never see our positional params.
-                                          # This clears $@, so the knobs are applied ABOVE, not via "$@" --
-                                          # doing it after silently dropped them and made both knob
-                                          # assertions fail against code that was actually correct.
+  local extra="$*"                     # captured BEFORE `set --`, which clears $@
+  ( [ -n "$extra" ] && eval "$extra"
+    set --                             # A13: a sourced lib must never inherit our positional params
     . lib/debate.sh >/dev/null 2>&1
     if out="$(_debate_spec_eligible "$sp" 2>&1)"; then printf 'YES %s' "$out"; else printf 'NO %s' "$out"; fi )
 }
+yes_(){ case "$(elig "$1" "${@:3}")" in YES*) ;; *) bad "$2";; esac; }
+no_(){  case "$(elig "$1" "${@:3}")" in NO*)  ;; *) bad "$2";; esac; }
 
-# --- SHOULD be debated ----------------------------------------------------------------------------------
-s="$(mkspec high-api HIGH 'API-only. No user surface.')"
-case "$(elig "$s")" in YES*) ;; *) bad "risk: HIGH spec was NOT eligible — the original signal regressed";; esac
+# --- the ONLY thing that may be skipped: declared-trivial ------------------------------------------------
+t="$(spec triv 'risk: LOW · tier: FAST' C3 'N/A — nothing user-facing.')"
+no_ "$t" "a DECLARED-trivial spec (risk LOW + tier FAST + dead C3) was debated — the exclusion does not work at all"
 
-s="$(mkspec low-ux LOW 'Settings page: owner sees the form; non-owner sees a static notice. Loading + empty states.')"
-r="$(elig "$s")"
-case "$r" in YES*) ;; *) bad "a LOW-risk spec with a real user-facing C3 was NOT eligible — this is the whole point of the change"$'\n'"  $r";; esac
-grep -qi 'user-facing' <<<"$r" || bad "eligibility reason did not name the user-facing trigger: $r"
+# --- every axis that must force a debate -----------------------------------------------------------------
+yes_ "$(spec hi   'risk: HIGH · tier: FAST' C3 'N/A — none.')"                          "risk: HIGH was not debated — the original signal regressed"
+yes_ "$(spec full 'risk: LOW · tier: FULL'  C3 'N/A — none.')"                          "tier: FULL was not debated"
 
-# --- should NOT be debated (each exclusion pinned separately) --------------------------------------------
-s="$(mkspec low-na LOW 'N/A — backend only, no user-visible change.')"
-case "$(elig "$s")" in NO*) ;; *) bad "an explicit 'N/A' C3 was treated as user-facing — every backend spec would now be debated";; esac
+# ARCHITECTURE — the axis this change was requested for. Each C-section, independently.
+for c in C1:contract C2:data-model C4:NFRs; do
+  id="${c%%:*}"
+  yes_ "$(spec "arch-$id" 'risk: LOW · tier: FAST' "$id" 'POST /api/x returns {id}. Consumed by the worker.')" \
+       "ARCHITECTURE spec with a populated $id was NOT debated — this is the whole point of the change"
+done
+yes_ "$(spec sec 'risk: LOW · tier: FAST' C5 'Owner-only; authz check before body parse.')" "a populated C5 (security) was not debated"
+yes_ "$(spec ux  'risk: LOW · tier: FAST' C3 'Settings page: owner sees the form; non-owner a notice.')" "a populated C3 (user-facing) was not debated"
+yes_ "$(spec live 'risk: LOW · tier: FAST' C6 'Touches the live deploy path; rollback = revert the flag.')" "a populated C6 (live path) was not debated"
 
-s="$(mkspec low-placeholder LOW '<Key flow(s) · loading/empty/error states · accessibility note.>')"
-case "$(elig "$s")" in NO*) ;; *) bad "the UNEDITED template placeholder counted as user-facing — a spec nobody filled in would be debated";; esac
+# --- UNKNOWN must resolve toward debating (the 147-spec bug) ---------------------------------------------
+r="$(elig "$(spec legacy '')")"
+case "$r" in YES*) ;; *) bad "a PRE-TEMPLATE spec with no tier:/risk: marker was skipped as trivial — absence of a declaration is not a declaration of triviality; this silently exempted 147 of 156 real specs"$'\n'"  $r";; esac
+grep -qi 'undeclared' <<<"$r" || bad "the undeclared case was not named as such in the reason: $r"
 
-s="$(mkspec low-apionly LOW 'API-only. Callers handle the status codes.')"
-case "$(elig "$s")" in NO*) ;; *) bad "a spec that says API-only was treated as user-facing";; esac
+# --- a dead section must not be mistaken for a live one --------------------------------------------------
+no_ "$(spec ph  'risk: LOW · tier: FAST' C1 '<Endpoint · request/response shape · errors.>')" \
+    "the UNEDITED template placeholder counted as a live section — every untouched spec would be debated"
+no_ "$(spec emp 'risk: LOW · tier: FAST' C1 '')"          "an EMPTY section counted as live"
+no_ "$(spec api 'risk: LOW · tier: FAST' C3 'API-only. Callers handle status codes.')" \
+    "'API-only' in C3 counted as a user-facing surface"
+# ...but API-only says nothing about CONTRACTS: the same text under C1 is a live architectural section.
+yes_ "$(spec api1 'risk: LOW · tier: FAST' C1 'API-only. POST /api/x, 401 on unauth.')" \
+     "'API-only' suppressed a populated C1 — that exemption is specific to the UX section"
 
-s="$(mkspec low-empty LOW '')"
-case "$(elig "$s")" in NO*) ;; *) bad "an EMPTY C3 counted as user-facing";; esac
+# --- scope knobs -----------------------------------------------------------------------------------------
+t="$(spec triv2 'risk: LOW · tier: FAST' C3 'N/A — none.')"
+yes_ "$t" "DEBATE_SCOPE=all did not widen to a trivial spec"        export DEBATE_SCOPE=all
+yes_ "$t" "DEBATE_ALL=1 did not widen to a trivial spec"            export DEBATE_ALL=1
+yes_ "$t" "DEBATE_MIN_RISK=LOW did not widen to a trivial spec"     export DEBATE_MIN_RISK=LOW
+no_  "$(spec ux2 'risk: LOW · tier: FAST' C3 'Settings page with owner/non-owner states.')" \
+     "DEBATE_SCOPE=high still debated a non-HIGH spec — the cost-constrained escape hatch is broken" export DEBATE_SCOPE=high
 
-# a spec with no C3 section at all
-printf '# Spec: nosection   (slug: nosection · risk: LOW)\n\n## 3. Scope\nIn: x\n' > "$D/nosection.md"
-case "$(elig "$D/nosection.md")" in NO*) ;; *) bad "a spec with NO C3 section counted as user-facing";; esac
-
-# --- the widening knobs -----------------------------------------------------------------------------------
-s="$(mkspec low-na2 LOW 'N/A — backend only.')"
-case "$(elig "$s" export DEBATE_MIN_RISK=LOW)" in YES*) ;; *) bad "DEBATE_MIN_RISK=LOW did not widen to every spec";; esac
-case "$(elig "$s" export DEBATE_ALL=1)"        in YES*) ;; *) bad "DEBATE_ALL=1 did not widen to every spec";; esac
-
-# --- the skip must be NARRATED (C1: the silent return 0 is how the old filter hid its own narrowness) -----
-r="$(elig "$(mkspec low-na3 LOW 'N/A — backend.')")"
-grep -qi 'SKIPPED' <<<"$r" || bad "a skipped spec produced no narration — a run would look fully debated: $r"
-grep -qi 'DEBATE_MIN_RISK' <<<"$r" || bad "the skip message does not tell the user how to widen it: $r"
+# --- the skip must be NARRATED (C1) ----------------------------------------------------------------------
+r="$(elig "$(spec triv3 'risk: LOW · tier: FAST' C3 'N/A — none.')")"
+grep -qi 'SKIPPED' <<<"$r"      || bad "a skipped spec produced no narration — the run would look fully debated: $r"
+grep -qi 'DEBATE_SCOPE' <<<"$r" || bad "the skip message does not say how to widen it: $r"
 
 if [ "$fail" = 0 ]; then
-  echo "debate-eligibility-selftest: PASS — HIGH-risk + user-facing debated; N/A, placeholder, API-only, empty and absent C3 excluded; knobs widen; skips narrated"
+  echo "debate-eligibility-selftest: PASS — only declared-trivial skipped; architecture/UX/security/live-path all debated; undeclared resolves to debate; dead sections excluded; knobs work; skips narrated"
 else
   echo "debate-eligibility-selftest: FAIL"
 fi
