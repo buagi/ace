@@ -721,7 +721,12 @@ JSON
   # that server on EVERY launch (npx …context7-mcp --api-key "" → connect error). Re-enabled once a key
   # is saved (secrets.env) by re-running `ace install`.
   if [ -z "${CONTEXT7_API_KEY:-}" ] && ! grep -q '^export CONTEXT7_API_KEY=.' "${ACE_SECRETS:-$HOME/.config/ace/secrets.env}" 2>/dev/null; then
-    _ct="$(mktemp)" && jq '.mcp.context7.enabled=false' "$cfgdir/opencode.json" > "$_ct" 2>/dev/null && mv "$_ct" "$cfgdir/opencode.json" \
+    # Same defect the firecrawl sites had a few lines below: a bare `mktemp` lands in $TMPDIR, so `mv` is
+    # copy+unlink across filesystems rather than rename(2) — a crash mid-copy truncates the user's
+    # opencode.json — and it re-permissioned the file 644 -> 600. _ace_json_edit uses a sibling temp and
+    # clones the mode.
+    _fc_need_lib
+    _ace_json_edit "$cfgdir/opencode.json" '.mcp.context7.enabled=false' \
       && info "context7 MCP disabled (no CONTEXT7_API_KEY) — re-run 'ace install' with a key to enable it."
   fi
   # firecrawl is self-hosted + on-demand — disable the MCP when the instance isn't reachable, else opencode
@@ -734,27 +739,39 @@ JSON
   if [ "$_fcmode" = cloud ]; then
     ok "firecrawl MCP enabled (CLOUD · Fire-engine: anti-bot + IP rotation · key from ${ACE_SECRETS##*/})."
   elif [ "$_fcmode" = none ]; then
-    _fc="$(mktemp)" && jq '.mcp.firecrawl.enabled=false' "$cfgdir/opencode.json" > "$_fc" 2>/dev/null && mv "$_fc" "$cfgdir/opencode.json" \
+    # _ace_json_edit (lib/consistency.sh) — sibling temp + preserved mode. The bare `mktemp` this replaces
+    # put the temp in $TMPDIR: usually a DIFFERENT filesystem, so `mv` was copy-then-unlink rather than
+    # rename(2) (truncatable opencode.json on a crash/ENOSPC), and always 0600, which silently
+    # re-permissioned the user's 0644 config to 0600 on every flip. Measured, not theorised.
+    _fc_need_lib
+    _ace_json_edit "$cfgdir/opencode.json" '.mcp.firecrawl.enabled=false' \
       && info "firecrawl MCP disabled (no FIRECRAWL_API_KEY, no self-hosted URL) — research falls back to webfetch. Set a key with 'ace keys'."
   else
-    local _fcurl="${FIRECRAWL_API_URL:-http://127.0.0.1:${FIRECRAWL_PORT:-3002}}"
-    if ! curl -fsS -m 3 "${_fcurl%/}/" >/dev/null 2>&1; then
+    _fc_need_lib
+    # D2: resolve + probe through the SHARED helpers, so config generation, `ace firecrawl status` and
+    # firecrawl_ensure cannot disagree about which endpoint "Firecrawl" means.
+    local _fcurl; _fcurl="$(firecrawl_url 2>/dev/null)"
+    [ -n "$_fcurl" ] || _fcurl="${FIRECRAWL_API_URL:-http://127.0.0.1:${FIRECRAWL_PORT:-3002}}"
+    if ! firecrawl_probe "$_fcurl" 3; then
       # Self-hosted but down at GENERATION time is no longer fatal to research: firecrawl_ensure re-checks
       # and starts it at RUN start, then flips this flag itself. Left disabled here only so opencode does
       # not try to spawn a dead server on an interactive launch.
-      _fc="$(mktemp)" && jq '.mcp.firecrawl.enabled=false' "$cfgdir/opencode.json" > "$_fc" 2>/dev/null && mv "$_fc" "$cfgdir/opencode.json" \
+      _ace_json_edit "$cfgdir/opencode.json" '.mcp.firecrawl.enabled=false' \
         && info "firecrawl MCP disabled for now (self-hosted instance down at $_fcurl) — a run will start it and enable it automatically."
     else
-      ok "firecrawl MCP enabled (LOCAL $_fcurl · loopback-only · no cloud key)."
+      ok "firecrawl MCP enabled (LOCAL $_fcurl · self-hosted · no cloud key)."
     fi
   fi
   # per-agent model overrides: an explicit MODEL_<agent> beats the default just stamped. With NO
   # MODEL_* set (the common case) this loop is a no-op, so the output is byte-identical to before.
-  local _a _m _o _tmp="$cfgdir/.opencode.json.tmp"
+  # NOT a fixed .opencode.json.tmp: two concurrent `ace install` runs write the same path and one consumes
+  # the other's half-written file. _ace_json_edit takes a unique sibling temp per call and preserves mode.
+  local _a _m _o
   for _a in $ACE_AGENTS; do
     _m="$(config_get "MODEL_$_a" 2>/dev/null)"; [ -n "$_m" ] || continue
     _o="$(_model_opts "$_m" "$(_agent_eff "$_a")")"
-    jq --arg a "$_a" --arg m "$_m" --argjson o "$_o" '.agent[$a].model=$m | .agent[$a].options=$o' "$cfgdir/opencode.json" > "$_tmp" && mv -f "$_tmp" "$cfgdir/opencode.json" || { err "jq failed setting $_a model"; rm -f "$_tmp"; break; }
+    _fc_need_lib
+    _ace_json_edit "$cfgdir/opencode.json" '.agent[$a].model=$m | .agent[$a].options=$o' --arg a "$_a" --arg m "$_m" --argjson o "$_o"
   done
   jq -e . "$cfgdir/opencode.json" >/dev/null 2>&1 && ok "opencode.json written + valid (providers:$(_used_providers | tr '\n' ' '))" || err "opencode.json invalid — check $cfgdir/opencode.json"
   # install the plugins this config needs + log in to any subscription provider (subscription = default)
@@ -850,6 +867,20 @@ N/A — <reason>
 SPEC_TEMPLATE
 }
 
+# _fc_need_lib — make the SHARED firecrawl helpers (firecrawl_url / firecrawl_probe / _ace_json_edit,
+# all in lib/consistency.sh) resolvable from install.sh. `ace` sources consistency.sh at startup, so this
+# is normally a no-op test; it exists for the paths that source install.sh ALONE (firecrawl_ensure's
+# `up` subshell, scripts, tests) — otherwise "use the shared probe" would silently become "probe missing,
+# treat the crawler as down". Idempotent; safe to call repeatedly.
+_fc_need_lib() {
+  declare -F firecrawl_probe >/dev/null 2>&1 && return 0
+  local _d; _d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  set --   # A13: function-local, so the sourced lib never sees the caller's positional params
+  # shellcheck source=/dev/null
+  . "$_d/consistency.sh" >/dev/null 2>&1 || return 1
+  declare -F firecrawl_probe >/dev/null 2>&1
+}
+
 # firecrawl_cmd (Part H / H4) — ACE-managed LOCAL research crawler. `ace firecrawl {up|down|status}`. Brings up
 # the self-hosted Firecrawl container (loopback-only), verifies the binding, persists the LOCAL url so the MCP
 # inherits it, and EMPHASIZES the security posture to the user before starting anything. Fail-open everywhere.
@@ -857,7 +888,12 @@ firecrawl_cmd() {
   local sub="${1:-status}" eng dir port sec n _fcnew
   dir="${FIRECRAWL_DIR:-$HOME/firecrawl}"; port="${FIRECRAWL_PORT:-3002}"
   eng="$(command -v podman >/dev/null 2>&1 && echo podman || { command -v docker >/dev/null 2>&1 && echo docker; })"
-  _fc_up() { curl -fsS -m 2 "http://127.0.0.1:${port}/" >/dev/null 2>&1; }
+  # D2: ONE probe, shared with firecrawl_ensure (lib/consistency.sh). This used to hardcode
+  # http://127.0.0.1:$port and IGNORE FIRECRAWL_API_URL, so with a self-hosted crawler on any non-default
+  # endpoint `ace firecrawl status` said DOWN while firecrawl_ensure said UP and enabled the MCP — and the
+  # degraded-path message in consistency.sh sends the user to this very command to check.
+  _fc_need_lib
+  _fc_up() { firecrawl_probe; }
   case "$sub" in
     up)
       { [ -f "$dir/docker-compose.yaml" ] || [ -f "$dir/docker-compose.yml" ]; } || { err "no Firecrawl compose in $dir (set FIRECRAWL_DIR). Self-host: github.com/firecrawl/firecrawl."; return 1; }
@@ -875,8 +911,11 @@ firecrawl_cmd() {
         "• Stop it anytime:  ace firecrawl down"
       confirm "Start the local Firecrawl container now?" Y || { info "skipped."; return 0; }
       ( cd "$dir" && $eng compose up -d ) || { err "compose up failed — check '$eng compose logs' in $dir."; return 1; }
-      for n in $(seq 1 20); do _fc_up && break; sleep 1.5; done
-      if _fc_up; then
+      # EXPLICIT local endpoint here, not _fc_up: this arm asks "did the container I just started bind to
+      # :$port", which is a different question from "which backend will ACE use". Answering it with a
+      # configured REMOTE FIRECRAWL_API_URL would report UP for a local container that never came up.
+      for n in $(seq 1 20); do firecrawl_probe "http://127.0.0.1:${port}" && break; sleep 1.5; done
+      if firecrawl_probe "http://127.0.0.1:${port}"; then
         $eng ps --format '{{.Ports}}' 2>/dev/null | grep -qE "0\.0\.0\.0:${port}|\[::\]:${port}|(^|[^.0-9])${port}->" \
           && warn "⚠ port ${port} may be bound to ALL interfaces (0.0.0.0) — publish '127.0.0.1:${port}:${port}' in the compose so it stays loopback-only."
         sec="${ACE_SECRETS:-$HOME/.config/ace/secrets.env}"; mkdir -p "$(dirname "$sec")"
@@ -891,7 +930,8 @@ firecrawl_cmd() {
         ok "Firecrawl UP (http://127.0.0.1:${port} · loopback-only · no cloud key). Now run 'ace opencode' to enable the MCP."
       else err "Firecrawl didn't answer on :${port} within 30s — check '$eng compose logs' in $dir."; return 1; fi ;;
     down) [ -n "$eng" ] && ( cd "$dir" && $eng compose down ) && ok "Firecrawl stopped." || warn "no engine / nothing to stop." ;;
-    status|"") if _fc_up; then ok "Firecrawl: UP (http://127.0.0.1:${port} · loopback)"; else warn "Firecrawl: DOWN — 'ace firecrawl up' to start (optional; research falls back to webfetch)."; fi ;;
+    status|"") local _u; _u="$(firecrawl_url 2>/dev/null)"; [ -n "$_u" ] || _u="http://127.0.0.1:${port}"
+      if _fc_up; then ok "Firecrawl: UP ($_u)"; else warn "Firecrawl: DOWN at $_u — 'ace firecrawl up' to start (optional; research falls back to webfetch)."; fi ;;
     *) echo "usage: ace firecrawl {up|down|status}" >&2; return 2 ;;
   esac
 }
