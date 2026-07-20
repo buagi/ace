@@ -233,4 +233,19 @@ grep -qE '^\s+phase 3 5 ' <<<"$(sed -E 's/(^|[[:space:]])#.*$//' "$AL")" \
   && ok "phase 3 is emitted before the gap branch (fires whether or not there are gaps)" \
   || no "phase 3 is inside a conditional — a clean spec set would skip the number"
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "debate telemetry:"
+# The debate loop was the single biggest wall-clock consumer of a real run (50%) and emitted NO metric
+# row, so run-summary and scorecard under-reported by 2x. Assert each debate call site is TIMED.
+_al_code(){ sed -E 's/(^|[[:space:]])#.*$//' "$1" | grep -vE '^[[:space:]]*$'; }
+grep -qE 'phase_metric debate ' <<<"$(_al_code "$AL")" \
+  && ok "spec-debate call site emits a phase_metric row (its wall-clock is attributable)" \
+  || no "the debate loop emits no phase_metric — half a run's wall-clock lands in no metric row"
+# both the spec AND review debate sites must be timed, or one path stays invisible
+_dbg="$(grep -cE 'phase_metric debate ' <<<"$(_al_code "$AL")")"
+[ "${_dbg:-0}" -ge 2 ] \
+  && ok "both spec-debate and review-debate are timed ($_dbg call sites)" \
+  || no "only ${_dbg:-0} debate call site(s) timed — the other debate path is unattributed"
+
 [ "$fail" = 0 ] && { echo "✓ autoloop selftest OK"; exit 0; } || { echo "✗ autoloop selftest FAILED"; exit 1; }

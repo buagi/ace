@@ -487,7 +487,13 @@ spec_gate_solo(){
       # lines go to stdout, which is what "$(…)" captures — so 2>/dev/null discarded exactly the output the
       # line above promises ("per-turn progress follows") and turned a silently-skipped debate into a
       # multi-minute unexplained pause. Let it through to the loop log.
+      # Time each debate into metrics.csv. Without this the debate loop was the single largest consumer of
+      # wall-clock in a real run (6263s = 50%) and appeared in NO metric row, so run-summary and scorecard
+      # under-reported by 2x. The per-debate budget lives in debate.sh (DEBATE_WALL_TOTAL); this is the
+      # attribution half.
+      _dt=$(date +%s)
       deb="$(bash "$_dsh" spec "$sp")" || true
+      phase_metric debate "$(basename "$sp" .md)" "$(( $(date +%s) - _dt ))" 0
       [ -n "$deb" ] && extra="$(printf '%s\n%s' "$extra" "$deb")"
     done
   elif [ "${SPEC_RUBRIC:-0}" = 1 ]; then
@@ -1258,7 +1264,9 @@ merge_if_ready(){
       local _rev _blk
       # Same reasoning as the spec call site: narration + fail-open reasons are on stderr, findings on
       # stdout. This one gates a MERGE, so "the debate silently did nothing" must be visible in the log.
+      local _rvt; _rvt=$(date +%s)
       _rev="$(bash "${_SWARM_SH%swarm.sh}debate.sh" review main)" || true
+      phase_metric debate "review-$(branch | tr '/' '-')" "$(( $(date +%s) - _rvt ))" 0
       _blk="$(printf '%s\n' "$_rev" | grep -icE 'DEBATEISSUE[[:space:]]+(blocker|major)' || true)"; _blk="${_blk:-0}"
       if [ "$_blk" -gt 0 ] 2>/dev/null; then
         printf '%s\n' "$_rev" | grep -iE 'DEBATEISSUE' | sed 's/^/    /'

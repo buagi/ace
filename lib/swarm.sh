@@ -484,6 +484,39 @@ RM
   [ "$ok" = 1 ]
 }
 
+# swarm_roadmap_specs [roadmap] [specdir] — THE definition of "the specs that are actually in scope".
+#
+# A ROADMAP item points at its spec with a `Spec: .opencode/specs/<slug>.md` field; the set of specs so
+# referenced IS the gate's population — it is what autoloop.sh's `_solo_specs` lints, re-specs and debates, and
+# nothing outside it is ever touched by a run. `.opencode/specs/*.md` is a DIFFERENT and much larger set: on
+# trading-portal it is 157 files against a gate scope of 10, the other ~147 being legacy specs that predate the
+# template and that no run will ever look at. Measuring the tree and reporting it as the gate produced
+# "2637 → 2640 gaps" for a gate carrying ONE — a number 2600x off, and a VERDICT derived from it.
+#
+# This function exists so the gate and every REPORT ON the gate share ONE definition rather than each
+# re-deriving it (autoloop.sh's `_solo_specs` is the same expression; it stays where it is because that file
+# has a different owner, but any drift between the two is now visible as a diff between two named things
+# instead of hiding inside an inline pipeline). Callers: reanalyze.sh, and the `roadmap-specs` CLI verb.
+#
+#   specdir — resolve each reference's BASENAME inside this directory instead of following the path as
+#             written. reanalyze.sh's baseline is a FLAT copy of the specs (before/specs/<slug>.md), so the
+#             recorded `.opencode/specs/x.md` path does not resolve there; the reference set still comes from
+#             that snapshot's own ROADMAP.md, which is the point.
+# Prints one existing path per line (nothing when the roadmap links none — an EMPTY set is a real state and
+# the caller must distinguish it from "could not measure", never render it as a clean zero).
+swarm_roadmap_specs() {
+  local rm="${1:-ROADMAP.md}" specdir="${2:-}" s b
+  [ -f "$rm" ] || return 0
+  grep -oE 'Spec:[[:space:]]*[^ )]+\.md' "$rm" 2>/dev/null | sed -E 's/^Spec:[[:space:]]*//' | sort -u \
+  | while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      # a ledger referenced from the ROADMAP is still not a spec (mirrors swarm_spec_lint's own skip)
+      case "$s" in *.progress.md) continue ;; esac
+      if [ -n "$specdir" ]; then b="$specdir/$(basename "$s")"; else b="$s"; fi
+      [ -f "$b" ] && printf '%s\n' "$b"
+    done
+}
+
 # swarm_spec_lint <spec.md>... — Part H/H5: deterministic, zero-token completeness gate on a feature spec
 # (the artifact one level up from plan-lint's ROADMAP geometry). Proves STRUCTURE · GRAMMAR · GROUNDING against
 # the fixed template markers (H1) — NOT whether the approach is good (that's the critics/rubric). Emits
@@ -495,6 +528,15 @@ swarm_spec_lint() {
   _sec(){ awk -v H="## $1." 'index($0,H)==1{f=1;next} /^## /{f=0} f' "$2"; }   # body of section N
   _gap(){ printf 'SPECGAP %s %s %s\n' "$slug" "$1" "$2"; gaps=$((gaps+1)); }
   for f in "$@"; do
+    # D2: `*.progress.md` are per-feature PROGRESS LEDGERS, not specs. They live in .opencode/specs/ and so are
+    # swept up by every `specs/*.md` glob, but they have no §1-§6 and never will — so each one maximally trips
+    # SECTIONS/CBLOCKS/TIER/VERSION/SOURCED (measured: 10 ledgers = 180 gaps on trading-portal, ~7% of the
+    # whole tree's total). Worse than the noise: those phantom gaps are real SPECGAP lines, so they compete for
+    # the `SPECFIX_MAX_LINES` re-spec budget and a bounded re-spec pass can spend its entire allowance asking a
+    # model to add EARS acceptance criteria to a file that is a changelog. Filtered HERE, in the lint itself,
+    # rather than at each glob site — every caller (solo gate, coordinator, reanalyze, scorecard) inherits it
+    # from one place and none of them can forget. Not counted in `n` either: a ledger is not a linted spec.
+    case "$f" in *.progress.md) continue ;; esac
     slug="$(basename "$f" .md)"
     [ -f "$f" ] || { printf 'SPECGAP %s FILE spec file not found\n' "$slug"; gaps=$((gaps+1)); continue; }
     n=$((n+1))
@@ -654,6 +696,35 @@ SP
     REPO="$d" swarm_spec_lint .opencode/specs/bad.md  >/tmp/.sl_bad  2>/dev/null; local rbad=$?
     [ "$rgood" = 0 ] || { echo "[spec-lint] conforming fixture should pass (exit 0) — got $rgood:"; grep SPECGAP /tmp/.sl_good | sed 's/^/    /'; ok=0; }
     [ "$rbad" = 1 ]  || { echo "[spec-lint] violating fixture should fail (exit 1) — got $rbad"; ok=0; }
+    # D2: a `*.progress.md` LEDGER is not a spec and must contribute ZERO gaps and ZERO to the spec count.
+    # This ledger is the real shape (a checklist, no §1-§6, no template tag) — linted as a spec it maximally
+    # trips VERSION/TIER/SECTIONS/CBLOCKS/SOURCED, ~18 gaps each. The skip must live in swarm_spec_lint itself
+    # so every caller inherits it, so assert it through the SAME entry point every caller uses, and assert it
+    # BOTH ways: alone (clean, 0 specs) and mixed into a real batch (must not perturb that batch's totals).
+    printf '# authz — progress\n\n- [x] scaffold\n- [ ] wire the guard\n' > .opencode/specs/authz.progress.md
+    local slp rprog
+    slp="$(REPO="$d" swarm_spec_lint .opencode/specs/authz.progress.md 2>/dev/null)"; rprog=$?
+    grep -q '^SPECGAP' <<<"$slp" && { echo "[spec-lint] a .progress.md LEDGER produced SPECGAPs — it is not a spec:"; grep '^SPECGAP' <<<"$slp" | sed 's/^/    /'; ok=0; }
+    grep -qF 'spec-lint: 0 spec(s) · 0 gap(s)' <<<"$slp" \
+      || { echo "[spec-lint] a .progress.md ledger must count as 0 spec(s) · 0 gap(s), got: $slp"; ok=0; }
+    [ "$rprog" = 0 ] || { echo "[spec-lint] a ledger-only lint must exit 0 (clean), got $rprog"; ok=0; }
+    # mixed batch: adding the ledger to the good spec must leave the good spec's clean result untouched
+    slp="$(REPO="$d" swarm_spec_lint .opencode/specs/good.md .opencode/specs/authz.progress.md 2>/dev/null)"
+    grep -qF 'spec-lint: 1 spec(s) · 0 gap(s)' <<<"$slp" \
+      || { echo "[spec-lint] a ledger in a batch perturbed the batch totals, got: $slp"; ok=0; }
+    # ...and swarm_roadmap_specs — the ONE definition of the gate's population — resolves ROADMAP `Spec:`
+    # references only, never the whole tree, and drops ledgers too. `.opencode/specs/` here holds good.md,
+    # bad.md and the ledger; the ROADMAP links only good.md, so the gate scope is exactly good.md.
+    printf '# ROADMAP\n## Next\n- [ ] a  Spec: .opencode/specs/good.md  AC: AC-1  Files: lib/widget.ts\n- [ ] b  Spec: .opencode/specs/authz.progress.md  Files: x.ts\n- [ ] c  Files: y.ts\n' > ROADMAP.md
+    local rs; rs="$(swarm_roadmap_specs ROADMAP.md 2>/dev/null)"
+    [ "$rs" = ".opencode/specs/good.md" ] \
+      || { echo "[spec-lint] swarm_roadmap_specs must yield exactly the ROADMAP-linked non-ledger specs, got: '$rs'"; ok=0; }
+    # an unlinked ROADMAP is an EMPTY set, not an error and not the whole tree — the caller has to be able to
+    # tell "no active specs" from "0 gaps", which is the misleading-all-clear this whole change exists to kill.
+    printf '# ROADMAP\n## Next\n- [ ] c  Files: y.ts\n' > ROADMAP-none.md
+    [ -z "$(swarm_roadmap_specs ROADMAP-none.md 2>/dev/null)" ] \
+      || { echo "[spec-lint] a ROADMAP linking no specs must yield an EMPTY set"; ok=0; }
+    rm -f .opencode/specs/authz.progress.md ROADMAP.md ROADMAP-none.md
     for c in VERSION TIER SECTIONS SCOPE_OUT EARS AC_COVER CITED CITE_REAL CBLOCKS NO_TBD SOURCED; do
       grep -q " $c " /tmp/.sl_bad || { echo "[spec-lint] violating fixture missed a $c gap"; ok=0; }
     done
@@ -1302,6 +1373,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     disjoint-plan)  swarm_disjoint_plan "${2:-ROADMAP.md}" "${3:-${SWARM_CEIL:-5}}" ;;
     plan-lint)      swarm_plan_lint "${2:-ROADMAP.md}" ;;
     plan-lint-selftest) swarm_plan_lint_selftest ;;
+    roadmap-specs)  shift; swarm_roadmap_specs "$@" ;;
     spec-lint)      shift; swarm_spec_lint "$@" ;;
     spec-lint-selftest) swarm_spec_lint_selftest ;;
     spec-slice)     shift; swarm_spec_slice "$@" ;;
@@ -1317,6 +1389,6 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     green-set)      swarm_green_set "${2:-}" ;;
     green-get)      swarm_green_get ;;
     main-red)       swarm_main_red "${2:-get}" "${3:-}" ;;
-    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|spec-lint|spec-lint-selftest|spec-slice|spec-slice-selftest|spec-rubric|spec-rubric-selftest|debate-selftest|scope-stats}" >&2; exit 2 ;;
+    *) echo "usage: swarm.sh {init|next|claim|release|owns|post|tail|status|paths|selftest|sched-selftest|policy|policy-selftest|mergiraf-selftest|aggregate-lessons|disjoint-batch|disjoint-plan|plan-lint|plan-lint-selftest|roadmap-specs|spec-lint|spec-lint-selftest|spec-slice|spec-slice-selftest|spec-rubric|spec-rubric-selftest|debate-selftest|scope-stats}" >&2; exit 2 ;;
   esac
 fi

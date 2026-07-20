@@ -71,15 +71,58 @@ reanalyze_snapshot(){
 # that had no specs yet). Reporting it as 0 made the after-side (real specs, real gaps) look like a REGRESSION:
 # "MORE spec gaps than before — inspect before running the loop" for the one case where specs were just created.
 # The `case *—*` guards in _delta and the verdict already suppress a comparison against an unmeasured side.
+# ── GATE SCOPE (D1) ────────────────────────────────────────────────────────────────────────────────────────
+# What this report measures MUST be what the run's spec gate measures, and the gate's population is the specs
+# REFERENCED from ROADMAP.md (autoloop.sh `_solo_specs`, lifted into swarm.sh as `swarm_roadmap_specs` so both
+# sides share ONE definition) — NOT `.opencode/specs/*.md`. Those are wildly different sets: measured on
+# trading-portal, 10 files carrying 1 gap versus 157 files carrying 2638. This report used the tree, so it
+# printed "2637 → 2640 gaps" and derived a VERDICT from it, for a gate that had ONE gap. ~147 of those files
+# are legacy specs that predate the template and that no run will ever touch, so nearly every gap being
+# reported was not merely stale — it was unreachable.
+#
+# The full-tree number is still worth SEEING (it is a real backlog), so it is still computed and printed, but
+# labelled as legacy and deliberately kept OUT of the verdict. A number that steers a decision and a number
+# that is only context must not look alike.
+#
+# _ra_active <roadmap> <specdir> — the gate's population, resolved inside specdir (the baseline is a FLAT copy,
+# so references are matched by basename there). Empty when swarm.sh is unavailable OR the roadmap links none;
+# the caller separates those two by testing for swarm.sh itself.
+_ra_active(){
+  local roadmap="$1" dir="$2"
+  [ -f "$_RA_LIB/swarm.sh" ] || return 0
+  [ -f "$roadmap" ] || return 0
+  bash "$_RA_LIB/swarm.sh" roadmap-specs "$roadmap" "$dir" 2>/dev/null
+}
+
+# _ra_gaps <specdir> <repo> <roadmap> — gaps over the GATE SCOPE only.
+# Returns the "—" (unmeasured) sentinel, NEVER 0, when the lint could not run or the ROADMAP links no specs.
+# Those are distinct states and the verdict names each one; what they share is that neither is a clean bill of
+# health, and 0 reads as exactly that. This is the same trap the zero-specs arm was already written for: a set
+# that was never linted is not a clean set. The `case *—*` guards in _delta and the verdict suppress any
+# comparison against an unmeasured side.
 _ra_gaps(){
+  local dir="$1" repo="$2" roadmap="$3" _lint _specs
+  [ -d "$dir" ] || { printf '—'; return; }
+  [ -f "$_RA_LIB/swarm.sh" ] || { printf '—'; return; }
+  _specs="$(_ra_active "$roadmap" "$dir")"
+  [ -n "$_specs" ] || { printf '—'; return; }        # no ACTIVE specs — the verdict has a dedicated arm
+  # capture, then require OUTPUT before counting. Piping the lint straight into the counter turned a lint that
+  # FAILED (non-zero rc, nothing on stdout) into "0 gaps" — a clean bill of health from a check that never
+  # ran, which then reads as "same gaps/spec" in the verdict. A successful lint always prints its
+  # "spec-lint: N spec(s) · M gap(s)" summary, so empty output means it did not run.
+  # shellcheck disable=SC2086 — one path per line from swarm_roadmap_specs; word-splitting is intended
+  _lint="$(REPO="$repo" bash "$_RA_LIB/swarm.sh" spec-lint $_specs 2>/dev/null)"
+  [ -n "$_lint" ] || { printf '—'; return; }
+  printf '%s\n' "$_lint" | _ra_c '^SPECGAP'
+}
+
+# _ra_legacy_gaps <specdir> <repo> — the WHOLE-TREE count. CONTEXT ONLY: printed, labelled, and never an input
+# to the verdict or to the gaps/spec rate. Same "—" contract as above.
+_ra_legacy_gaps(){
   local dir="$1" repo="$2" _lint
   [ -d "$dir" ] || { printf '—'; return; }
   ls "$dir"/*.md >/dev/null 2>&1 || { printf '—'; return; }
   [ -f "$_RA_LIB/swarm.sh" ] || { printf '—'; return; }
-  # capture, then require OUTPUT before counting. Piping the lint straight into the counter turned a lint that
-  # FAILED (non-zero rc, nothing on stdout) into "0 gaps" — a clean bill of health from a check that never
-  # ran, which then reads as "same gaps/spec" in the verdict. A successful lint always prints its
-  # "spec-lint: N spec(s) · M gap(s)" summary (lib/swarm.sh:553), so empty output means it did not run.
   _lint="$(REPO="$repo" bash "$_RA_LIB/swarm.sh" spec-lint "$dir"/*.md 2>/dev/null)"
   [ -n "$_lint" ] || { printf '—'; return; }
   printf '%s\n' "$_lint" | _ra_c '^SPECGAP'
@@ -115,17 +158,24 @@ ace_reanalyze_report(){
       printf '%sreanalyze:%s no baseline snapshot found. Run a plan-only re-assessment first:\n   REANALYZE=1 ace autorun --yes   (or:  ace reanalyze)\n' "$C_Y" "$C_R"; fi
     return 0
   fi
-  # BEFORE
-  local b_open b_spec b_gaps b_items
+  # is the lint available at all? "no active specs" and "cannot lint" are different claims and the verdict
+  # must not merge them — testing swarm.sh once, here, is what keeps them apart below.
+  local lint_ok=1; [ -f "$_RA_LIB/swarm.sh" ] || lint_ok=0
+  # BEFORE — b_spec is the whole tree (context); b_act is the GATE SCOPE, which is what the rate/verdict use.
+  local b_open b_spec b_act b_gaps b_legacy b_items
   b_open="$(_ra_c . <"$bdir/open-items.txt" 2>/dev/null)"
   b_spec="$(ls "$bdir/specs/"*.md 2>/dev/null | wc -l | tr -d ' ')"
-  b_gaps="$(_ra_gaps "$bdir/specs" "$repo")"
+  b_act="$(_ra_active "$bdir/ROADMAP.md" "$bdir/specs" | _ra_c .)"
+  b_gaps="$(_ra_gaps "$bdir/specs" "$repo" "$bdir/ROADMAP.md")"
+  b_legacy="$(_ra_legacy_gaps "$bdir/specs" "$repo")"
   b_items="$(_ra_specced_items "$bdir/ROADMAP.md")"
   # AFTER (current tree)
-  local a_open a_spec a_gaps a_items
+  local a_open a_spec a_act a_gaps a_legacy a_items
   a_open="$(grep -nE '^[[:space:]]*- \[ \] ' "$repo/ROADMAP.md" 2>/dev/null | grep -v 'add your first' | _ra_c .)"
   a_spec="$(ls "$repo/.opencode/specs/"*.md 2>/dev/null | wc -l | tr -d ' ')"
-  a_gaps="$(_ra_gaps "$repo/.opencode/specs" "$repo")"
+  a_act="$(_ra_active "$repo/ROADMAP.md" "$repo/.opencode/specs" | _ra_c .)"
+  a_gaps="$(_ra_gaps "$repo/.opencode/specs" "$repo" "$repo/ROADMAP.md")"
+  a_legacy="$(_ra_legacy_gaps "$repo/.opencode/specs" "$repo")"
   a_items="$(_ra_specced_items "$repo/ROADMAP.md")"
   # specs new / changed
   local new=0 changed=0 f base
@@ -137,14 +187,19 @@ ace_reanalyze_report(){
     done
   fi
 
-  # gaps-per-spec — what the verdict actually compares (see _ra_rate100)
-  local b_rate a_rate; b_rate="$(_ra_rate100 "$b_gaps" "$b_spec")"; a_rate="$(_ra_rate100 "$a_gaps" "$a_spec")"
+  # gaps-per-spec — what the verdict actually compares (see _ra_rate100). Divided by the ACTIVE spec count,
+  # not the tree: both operands must come from the same population or the rate is not a rate at all.
+  local b_rate a_rate; b_rate="$(_ra_rate100 "$b_gaps" "$b_act")"; a_rate="$(_ra_rate100 "$a_gaps" "$a_act")"
 
   if [ "$json" = 1 ]; then
     # gaps_* and gaps_per_spec_* are BARE numbers (or null when unmeasured) — matching every other field here.
-    printf '{"captured":true,"open_before":%s,"open_after":%s,"specs_before":%s,"specs_after":%s,"specs_new":%s,"specs_changed":%s,"gaps_before":%s,"gaps_after":%s,"gaps_per_spec_before":%s,"gaps_per_spec_after":%s,"specced_items_before":%s,"specced_items_after":%s}\n' \
-      "${b_open:-0}" "${a_open:-0}" "${b_spec:-0}" "${a_spec:-0}" "$new" "$changed" \
+    # `gaps_*` is the GATE SCOPE (what a run will act on); `legacy_gaps_*` is the whole-tree backlog. Consumers
+    # that were reading gaps_* were reading the tree before this change — the field name kept its meaning of
+    # "the number that matters", which is now the true one.
+    printf '{"captured":true,"open_before":%s,"open_after":%s,"specs_before":%s,"specs_after":%s,"active_specs_before":%s,"active_specs_after":%s,"specs_new":%s,"specs_changed":%s,"gaps_before":%s,"gaps_after":%s,"legacy_gaps_before":%s,"legacy_gaps_after":%s,"gaps_per_spec_before":%s,"gaps_per_spec_after":%s,"specced_items_before":%s,"specced_items_after":%s}\n' \
+      "${b_open:-0}" "${a_open:-0}" "${b_spec:-0}" "${a_spec:-0}" "${b_act:-0}" "${a_act:-0}" "$new" "$changed" \
       "$(_ra_jnum "$b_gaps")" "$(_ra_jnum "$a_gaps")" \
+      "$(_ra_jnum "$b_legacy")" "$(_ra_jnum "$a_legacy")" \
       "$(_ra_jrate "$b_rate")" "$(_ra_jrate "$a_rate")" \
       "${b_items:-0}" "${a_items:-0}"
     return 0
@@ -153,9 +208,15 @@ ace_reanalyze_report(){
   _delta(){ local x="$1" y="$2"; case "$x$y" in *—*) printf '—' ;; *) local d=$((y-x)); [ "$d" -gt 0 ] && printf '+%s' "$d" || printf '%s' "$d" ;; esac; }
   printf '\n%s══ REANALYZE — before → after ══%s   %s(baseline: %s/before/)%s\n' "$C_B" "$C_R" "$C_G" "$(_ra_dir)" "$C_R"
   printf '  open ROADMAP items      %4s → %-4s  (%s)\n' "${b_open:-—}" "${a_open:-—}" "$(_delta "${b_open:-0}" "${a_open:-0}")"
-  printf '  specs                   %4s → %-4s  (%s new · %s changed)\n' "${b_spec:-—}" "${a_spec:-—}" "$new" "$changed"
-  printf '  spec-lint GAPS          %4s → %-4s  (%s)  %s← raw total%s\n' "${b_gaps:-—}" "${a_gaps:-—}" "$(_delta "${b_gaps:-—}" "${a_gaps:-—}")" "$C_G" "$C_R"
+  printf '  specs (whole tree)      %4s → %-4s  (%s new · %s changed)\n' "${b_spec:-—}" "${a_spec:-—}" "$new" "$changed"
+  printf '  ACTIVE specs            %4s → %-4s  (%s)  %s← ROADMAP-linked — the gate'"'"'s scope%s\n' "${b_act:-—}" "${a_act:-—}" "$(_delta "${b_act:-0}" "${a_act:-0}")" "$C_G" "$C_R"
+  printf '  spec-lint GAPS          %4s → %-4s  (%s)  %s← ACTIVE specs only%s\n' "${b_gaps:-—}" "${a_gaps:-—}" "$(_delta "${b_gaps:-—}" "${a_gaps:-—}")" "$C_G" "$C_R"
   printf '  spec-lint GAPS/spec     %4s → %-4s         %s← lower is better · what the verdict judges%s\n' "$(_ra_rate_fmt "$b_rate")" "$(_ra_rate_fmt "$a_rate")" "$C_G" "$C_R"
+  # The legacy row is deliberately last, deliberately grey, and deliberately says it is not judged. It used to
+  # BE the headline (and the verdict's input) — on trading-portal that meant a 2638 next to a real gate figure
+  # of 1. Keep it visible (the backlog is real) but never let it be mistaken for the run's scope again.
+  printf '  legacy backlog gaps     %4s → %-4s  (%s)  %s← ALL %s spec(s) incl. pre-template files no run touches · NOT judged%s\n' \
+    "${b_legacy:-—}" "${a_legacy:-—}" "$(_delta "${b_legacy:-—}" "${a_legacy:-—}")" "$C_G" "${a_spec:-?}" "$C_R"
   printf '  items carrying a Spec:  %4s → %-4s  (%s)  %s← finer breakdown%s\n' "${b_items:-—}" "${a_items:-—}" "$(_delta "${b_items:-0}" "${a_items:-0}")" "$C_G" "$C_R"
   printf '\n  Read the actual re-derivation:\n'
   printf '    git diff --stat -- ROADMAP.md .opencode/specs/          %s# what the re-assessment rewrote%s\n' "$C_G" "$C_R"
@@ -170,10 +231,17 @@ ace_reanalyze_report(){
     # "—" has THREE causes (no specs · no swarm.sh · lint produced nothing) and they are not the same claim.
     # Attributing all of them to "baseline had no specs" invents a fact about the baseline's CONTENTS out of a
     # missing/broken tool. Test the spec COUNT for that arm; anything else is an unavailable measurement.
-    *—*) if [ "$b_gaps" = '—' ] && [ "${b_spec:-0}" = 0 ]; then
-           verdict="baseline had no specs to lint — nothing to compare against; read the diff (this is the expected shape for a first re-assessment)"
-         elif [ "$a_gaps" = '—' ] && [ "${a_spec:-0}" = 0 ]; then
-           verdict="no specs in the current tree to lint — the re-derivation produced none; read the diff"
+    # Order matters. "cannot lint" is checked FIRST: with swarm.sh missing, the ACTIVE count is 0 for the same
+    # reason the gaps are "—", and reading that 0 as "the ROADMAP links no specs" would invent a fact about the
+    # ROADMAP's CONTENTS out of a missing tool — the exact error this arm was written to stop.
+    *—*) if [ "$lint_ok" != 1 ]; then
+           verdict="spec-lint UNAVAILABLE (swarm.sh missing, or the lint produced no output) — gaps were NOT measured, so no comparison is possible; read the diff"
+         elif [ "$b_gaps" = '—' ] && [ "${b_act:-0}" = 0 ]; then
+           # D1(d): an empty gate scope must SAY it is empty. It is not 0 gaps and it is not all-clear — it is
+           # a ROADMAP that points at no spec, so the gate would lint nothing at all on the next run.
+           verdict="baseline had no specs to lint — NO ACTIVE SPECS in the baseline (its ROADMAP.md linked none via 'Spec:'), so there was no gate scope to measure; nothing to compare against — read the diff (this is the expected shape for a first re-assessment)"
+         elif [ "$a_gaps" = '—' ] && [ "${a_act:-0}" = 0 ]; then
+           verdict="NO ACTIVE SPECS in the current tree — ROADMAP.md links none via 'Spec:'${a_spec:+ (the tree holds $a_spec spec file(s), but the gate would lint NONE of them)}. This is NOT a clean bill of health: nothing was measured. Wire the specs into ROADMAP items, then re-report"
          else
            verdict="spec-lint UNAVAILABLE (swarm.sh missing, or the lint produced no output) — gaps were NOT measured, so no comparison is possible; read the diff"
          fi ;;
