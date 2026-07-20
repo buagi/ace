@@ -558,6 +558,7 @@ swarm_spec_lint() {
       if [ "${SPEC_LINT_NET:-0}" = 1 ] && [ -f "${_ACE_LIB:-$(dirname "${BASH_SOURCE[0]}")}/research.sh" ]; then
         # shellcheck disable=SC1090
         . "${_ACE_LIB:-$(dirname "${BASH_SOURCE[0]}")}/research.sh" 2>/dev/null || true
+        command -v research_write_provenance >/dev/null 2>&1 && research_write_provenance "$f"
         if command -v research_spec_sources >/dev/null 2>&1; then
           while IFS= read -r _srcgap; do
             [ -n "$_srcgap" ] || continue
@@ -681,6 +682,17 @@ swarm_spec_slice() {
       body="$(_sec "$c" "$spec" | grep -vE '^[[:space:]]*(<!--.*)?$')"
       [ -n "$body" ] && ! printf '%s\n' "$body" | grep -qiE '^[[:space:]]*N/A' && { printf '\n## %s.\n%s\n' "$c" "$body"; }
     done
+    # PROVENANCE travels with the claim. The implementer receives contract shapes (C1) that may rest on a
+    # source nobody could read -- and the residual class, content that is plausible but WRONG, is
+    # undetectable by any check, so telling the recipient is the only protection that exists.
+    if [ -f "${_ACE_LIB:-$(dirname "${BASH_SOURCE[0]}")}/research.sh" ]; then
+      # shellcheck disable=SC1090
+      . "${_ACE_LIB:-$(dirname "${BASH_SOURCE[0]}")}/research.sh" 2>/dev/null || true
+      command -v research_provenance_block >/dev/null 2>&1 && research_provenance_block "$spec"
+    fi
+    # Author-written UNVERIFIED lines are the most honest provenance there is, and §2 is not in the slice,
+    # so they would otherwise never reach the implementer.
+    grep -nE 'UNVERIFIED[[:space:]]*[—-]' "$spec" 2>/dev/null | head -10 | sed 's/^/  UNVERIFIED CLAIM (spec line /; s/:/): /' | head -10
     printf '\nDefinition-of-Done = ACs %s. §3-Out bounds you (touching an Out item is scope-creep). Full spec: %s\n──\n' "${acs:-<none>}" "$spec"
   } | head -120
 }
