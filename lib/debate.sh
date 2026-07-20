@@ -215,7 +215,10 @@ ace_debate(){
     round=$((round+1))
     conv=0; needs=0   # a round that dies mid-way must NOT inherit the previous round's converged/needs-more flags
     local cprompt cout
-    cprompt="ROLE: CHALLENGER (turn $round). Pressure-test $art_label below — thorough, multi-layered, do not spare depth.$([ "$round" -gt 1 ] && printf ' Press still-DISPUTED points; DROP refuted ones; raise a NEW point only if the dialogue genuinely surfaced it.')
+    cprompt="ROLE: CHALLENGER (turn $round). Pressure-test $art_label below — thorough, multi-layered, do not spare depth.
+RESEARCH (you have tools; USE them before asserting): for any claim about a THIRD-PARTY system — an external API contract, data-feed format, rate limit, auth flow, library behaviour, pricing, or version — verify it against a real source with firecrawl_search / firecrawl_scrape / webfetch rather than recalling it. Prefer official docs; ${ACE_DEBATE_RESEARCH_MAX:-3} lookups is plenty, keep them targeted. Cite what you actually fetched as (source: <url>).
+If a source is UNREACHABLE (anti-bot, paywall, 404, timeout) you MUST say so as: UNVERIFIED — <claim> (source unreachable: <url>, <reason>). NEVER silently substitute recalled knowledge for a fetch that failed, and never present recalled knowledge in the shape of a citation. An admitted gap is useful; a confident invention is a defect that survives every gate this project has, because nothing downstream can check an external claim.
+A spec that COMMITS to an external source you could not reach is itself a finding — raise it (the dependency may be the wrong choice).$([ "$round" -gt 1 ] && printf ' Press still-DISPUTED points; DROP refuted ones; raise a NEW point only if the dialogue genuinely surfaced it.')
 === ARTIFACT ===
 $art_text
 === DIALOGUE SO FAR ===
@@ -231,7 +234,8 @@ $cout"
     printf '\n── ROUND %s · CHALLENGER (B: %s) ──\n%s\n' "$round" "$B" "$cout" >> "$trf"
 
     local dprompt dout
-    dprompt="ROLE: DEFENDER (turn $round). You OWN $art_label. Answer EVERY open point by id — CONCEDE / DEFEND (grounded) / CLARIFY. Concede what is genuinely right; refute what is wrong, with evidence.
+    dprompt="ROLE: DEFENDER (turn $round). You OWN $art_label. Answer EVERY open point by id — CONCEDE / DEFEND (grounded) / CLARIFY.
+GROUNDING: defend a claim about a THIRD-PARTY system only with a source you actually fetched (firecrawl_scrape / webfetch), cited as (source: <url>). If you cannot reach one, CONCEDE the point as UNVERIFIED rather than defending it from memory — an unsourced external claim is exactly the kind that ships wrong. Concede what is genuinely right; refute what is wrong, with evidence.
 === ARTIFACT ===
 $art_text
 === DIALOGUE SO FAR ===

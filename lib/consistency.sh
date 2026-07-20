@@ -331,6 +331,26 @@ firecrawl_ensure() {
   was_enabled="$(jq -r 'if (.mcp|type)=="object" and (.mcp|has("firecrawl")) and (.mcp.firecrawl|type)=="object" and (.mcp.firecrawl|has("enabled")) then (.mcp.firecrawl.enabled|tostring) else "absent" end' "$cfg" 2>/dev/null)"
   [ "$was_enabled" = absent ] && return 0        # this install does not carry the firecrawl MCP at all
 
+  # MODE FIRST (firecrawl_mode, lib/core.sh). Without this, a CLOUD user got the self-hosted path: a probe
+  # of a loopback port nothing listens on, then a pointless attempt to start a container, then a WRONG
+  # "research falls back to webfetch" line while the cloud key was working perfectly.
+  local _mode; _mode="$(firecrawl_mode 2>/dev/null || echo none)"
+  if [ "$_mode" = cloud ]; then
+    if [ "$was_enabled" = true ]; then
+      say "research: Firecrawl CLOUD (Fire-engine: anti-bot + IP rotation) — MCP already enabled."
+    else
+      _fce_set true "$cfg" \
+        && say "research: Firecrawl CLOUD (Fire-engine: anti-bot + IP rotation) — MCP ENABLED for this run." \
+        || say "research: Firecrawl CLOUD key present but the MCP could not be enabled (config write failed) — falling back to webfetch."
+    fi
+    return 0
+  fi
+  if [ "$_mode" = none ]; then
+    _fce_set false "$cfg"
+    say "research: NO Firecrawl backend (no FIRECRAWL_API_KEY, no self-hosted URL) — webfetch only: single URL, no JS render, no search. Set a key with 'ace keys'."
+    return 0
+  fi
+
   if ! _fce_up; then
     if [ "${FIRECRAWL_AUTO:-1}" != 1 ]; then
       say "research: Firecrawl DOWN and FIRECRAWL_AUTO=0 — research falls back to webfetch (single URL, no search+scrape)."

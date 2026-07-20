@@ -1242,7 +1242,11 @@ swarm_preflight() {
   [ "${SWARM_PREFLIGHT:-1}" = 1 ] || return 0
   # Research backend before the workers launch — see firecrawl_ensure (lib/consistency.sh). Sourced lazily
   # because swarm-run.sh does not otherwise pull consistency.sh, and `set --` guards the source (A13).
-  ( set --; . "$HERE/consistency.sh" >/dev/null 2>&1; command -v firecrawl_ensure >/dev/null 2>&1 && firecrawl_ensure ) || true
+  # ui.sh + core.sh FIRST: consistency.sh's firecrawl_ensure calls say() (ui) and firecrawl_mode() (core).
+  # Sourcing consistency.sh alone left both undefined, and `firecrawl_mode || echo none` then reported NO
+  # research backend for the whole swarm even on a valid cloud key -- a silent, fleet-wide downgrade.
+  ( set --; . "$HERE/ui.sh" >/dev/null 2>&1; . "$HERE/core.sh" >/dev/null 2>&1; . "$HERE/consistency.sh" >/dev/null 2>&1
+    command -v firecrawl_ensure >/dev/null 2>&1 && firecrawl_ensure ) || true
   local repo="$REPO" prof="$REPO/.opencode/profile.yaml"
   local P="${_PUR:-}" G="${_GRN:-}" R="${_R:-}" B="${_B:-}" M="${_MUT:-}" Y="${_GOLD:-}"
   _pf(){ grep -iE "^[[:space:]]*$1[[:space:]]*:" "$prof" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^["'\'']//; s/["'\'']$//'; }
