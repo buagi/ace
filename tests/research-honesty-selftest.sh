@@ -122,6 +122,42 @@ _code | grep -qE 'curl [^|]*\)"[[:space:]]*\|\|[[:space:]]*\{[[:space:]]*printf 
 
 
 
+# --- PROVENANCE must reach the RECIPIENT ------------------------------------------------------------------
+# The residual class -- content that is plausible but WRONG (a generic page at 200, normal title, no
+# redirect) -- is undetectable by every mechanical layer. The only protection is that whoever ACTS on the
+# claim is told what it rests on. So the signal must survive into the slice the implementer reads.
+pd="$(mktemp -d)"; mkdir -p "$pd/.opencode/cache"
+cat > "$pd/p.md" <<'MD'
+# Spec: p   (slug: p · risk: LOW · tier: FAST)
+## 2. Prior art
+- feed (source: https://blocked.invalid/x, bars)
+- UNVERIFIED — column order assumed from memory (source unreachable: x, anti-bot)
+## 3. Scope
+In: parse
+## 4. Acceptance criteria
+- AC-1 WHEN parsed THE SYSTEM SHALL return rows
+## C1. Contract
+GET returns CSV
+MD
+slice="$(REPO="$pd" bash lib/swarm.sh spec-slice "$pd/p.md" AC-1 2>/dev/null)"
+grep -q 'SOURCE PROVENANCE' <<<"$slice"   || bad "the slice carries NO provenance — the implementer encodes a contract shape with no idea it rests on an unread source"
+grep -q 'UNVERIFIED CLAIM' <<<"$slice"   || bad "an author-written UNVERIFIED line never reaches the implementer (§2 is not in the slice, so nothing else carries it)"
+grep -qi 'ASSUMPTION' <<<"$slice"   || bad "the provenance block does not tell the recipient what to DO about it"
+
+# A clean spec must stay clean: a warning on every slice trains people to ignore warnings.
+cat > "$pd/c.md" <<'MD'
+# Spec: c   (slug: c · risk: LOW · tier: FAST)
+## 3. Scope
+In: internal only
+## 4. Acceptance criteria
+- AC-1 WHEN x THE SYSTEM SHALL y
+MD
+grep -q 'SOURCE PROVENANCE' <<<"$(REPO="$pd" bash lib/swarm.sh spec-slice "$pd/c.md" AC-1 2>/dev/null)"   && bad "a spec citing NO external source still got a provenance warning — noise on every slice trains recipients to ignore it"
+rm -rf "$pd"
+
+grep -qF "PROVENANCE ARRIVES WITH YOUR SLICE" lib/install.sh   || bad "the implementer is not told how to act on a provenance warning"
+grep -qF "make the assumption VISIBLE in the code" lib/install.sh   || bad "the implementer is not told to surface the assumption rather than silently encode it"
+
 # --- the gate must be wired, and opt-in ------------------------------------------------------------------
 grep -q 'SRC_LIVE' lib/swarm.sh      || bad "spec-lint has no SRC_LIVE check — external citations are unverified"
 grep -q 'SPEC_LINT_NET' lib/swarm.sh || bad "SRC_LIVE is not gated behind SPEC_LINT_NET — a lint gate must not make network calls unasked"
