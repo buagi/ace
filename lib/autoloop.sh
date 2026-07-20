@@ -640,6 +640,26 @@ preflight(){
   # live MCP flag match reality BEFORE any agent launches. Fail-open (research degrades to webfetch, the run
   # is never blocked) but never SILENT — it always states which backend this run actually got.
   command -v firecrawl_ensure >/dev/null 2>&1 && firecrawl_ensure || true
+  # SPEC_LINT_NET decides whether the spec gate VERIFIES cited external sources (SRC_LIVE + provenance).
+  # It shipped assigned NOWHERE -- not in ace, any lib, CI, settings or docs -- so the entire check and the
+  # provenance writer had never executed once. A gate that cannot run is not a gate. Default it from the
+  # research backend: verification is only meaningful when there is something to verify with, and an
+  # explicit env value or a stored config value always wins.
+  if [ -z "${SPEC_LINT_NET:-}" ]; then
+    SPEC_LINT_NET="$(config_get SPEC_LINT_NET 2>/dev/null)"
+    if [ -z "$SPEC_LINT_NET" ]; then
+      case "$(command -v firecrawl_mode >/dev/null 2>&1 && firecrawl_mode || echo none)" in
+        cloud|local) SPEC_LINT_NET=1 ;;
+        *)           SPEC_LINT_NET=0 ;;
+      esac
+    fi
+    export SPEC_LINT_NET
+  fi
+  if [ "${SPEC_LINT_NET:-0}" = 1 ]; then
+    say "spec-lint: external citations WILL be verified (SPEC_LINT_NET=1) — cited URLs are fetched and checked."
+  else
+    say "spec-lint: external citations NOT verified (SPEC_LINT_NET=0) — a cited URL could be invented and nothing would catch it."
+  fi
   refresh_version_cache
   # STALE-BRANCH GUARD: if this branch's work is already shipped (a MERGED PR for its head), don't
   # reprocess it — return to main, delete the stale branch (local + remote), and continue from there.

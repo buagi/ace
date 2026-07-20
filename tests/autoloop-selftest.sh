@@ -197,4 +197,21 @@ grep -qE 'bash "\$_dsh" spec "\$sp" 2>/dev/null' "$AL" \
   && no "spec-debate call site still discards debate.sh narration + fail-open reasons" \
   || ok "spec-debate narration reaches the loop log"
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "spec-lint net gate:"
+# SPEC_LINT_NET shipped assigned NOWHERE — not in ace, any lib, CI, settings or docs — so the SRC_LIVE
+# check and the provenance writer had never executed once, while a test asserted the literal string
+# appears in lib/swarm.sh (it matched the COMMENT). Assert the ASSIGNMENT, in code, not a mention.
+_al_code(){ sed -E 's/(^|[[:space:]])#.*$//' "$1" | grep -vE '^[[:space:]]*$'; }
+grep -qE '(^|[[:space:]])SPEC_LINT_NET=' <<<"$(_al_code "$AL")" \
+  && ok "autoloop ASSIGNS SPEC_LINT_NET (the source-verification gate can actually run)" \
+  || no "autoloop never assigns SPEC_LINT_NET — SRC_LIVE + provenance can never execute"
+grep -qE 'export[[:space:]]+SPEC_LINT_NET' <<<"$(_al_code "$AL")" \
+  && ok "SPEC_LINT_NET is exported (swarm.sh runs as a child process and must inherit it)" \
+  || no "SPEC_LINT_NET assigned but not exported — the child spec-lint would not see it"
+grep -q 'SPEC_LINT_NET' lib/menu.sh \
+  && ok "SPEC_LINT_NET is settable from 'ace settings'" \
+  || no "SPEC_LINT_NET is not in ace settings — an undiscoverable knob is an unused knob"
+
 [ "$fail" = 0 ] && { echo "✓ autoloop selftest OK"; exit 0; } || { echo "✗ autoloop selftest FAILED"; exit 1; }

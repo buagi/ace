@@ -193,6 +193,7 @@ debate_settings_menu() {
       "Defender model (A)::${a:-overseer default ($(orch_model 2>/dev/null))} · your side" \
       "Challenger model (B)::${b:-unset — debate is a no-op until set} · the OTHER model" \
       "Rounds & limits::min ${mn:-2} · max ${mx:-4} · hard ${hm:-10}" \
+      "Verify cited sources::$(_debate_onoff SPEC_LINT_NET) — fetch each cited URL during the spec gate; catches invented citations, blocked and auth-walled sources (default: on when a research backend exists)" \
       "← back::"
     case "$MENU_CHOICE" in
       # These two are LIVE: ./ace exports the stored value into the environment every run, so flipping one
@@ -206,7 +207,9 @@ debate_settings_menu() {
       3) ask "Defender model (A) — Enter to use the overseer" "$a" "$_DEBATE_MODEL_HINT"; config_set DEBATE_MODEL_A "$ASK_REPLY"; _debate_key_hint "$ASK_REPLY" ;;
       4) ask "Challenger model (B)" "$b" "$_DEBATE_MODEL_HINT"; config_set DEBATE_MODEL_B "$ASK_REPLY"; _debate_key_hint "$ASK_REPLY" ;;
       5) debate_rounds_menu ;;
-      6) return ;;
+      6) _debate_toggle SPEC_LINT_NET
+         ok "Verify cited sources → $(_debate_onoff SPEC_LINT_NET) — applies to the next run (env SPEC_LINT_NET=… still overrides)." ;;
+      7) return ;;
     esac
   done
 }
