@@ -76,6 +76,53 @@ _debate_log_metric(){
      >> "$(dirname "$trf")/debate-metrics.jsonl" 2>/dev/null || true
 }
 
+# _debate_spec_eligible <spec> — should this spec be debated? Debating every spec is real money, so the
+# gate is a POLICY, not an accident of what was easy to grep.
+#
+# It used to be `risk: HIGH` alone. Measured on trading-portal that selected 2 of 9 roadmap-linked specs --
+# both security specs, and the debate found blocker-severity bugs in both, so the targeting was good. But
+# UX and design defects are exactly the kind a single model talks itself into, and they were all excluded:
+# 8 of those 9 specs described a real user-facing surface.
+#
+# So a spec qualifies on EITHER axis:
+#   * risk: HIGH                       -- the original signal (security/data/money)
+#   * a populated "C3. UX flow"        -- the spec template's OWN marker for a user-facing surface
+#                                         (`<!-- trigger: user-facing surface -->`). Reusing it means one
+#                                         definition of "user-facing", not a second competing one.
+# DEBATE_MIN_RISK=LOW (or DEBATE_ALL=1) widens to every spec, for a deliberate spend-everything pass.
+#
+# Every skip is NARRATED (C1). The silent `return 0` is how the old filter hid the fact that it was
+# debating 2 specs out of 156 while the run looked fully covered.
+_debate_spec_eligible() {
+  local sp="$1" why="" c3
+  case "${DEBATE_MIN_RISK:-}" in [Ll][Oo][Ww]|[Aa][Ll][Ll]) why="DEBATE_MIN_RISK=${DEBATE_MIN_RISK}" ;; esac
+  [ -z "$why" ] && [ "${DEBATE_ALL:-0}" = 1 ] && why="DEBATE_ALL=1"
+  [ -z "$why" ] && grep -qiE 'risk:[[:space:]]*HIGH' "$sp" 2>/dev/null && why="risk: HIGH"
+  if [ -z "$why" ] && _debate_spec_is_ux "$sp"; then why="user-facing (C3 UX flow populated)"; fi
+  if [ -n "$why" ]; then
+    echo "debate: $(basename "$sp" .md) — eligible ($why)." >&2
+    return 0
+  fi
+  echo "debate: $(basename "$sp" .md) — SKIPPED (not risk:HIGH, no user-facing C3 UX flow). Widen with DEBATE_MIN_RISK=LOW." >&2
+  return 1
+}
+
+# _debate_spec_is_ux <spec> — true when the C3 UX flow section describes a real surface.
+# Deliberately strict about what does NOT count, because a false positive here costs a paid debate on every
+# run: an absent section, the unedited `<Key flow(s) ...>` placeholder, an explicit `N/A -- reason`, and a
+# spec that states it is API-only all mean "no user-facing surface".
+_debate_spec_is_ux() {
+  local sp="$1" c3
+  c3="$(awk '/^##[[:space:]]*C3\./{f=1;next} f&&/^##[[:space:]]/{exit} f' "$sp" 2>/dev/null \
+        | grep -vE '^[[:space:]]*$|^[[:space:]]*<!--' | head -1)"
+  [ -n "$c3" ] || return 1
+  case "$c3" in
+    [Nn]/[Aa]*|'<'*) return 1 ;;                       # explicit N/A, or the untouched template placeholder
+  esac
+  grep -qiE '^[[:space:]]*API-only' <<<"$c3" && return 1
+  return 0
+}
+
 ace_debate(){
   local mode="${1:-}" artifact="${2:-}" slug="${3:-}"
   case "$mode" in spec|review) ;; *) echo "usage: debate.sh spec <file> [slug] | review [base] [slug]" >&2; return 2 ;; esac
@@ -86,7 +133,7 @@ ace_debate(){
   local art_text art_label
   if [ "$mode" = spec ]; then
     [ -f "$artifact" ] || return 0
-    grep -qiE 'risk:[[:space:]]*HIGH' "$artifact" || return 0    # HIGH-risk only — not worth the spend otherwise
+    _debate_spec_eligible "$artifact" || return 0
     art_text="$(cat "$artifact" 2>/dev/null)"; art_label="the feature spec at $artifact"
     [ -n "$slug" ] || slug="$(basename "$artifact" .md)"
   else

@@ -61,3 +61,7 @@ jobs:
       # The research backend must track reality at run start, and must never fall back SILENTLY.
       - name: firecrawl MCP auto-spin (flag tracks reality · fallback is narrated · config never corrupted)
         run: bash tests/firecrawl-selftest.sh
+      # WHICH specs get debated is a spend policy: too narrow misses defects, too wide bills a paid
+      # cross-model dialogue per spec per run. Both directions are pinned.
+      - name: debate eligibility (HIGH-risk + user-facing · exclusions · knobs · skips narrated)
+        run: bash tests/debate-eligibility-selftest.sh
