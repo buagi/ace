@@ -104,6 +104,13 @@ grep -q "success=true with a 200 for bodies that say 'Access denied'" lib/instal
   || bad "the prompt does not warn that a SUCCESS flag can accompany a denial page — the exact trap measured"
 grep -qF "UNVERIFIED -- <claim> (source unreachable" lib/install.sh \
   || bad "the prompt does not mandate the UNVERIFIED form for an unreachable source"
+# MEASURED failure shapes that arrive as success=true. The denial-phrase rule alone does NOT cover these:
+#   404      -> success=true, statusCode 404, ~300 chars of plausible prose (only the status betrays it)
+#   login    -> success=true, 200, 1249 chars of a sign-in page with no denial phrase at all
+grep -qF "CHECK metadata.statusCode ON EVERY FETCH" lib/install.sh \
+  || bad "agents are not told to check metadata.statusCode — a 404 returns success=true WITH plausible content"
+grep -qF "sign-in/login page" lib/install.sh \
+  || bad "agents are not told a login/consent/paywall page is a failed fetch — it arrives at 200 with real text"
 
 if [ "$fail" = 0 ]; then
   echo "research-honesty-selftest: PASS — denial pages classified as blocked (even at 200/success), precision pins hold, gate wired opt-in, agents instructed$([ "$skipped" = 1 ] && printf ' (network tests SKIPPED — offline)')"
