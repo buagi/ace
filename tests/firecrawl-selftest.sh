@@ -99,6 +99,28 @@ _invokes(){ grep -qE '(^|[;&|][[:space:]]*|&&[[:space:]]*)firecrawl_ensure([[:sp
 _invokes lib/autoloop.sh  || bad "firecrawl_ensure is never INVOKED in lib/autoloop.sh (a comment mentioning it does not count)"
 _invokes lib/swarm-run.sh || bad "firecrawl_ensure is never INVOKED in lib/swarm-run.sh (a comment mentioning it does not count)"
 
+# CLOUD PREFERRED WHEN A SELF-HOSTED URL IS DEAD ---------------------------------------------------------
+# A stale FIRECRAWL_API_URL (from an old `ace firecrawl up`, or an old shell) pointed at a container that was
+# not running, while a paid CLOUD key sat unused. ACE spun up a local container instead — a silent downgrade
+# — and `firecrawl_cmd up` then PERSISTED that URL back into secrets.env, re-pinning the user to local on
+# every future run and undoing the earlier fix. Prefer the working cloud; persist nothing.
+grep -q 'FIRECRAWL_NO_PERSIST' <<<"$(_code_only lib/consistency.sh)" \
+  || bad "the AUTO-start does not pass FIRECRAWL_NO_PERSIST — it will re-pin a cloud user to local via secrets.env"
+grep -q 'FIRECRAWL_NO_PERSIST' <<<"$(_code_only lib/install.sh)" \
+  || bad "firecrawl_cmd up does not honour FIRECRAWL_NO_PERSIST — the auto-start still writes the URL to secrets.env"
+_cd="$(mktemp -d)"; mkdir -p "$_cd/cfg/opencode"
+jq -n '{mcp:{firecrawl:{enabled:false}}}' > "$_cd/cfg/opencode/opencode.json" 2>/dev/null
+_out="$( set --; . lib/ui.sh >/dev/null 2>&1; . lib/core.sh >/dev/null 2>&1; . lib/consistency.sh >/dev/null 2>&1
+         export XDG_CONFIG_HOME="$_cd/cfg" FIRECRAWL_API_URL="http://127.0.0.1:3002" FIRECRAWL_API_KEY="fc-test"
+         curl(){ return 7; }; firecrawl_ensure 2>&1 )"
+grep -qi 'using CLOUD for this run' <<<"$_out" \
+  || bad "with a dead self-hosted URL and a cloud key present, ACE did not fall back to CLOUD: [$_out]"
+grep -qi 'starting it' <<<"$_out" \
+  && bad "ACE tried to START a local container while a working cloud key was available — a silent downgrade"
+[ "$(jq -r '.mcp.firecrawl.enabled' "$_cd/cfg/opencode/opencode.json" 2>/dev/null)" = true ] \
+  || bad "cloud fallback did not enable the firecrawl MCP"
+rm -rf "$_cd"
+
 # EMPTY-URL SCRUB — the firecrawl-mcp NPM process reads FIRECRAWL_API_URL raw; an empty-but-exported value
 # becomes its API base URL and every call fails "Invalid URL" (measured: a whole reanalyze fell back to
 # webfetch while the cloud key worked). firecrawl_ensure must UNSET an empty one so no MCP child inherits it.

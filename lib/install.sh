@@ -928,10 +928,17 @@ firecrawl_cmd() {
         # appending when absent: a changed FIRECRAWL_PORT used to leave the old URL in place, so the
         # reachability probe in write_opencode_config aimed at a dead port and DISABLED the firecrawl MCP
         # while this very command reported "Firecrawl UP" — a silent loss of research tooling.
+        # FIRECRAWL_NO_PERSIST=1 — set by the AUTO-start path (firecrawl_ensure). An explicit `ace firecrawl
+        # up` is a deliberate choice and SHOULD pin the URL; an automatic spin-up must not silently re-pin a
+        # cloud user to a local instance on every future run (it did exactly that, undoing a fix).
+        if [ "${FIRECRAWL_NO_PERSIST:-0}" = 1 ]; then
+          info "auto-start: not writing FIRECRAWL_API_URL to secrets (use 'ace firecrawl up' to pin self-hosted)."
+        else
         _fcnew="export FIRECRAWL_API_URL=http://127.0.0.1:${port}"
         if grep -q '^export FIRECRAWL_API_URL=' "$sec" 2>/dev/null; then
           grep -qxF "$_fcnew" "$sec" || { sed -i "s|^export FIRECRAWL_API_URL=.*|$_fcnew|" "$sec" && info "FIRECRAWL_API_URL refreshed to port ${port} (was stale)."; }
         else printf '%s\n' "$_fcnew" >> "$sec"; fi
+        fi
         ok "Firecrawl UP (http://127.0.0.1:${port} · loopback-only · no cloud key). Now run 'ace opencode' to enable the MCP."
       else err "Firecrawl didn't answer on :${port} within 30s — check '$eng compose logs' in $dir."; return 1; fi ;;
     down) [ -n "$eng" ] && ( cd "$dir" && $eng compose down ) && ok "Firecrawl stopped." || warn "no engine / nothing to stop." ;;

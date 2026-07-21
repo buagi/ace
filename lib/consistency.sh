@@ -436,10 +436,25 @@ firecrawl_ensure() {
   # run looks identical to a cloud run that simply degraded. core.sh's firecrawl_mode header promises the
   # callers narrate this case; this is the caller that has to keep the promise.
   if declare -F firecrawl_secret >/dev/null 2>&1 && [ -n "$(firecrawl_secret FIRECRAWL_API_KEY)" ]; then
-    say "research: Firecrawl LOCAL (self-hosted $url) — BOTH a CLOUD key and a self-hosted URL are set; the URL WINS (firecrawl-mcp's own rule) and the cloud key is NOT used. Unset FIRECRAWL_API_URL to use the cloud."
+    _fc_both_set=1   # defer the "URL wins, cloud key unused" warning until we know local is actually UP —
+                     # saying it before the reachability check contradicts the cloud-fallback below.
   fi
 
   if ! _fce_up; then
+    # A self-hosted URL is set but the instance is DOWN — and a CLOUD key is configured. Starting a local
+    # container here is a silent DOWNGRADE: the cloud backend has Fire-engine (anti-bot/IP rotation), it is
+    # already paid for, and it needs no 30s spin-up. Worse, the auto-start path calls `firecrawl_cmd up`,
+    # which PERSISTS FIRECRAWL_API_URL back into secrets.env (lib/install.sh) and would re-pin the user to
+    # local on every future run. So: prefer the working cloud for THIS run, unset the dead URL so the MCP
+    # child resolves cloud, persist NOTHING, and say exactly how to force self-hosted if that was intended.
+    if [ -n "$(firecrawl_secret FIRECRAWL_API_KEY)" ]; then
+      unset FIRECRAWL_API_URL
+      say "research: self-hosted Firecrawl at $url is DOWN, but a CLOUD key is configured — using CLOUD for this run (no container started, nothing persisted). Want self-hosted? Start it first: 'ace firecrawl up'."
+      if [ "$was_enabled" = true ]; then say "research: Firecrawl CLOUD — MCP already enabled."
+      else _fce_set true "$cfg" && say "research: Firecrawl CLOUD — MCP ENABLED for this run." \
+                                 || say "research: Firecrawl CLOUD key present but the MCP could not be enabled — falling back to webfetch."; fi
+      return 0
+    fi
     if [ "${FIRECRAWL_AUTO:-1}" != 1 ]; then
       say "research: Firecrawl DOWN and FIRECRAWL_AUTO=0 — research falls back to webfetch (single URL, no search+scrape)."
       _fce_set false "$cfg"; return 0
@@ -457,7 +472,7 @@ firecrawl_ensure() {
     # `set --` before sourcing: install.sh is a lib, but a command substitution/function scope inherits the
     # caller's positional parameters, and a lib that grows a `case "${1:-}"` dispatcher would then execute
     # an arbitrary arm. Cheap insurance against a real trap (A13).
-    ( set --; . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" >/dev/null 2>&1; firecrawl_cmd up ) >/dev/null 2>&1 || true
+    ( set --; . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" >/dev/null 2>&1; FIRECRAWL_NO_PERSIST=1 firecrawl_cmd up ) >/dev/null 2>&1 || true
     for n in $(seq 1 20); do _fce_up && { started=1; break; }; sleep 1.5; done
     if [ "$started" != 1 ]; then
       say "research: Firecrawl did NOT come up within 30s — research falls back to webfetch (run is NOT blocked). Check: ace firecrawl status"
@@ -466,6 +481,7 @@ firecrawl_ensure() {
   fi
 
   # Reachable. Make the live config agree — this is the half that was missing.
+  [ "${_fc_both_set:-0}" = 1 ] && say "research: a CLOUD key is also set, but the self-hosted URL WINS (firecrawl-mcp's own rule) — the cloud key is NOT used. Unset FIRECRAWL_API_URL to switch to cloud."
   if [ "$was_enabled" = true ]; then
     say "research: Firecrawl LOCAL (self-hosted) UP ($url) — MCP already enabled."
   else
