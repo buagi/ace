@@ -98,9 +98,14 @@ _do_work() {
   fi
   # #62: run the autoloop in the BACKGROUND with `exec` so $! is the autoloop's OWN pid — then the abandon
   # watcher (run_worker) can TERM exactly this process, whose cleanup trap commits WIP + kills opencode + exits.
+  # MAX_FEATURES=1 and MERGE_GATE=local are STRUCTURAL: a worker owns exactly ONE claimed item
+  # (the coordinator batches), and the swarm merges via its own serialized queue + container gate.
+  # AUTOMERGE and DEPLOY are the USER'S choice and are now INHERITED from the coordinator — the old
+  # hardcoded AUTOMERGE=1 made "no self-merge" unhonourable the moment you chose parallel workers.
   ( cd "$wt" && SWARM_WORKER="$wid" SWARM_HASH="$hash" SWARM_DIR="$SWARM_DIR" \
        SWARM_FEATURE="$feat" SWARM_RUNID="${RUNID:-}" \
-       SWARM_ITEM="$item" MAX_FEATURES=1 AUTOMERGE=1 MERGE_GATE=local DEPLOY=0 \
+       SWARM_ITEM="$item" MAX_FEATURES=1 MERGE_GATE=local \
+       AUTOMERGE="${AUTOMERGE:-1}" DEPLOY="${DEPLOY:-0}" \
        OPENCODE_DB="$SWARM_DIR/$wid.opencode.db" \
        exec bash "$REPO/scripts/auto-loop.sh" ) >>"$SWARM_DIR/$wid.log" 2>&1 &
   local _lp=$!; echo "$_lp" > "$SWARM_DIR/$wid.loop.pid" 2>/dev/null

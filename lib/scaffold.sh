@@ -3127,11 +3127,16 @@ autoloop_run() {
       warn "swarm needs a GitHub remote (it merges via PRs). Run 'ace publish' first, or use 1 (single loop)."; return 1
     fi
     step "SWARM · $par parallel flows (cap 8) — path-disjoint, self-merging, self-healing"
+    # PASS THE USER'S ANSWERS THROUGH. This hardcoded AUTOMERGE=1, so answering "no self-merge" and
+    # then choosing 2-5 parallel flows self-merged anyway — the prompt was decorative the moment you
+    # picked a swarm. Forward the real answers ($sm self-merge, $mf cap, $dp deploy) + debate toggles.
     # startd's exit status is the ONLY signal that the coordinator actually came up. It used to be
     # discarded, so a coordinator that died on launch still printed "the forge is lit" and auto-attached
     # a dash to nothing — the user watched an empty cockpit believing work was in flight. Fail closed.
     if ! ( cd "$root" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$root" SWARM_MAX="$par" \
-        AUTOMERGE=1 HERMES_NOTIFY="$hn" bash "$ACE_DIR/lib/swarm-run.sh" startd ); then
+        AUTOMERGE="$sm" MAX_FEATURES="$mf" DEPLOY="$dp" \
+        SPEC_DEBATE="${SPEC_DEBATE:-0}" REVIEW_DEBATE="${REVIEW_DEBATE:-0}" \
+        HERMES_NOTIFY="$hn" bash "$ACE_DIR/lib/swarm-run.sh" startd ); then
       err "swarm coordinator failed to start — nothing is running."
       say  "    Diagnose: ${C_BOLD}ace swarm status${C_RESET} · ${C_BOLD}ace swarm logs${C_RESET}   (then re-run 'ace autorun')"
       return 1

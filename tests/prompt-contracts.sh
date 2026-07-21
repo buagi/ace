@@ -39,7 +39,13 @@ NAGENTS="$(echo "$JSON" | jq -r '.agent | keys | length' 2>/dev/null || echo 0)"
 # --- helpers ---
 has(){ # <agent> <fixed-string clause>
   local p; p="$(echo "$JSON" | jq -r ".agent.\"$1\".prompt // empty" 2>/dev/null)"
-  printf '%s' "$p" | grep -qF -- "$2" || bad "$1 lost clause \"$2\" in $IN"
+  # HERE-STRING, not a pipe: trap A4. grep -qF exits at the match while printf is still writing the prompt,
+  # printf takes SIGPIPE, and under `set -o pipefail` the pipeline returns 141 -- so EVERY clause check
+  # reported "lost" against a prompt that plainly contained it. Reproduced at 16,841 chars: pipe rc=141,
+  # here-string rc=0. It began failing only when the research/provenance clauses GREW the orchestrator
+  # prompt past the threshold, which is why it slipped through CI. md_has in this same file was fixed for
+  # this exact trap; its sibling here was not swept at the time.
+  grep -qF -- "$2" <<<"$p" || bad "$1 lost clause \"$2\" in $IN"
 }
 perm_deny(){ # <agent> — a read-only critic must keep task:deny (else it can spawn/act)
   [ "$(echo "$JSON" | jq -r ".agent.\"$1\".permission.task // \"-\"" 2>/dev/null)" = deny ] \
