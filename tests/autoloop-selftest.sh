@@ -319,4 +319,26 @@ _nslug="$(printf '%s\n' "$_feats" | grep -c .)"
 printf '%s\n' "$_feats" | grep -q gamma && no "a DONE item's spec (gamma) leaked into the worklist" || ok "DONE items are excluded from re-derivation"
 rm -rf "$_rd"
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "interactive settings reach the swarm:"
+# `ace loop` PROMPTS for self-merge / feature cap / deploy / parallel flows — then the swarm handoff
+# hardcoded AUTOMERGE=1 (scaffold.sh) and every worker hardcoded AUTOMERGE=1 MAX_FEATURES=1 ... DEPLOY=0
+# (swarm-run.sh). So the moment you chose 2-5 parallel flows, answering "no self-merge" self-merged anyway
+# and the prompt was decorative. The answers must survive BOTH hops.
+_sc(){ sed -E 's/(^|[[:space:]])#.*$//' "$1" | grep -vE '^[[:space:]]*$'; }
+grep -qE 'AUTOMERGE="\$sm"[^|]*swarm-run\.sh|AUTOMERGE="\$sm" MAX_FEATURES' <<<"$(_sc lib/scaffold.sh)" \
+  && ok "the swarm handoff forwards the user's self-merge answer (not hardcoded AUTOMERGE=1)" \
+  || no "the autorun->swarm handoff still hardcodes AUTOMERGE — 'no self-merge' is ignored once you pick parallel workers"
+grep -qE 'AUTOMERGE="\$\{AUTOMERGE:-1\}"' <<<"$(_sc lib/swarm-run.sh)" \
+  && ok "workers INHERIT AUTOMERGE from the coordinator (user choice reaches the worker)" \
+  || no "workers still hardcode AUTOMERGE=1 — the coordinator's/user's choice never reaches them"
+grep -qE 'DEPLOY="\$\{DEPLOY:-0\}"' <<<"$(_sc lib/swarm-run.sh)" \
+  && ok "workers inherit DEPLOY (still defaulting OFF)" \
+  || no "workers hardcode DEPLOY=0 — a deliberate deploy choice cannot reach them"
+# MAX_FEATURES=1 / MERGE_GATE=local per worker are STRUCTURAL and must stay pinned.
+grep -qE 'MAX_FEATURES=1 MERGE_GATE=local' <<<"$(_sc lib/swarm-run.sh)" \
+  && ok "per-worker MAX_FEATURES=1 + MERGE_GATE=local remain structural (one item per worker; queue merges)" \
+  || no "the structural per-worker pins changed — a worker must own exactly ONE item and merge via the queue"
+
 [ "$fail" = 0 ] && { echo "✓ autoloop selftest OK"; exit 0; } || { echo "✗ autoloop selftest FAILED"; exit 1; }
