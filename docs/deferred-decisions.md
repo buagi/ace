@@ -132,6 +132,62 @@ The BLOCK items (tested restore, rollback, env separation, reconciliation, spend
 
 *Trigger to revisit:* if ACE ever promotes to more than one VPS or needs zero-downtime deploys — promote the relevant WARN items to BLOCK and add the deploy-strategy checks.
 
+## CLI unification: one `ace start` / `stop` / `scaffold` / `dash` / `report` / `logs`
+
+**Status: BACKLOG (raised 2026-07-21, by the owner). Ask before starting — scope and defaults are the owner's call.**
+
+### The problem, measured today
+
+There are FOUR names for the same run command. `ace:371` is one case arm:
+
+```bash
+autoloop|autorun|loop|resume)   *) autoloop_run ;;
+```
+
+`ace autoloop` ≡ `ace autorun` ≡ `ace loop` ≡ `ace resume` — byte-identical, no per-verb branch below.
+Nothing is deprecated; they are simply redundant. On top of that:
+
+- **Two doors to the swarm with DIFFERENT defaults.** `SWARM_MAX` defaults to **1** via `ace autorun`
+  (`lib/scaffold.sh:3089`) and **2** via `ace swarm start` (`lib/swarm-run.sh:26`). `SWARM_MAX>=2` silently
+  turns `autorun` into a detached swarm coordinator and `return 0`s (`scaffold.sh:3133`) — the "loop" the
+  user started is a background swarm.
+- **`MAX_FEATURES` is 3 direct but infinite under the systemd service** (`autoloop.sh:29` vs `scaffold.sh:2896`).
+- **Worker env is hardcoded and silently overrides the caller**: `MAX_FEATURES=1 AUTOMERGE=1 MERGE_GATE=local
+  DEPLOY=0` (`swarm-run.sh:103`), and the autorun->swarm handoff hardcodes `AUTOMERGE=1` (`scaffold.sh:3134`)
+  — so answering "no self-merge" interactively and then choosing 3 workers self-merges anyway.
+- **`ace loop start` != `ace loop`.** `start|stop|restart|status|logs|tail|stats|metrics|up|update` after ANY
+  of the four run verbs routes to `loop_ctl` (systemd), not a run (`ace:373`).
+- **Debate + net-verification default OFF** (`SPEC_DEBATE`/`REVIEW_DEBATE` = 0; `SPEC_LINT_NET` derived), so
+  the quality gates a user assumes are on are not, unless they know the knobs.
+- Setup friction: `scaffold` + first run needs an origin remote, a `ci.sh`, a clean tree, and a config pass
+  before anything moves.
+
+### The ask
+
+ONE verb per job, with the prerequisites set for you:
+
+| verb | does |
+|---|---|
+| `ace start` | run the swarm with sane prerequisites resolved automatically (workers, automerge ON by default, debate/net-verification on, plan gates, research backend) — no env archaeology |
+| `ace stop` | stop whatever is running (solo, swarm, or service) — today there is NO `ace stop` at all (`ace:457` -> unknown command) |
+| `ace scaffold` | project setup, faster |
+| `ace dash` | already unified (`dash_auto`, auto-routes swarm vs solo) — keep |
+| `ace report` | one report surface (fold in `scorecard` / `reanalyze report` / `stats` / `quality`) |
+| `ace logs` | one log surface |
+
+Plus: **automerge ON by default**, and make **scaffold + first-run setup materially quicker**.
+
+### Constraints for whoever picks this up
+
+- The old verbs must keep working (or alias with a deprecation notice) — muscle memory and docs reference them.
+- `usage()` and the dispatch arms are required to stay byte-identical (`ace:417-420`) — help/dispatch drift
+  was a past bug. Any renaming touches both, in the same commit.
+- `cli-dispatch-selftest` asserts dispatch<->help agreement; extend it rather than route around it.
+- Defaults are a POLICY change (automerge on, debate on): they alter spend and what reaches main unattended.
+  Confirm with the owner before flipping, and narrate the new defaults at run start.
+- Deciding "one report surface" means reconciling four existing commands that answer different questions —
+  scope that explicitly rather than merging them blindly.
+
 ## See also
 
 - [conflict-policy.md](conflict-policy.md) — the declarative conflict policy that shipped (union / structured / regenerate / assign)
