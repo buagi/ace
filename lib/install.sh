@@ -468,10 +468,15 @@ _model_opts() {  # <provider/model> <eff>
 # STAMPED into the prompts at generation time (env wins over config, default 6) — it previously sat inside
 # a <<'MD' quoted heredoc, so every agent received the literal token instead of a number. The researcher's
 # own budget and the global AGENTS.md rule read the SAME value, so the two can never drift apart again.
-# A non-numeric or zero value falls back to 6: a nonsense budget in a prompt is worse than the default.
+# Default 10 (raised from 6 for deep-per-feature research). Deep research means 3-5 INDEPENDENT sources, and
+# each source is typically a firecrawl_search THEN a firecrawl_scrape/webfetch — so 3 sources already needs
+# ~6 fetches and the old cap of 6 throttled the reanalyze re-derive to a shallow 1-2 lookups (measured: the
+# overnight run made 7 web hits total across all features). 10 covers ~4-5 sources with cache reuse without
+# being unbounded ("minutes, not hours" still holds). Tune with ACE_RESEARCH_MAX_FETCHES; a non-numeric or
+# zero value falls back to the default (a nonsense budget in a prompt is worse than the default).
 _research_max_fetches() {
   local n; n="${ACE_RESEARCH_MAX_FETCHES:-$(config_get ACE_RESEARCH_MAX_FETCHES 2>/dev/null)}"
-  case "$n" in ''|*[!0-9]*|0) n=6 ;; esac
+  case "$n" in ''|*[!0-9]*|0) n=10 ;; esac
   printf '%s' "$n"
 }
 

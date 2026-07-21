@@ -226,6 +226,28 @@ token_report(){
   } > "$out" 2>/dev/null || true
   grep -qE '^\| [A-Za-z_]+ \| [0-9]' "$out" 2>/dev/null && say "token report → .opencode/token-report.md (per-agent input/cache/output + cost hog)" || true
 }
+# _exit0_errored <logfile> — 0 iff the tail shows a GENUINE opencode-runtime crash despite exit 0 (#14551).
+# The old check grep'd the tail for `\bfatal\b|^Error:|traceback` and fired on CONTENT the step legitimately
+# produced: a test literally named "NON-FATAL: admin PUT ..." matched \bfatal\b; a handled research miss
+# ("Error: Tool 'firecrawl_search' execution failed: Invalid URL", "non 2xx status code 404 stooq.com") matched
+# ^Error:. Enabling research made this fire on nearly every successful step, writing junk failmode metrics that
+# then failed the acceptance harness. It is ADVISORY (classify is called `|| true`), so it never halted a run --
+# but a false crash label is a lie in the telemetry, and the whole point of E3 is a TRUE stop cause.
+#
+# Two-stage, ANSI-stripped: DROP the lines that legitimately contain error-words (test output, handled tool
+# errors, and NEGATED forms like "non-fatal"/"no errors"), THEN look for runtime-level crash signatures only --
+# an uncaught exception, an unhandled rejection, a V8 OOM, a go panic, a segfault. A tool the agent recovered
+# from is not the process crashing.
+_exit0_errored() {
+  local log="${1:-.opencode/last-run.log}" tail
+  tail="$(tail -c 20000 "$log" 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g')"   # strip ANSI so ^Error: is real
+  # STAGE 1 -- remove lines that carry error-words for legitimate reasons:
+  #   negations · handled tool/research errors · test runner output · assertion text.
+  tail="$(grep -viE 'non[- ]?fatal|not fatal|no (errors?|fatal)|0 errors|without error|error(s)?: *0|error-handling|error handling|Tool '\''[^'\'']*'\'' execution failed|firecrawl|webfetch|context7|non 2xx|status code (4[0-9][0-9]|5[0-9][0-9])|stderr *\||stdout *\||^ *(PASS|FAIL|ok|not ok|✓|✗|×|√) |expect\(|to(Be|Equal|Throw|Match)|assert|describe\(|it\(|test\(' <<<"$tail")"
+  # STAGE 2 -- only RUNTIME crash signatures remain actionable.
+  grep -qiE 'uncaught ?exception|unhandled ?(promise ?)?rejection|fatal error:.*(heap|out of memory|v8|allocation)|\bpanic:|segmentation fault|core dumped|maximum call stack size exceeded|\bE[A-Z]{3,}: .*(spawn|listen)' <<<"$tail"
+}
+
 # E3: classify WHY a step stopped from its log + exit code so recovery is correct (never trust exit 0 —
 # opencode run can exit 0 on error, #14551). Mechanical (log signatures + rc); the rathole supervisor covers
 # the SILENT-progress judgment, this covers the STOP cause. Returns 0 + logs the mode when a failure signature
@@ -245,7 +267,7 @@ classify_failure_mode(){
     elif grep -qiE 'connection (closed|reset)|econnreset|provider .*(timeout|error)|deepseek .*(closed|timeout)|(status|code|http)[^0-9]{0,8}(429|50[234]|529)\b|too many requests|overloaded' <<<"$blob"; then mode="provider timeout/limit"; action="backoff + retry (fresh run, lossless via E2)"
     elif [ "$rc" = 124 ] || [ "$rc" = 130 ]; then mode="outer wrapper timeout (kill)"; action="raise the wall budget or split (E1); checkpoint+resume (E2)"
     else return 1; fi
-  elif printf '%s' "$(tail -c 20000 "$log" 2>/dev/null)" | grep -qiE '\b(fatal|panic|unhandled (exception|rejection)|segmentation fault)\b|traceback \(most recent call|^Error:|uncaughtexception'; then
+  elif _exit0_errored "$log"; then
     mode="EXIT 0 BUT ERRORED (#14551) — not a real success"; action="treat as FAILURE; re-run (lossless via E2), do NOT mark done"
   else return 1; fi
   metric "failmode,${AGENT:-?},$(printf '%s' "$mode -> $action" | tr ',' ';'),0,0,0,$rc"
@@ -426,11 +448,54 @@ Fix ONLY the flagged gaps in the named '.opencode/specs/<slug>.md' files. Do NOT
     phase 1 5 "snapshot the current plan" "baseline for the before/after comparison"
     . "$(dirname "$_SWARM_SH")/reanalyze.sh" 2>/dev/null && reanalyze_snapshot "$PWD" 2>/dev/null || true
     if ! grep -qE '^[[:space:]]*- \[ \] ' ROADMAP.md 2>/dev/null; then say "reanalyze: no OPEN (uncompleted) ROADMAP items to re-assess."; return 0; fi
-    phase 2 5 "re-derive the breakdown" "research -> spec -> increments for every OPEN item"
-    say "reanalyze: re-deriving the OPEN uncompleted ROADMAP items from scratch (research → spec → slice)…"
-    drive "re-analyze open ROADMAP items" "REANALYSIS PASS. Read ROADMAP.md and OBJECTIVES.md. Your job is to RE-DERIVE — from scratch, with the full pipeline — every OPEN (unchecked '- [ ]') ROADMAP item that is NOT yet implemented, REPLACING its current breakdown with a better one. This is deliberate re-work: do NOT skip an item because it 'already exists' — the POINT is to redo it better. NEVER touch a DONE '- [x]' item, and do NOT implement anything (planning only).
-For each distinct FEATURE the open items belong to: (1) RESEARCH — a SHORT, BOUNDED pass (webfetch how 1-2 leading/comparable products implement this + the industry-standard scope/UX; Context7 for any library API; re-use anything cached in '.opencode/cache/research/<slug>/' before a new fetch; if fetch is blocked, use your own knowledge and SAY SO). (2) RE-SPEC — rewrite '.opencode/specs/<feature-slug>.md' by FILLING '.opencode/spec-template.md' (read it first): every §1-§7 mandatory section; each §C conditional block filled or exactly 'N/A — <reason>'; tier FULL (or FAST only when ≤2 files, no new endpoint/table/dependency, no auth/money surface); §3-Out never empty on FULL; §4 'AC-<n> WHEN <trigger> THE SYSTEM SHALL <behavior>' (or GIVEN/WHEN/THEN), one behavior per line, concrete values; §5 Integration: EVERY claim about this repo carries '(cites <path>:L<a>-L<b>)' from a file you OPENED (Serena/GitNexus lookup THEN read the lines — code-search output alone is NOT evidence) or is marked 'UNVERIFIED — <what you tried>'. (3) RE-DECOMPOSE FROM the spec's §6 Increments — each increment becomes ONE ROADMAP item carrying 'Spec: .opencode/specs/<slug>.md' then 'AC: <its AC ids>' BEFORE its 'Files:' hint (order: Spec: … AC: … Files: … deps: … — the footprint extractor reads only from 'Files:' onward). REPLACE the feature's old open items with the newly-derived set (edit ROADMAP.md in place: remove the superseded open items for that feature, append the new ones under '## Next'). Keep tasks PATH-DISJOINT — no two OPEN items share a file (give a shared/HUB file to ONE item and add 'deps: <that item>' to the rest); every item has an accurate 'Files:' hint (source + test files) covering its true blast radius; prefer VERTICAL slices; DISJOINTNESS SELF-CHECK before committing (list every OPEN 'Files:' pairwise; re-slice or serialize any that collide); target ≥3 OPEN items with pairwise-disjoint 'Files:'. TASK-SIZE: each item ≤~3 files, ≤~150-200 changed lines, one run. Update OBJECTIVES.md statuses. Branch chore/plan, commit ROADMAP.md + OBJECTIVES.md + every .opencode/specs/*.md you wrote/changed (an uncommitted spec is INVISIBLE to swarm worktrees), open a PR into main. Planning only — do NOT implement." \
-      || say "reanalyze pass skipped (planner error) — the baseline snapshot is preserved for comparison."
+    # PER-FEATURE ITERATION (was one giant drive over all items). Enumerate the distinct FEATURES behind the
+    # OPEN items and re-derive them ONE AT A TIME — a single drive per feature. Each iteration re-sends only
+    # that feature's context on top of the prompt-CACHED system+AGENTS+template prefix, so it stays small and
+    # never accumulates into a compaction thrash (the old drive's context grew until it hit the step-timeout
+    # wall — the reason a 3h run covered ~10 of 90 items). A failure on one feature no longer loses the rest,
+    # each feature commits its own spec+ROADMAP edits, and REANALYZE_MAX_FEATURES batches a huge backlog across
+    # runs. Resume is per-feature and lossless.
+    local _feats _slug _fn=0 _ftot _fdone=0 _ffail=0 _t0 _unspecced=0
+    _feats="$(grep -E '^[[:space:]]*- \[ \] ' ROADMAP.md 2>/dev/null | grep -oE 'Spec:[[:space:]]*[^ )]+\.md' | sed -E 's#.*/##; s/\.md$//' | sort -u)"
+    # Count-based, NOT `grep -qv`: `grep -q -v` decides on the first line and its exit code is unreliable
+    # here (returned 1 while non-quiet `grep -v` printed the very line it should have matched). Compare
+    # open-item count against open-items-carrying-a-Spec count — unambiguous.
+    local _open_total _open_spec
+    _open_total="$(grep -cE '^[[:space:]]*- \[ \] ' ROADMAP.md 2>/dev/null || true)"; _open_total="${_open_total:-0}"
+    _open_spec="$(grep -E '^[[:space:]]*- \[ \] ' ROADMAP.md 2>/dev/null | grep -cE 'Spec:[[:space:]]*[^ )]+\.md' || true)"; _open_spec="${_open_spec:-0}"
+    [ "$_open_total" -gt "$_open_spec" ] && _unspecced=1
+    _ftot=$(( $(printf '%s\n' "$_feats" | grep -c .) + _unspecced ))
+    [ "$_ftot" -gt 0 ] || { say "reanalyze: no distinct features found behind the open items — nothing to re-derive."; return 0; }
+    local _fmax="${REANALYZE_MAX_FEATURES:-0}"   # 0 = all features this run; >0 batches the rest to the next run
+    say "reanalyze: re-deriving $_ftot feature(s), ONE AT A TIME — deep research → re-spec → re-decompose, per feature."
+    # sentinel __UNSPECCED__ is the catch-all pass for OPEN items that carry no Spec: yet.
+    for _slug in $_feats $([ "$_unspecced" = 1 ] && echo __UNSPECCED__); do
+      _fn=$((_fn+1))
+      if [ "$_fmax" -gt 0 ] && [ "$_fn" -gt "$_fmax" ]; then
+        say "reanalyze: REANALYZE_MAX_FEATURES=$_fmax reached — $((_ftot - _fmax)) feature(s) left; re-run to continue (per-feature commits make it lossless)."
+        break
+      fi
+      local _label="$_slug"; [ "$_slug" = __UNSPECCED__ ] && _label="unspecced open items"
+      phase 2 5 "re-derive feature $_fn/$_ftot" "$_label"
+      _t0=$(date +%s)
+      local _scope
+      if [ "$_slug" = __UNSPECCED__ ]; then
+        _scope="the OPEN '- [ ]' ROADMAP items that carry NO 'Spec:' reference yet. Group them into their natural feature(s) and re-derive each."
+      else
+        _scope="ONLY the feature whose spec is '.opencode/specs/$_slug.md' and the OPEN '- [ ]' ROADMAP items that reference it. Touch NO other feature's spec or items."
+      fi
+      # DEEP research per feature (Fix C): breadth AND depth, blocked sources are findings, never inventions.
+      if drive "re-derive feature: $_label" "REANALYSIS PASS — ONE FEATURE. Planning only; do NOT implement, do NOT touch DONE '- [x]' items. SCOPE: $_scope
+(1) DEEP RESEARCH — spend real effort, this is not a checkbox. Identify 3-5 comparable/leading products or AUTHORITATIVE sources for how this feature is built; for EACH, actually fetch it (firecrawl_search then firecrawl_scrape / webfetch; Context7 for any library API) and extract the CONCRETE contract — endpoints, request/response shapes, limits, rate limits, states (loading/empty/error), edge cases, accessibility semantics, and the security/authz model. Reuse '.opencode/cache/research/$_slug/' before re-fetching; cache new findings there. Breadth (multiple INDEPENDENT sources) and depth (the real shapes, not a one-line summary). A source that is blocked, paywalled, 404, or a login/denial page is a FINDING, not a dead end: record it as 'UNVERIFIED — <claim> (source unreachable: <url>, <reason>)'. NEVER invent an external contract and NEVER present recalled knowledge as a citation — an absent warning is not proof of correctness.
+(2) RE-SPEC — rewrite '.opencode/specs/$_slug.md' (create it if missing; if a DIFFERENT feature already owns that slug, suffix -2) by FILLING '.opencode/spec-template.md' (read it first): every §1-§7 mandatory section; each §C conditional block filled or exactly 'N/A — <reason>'; tier FULL unless truly ≤2 files with no endpoint/table/dependency/auth surface; §3-Out never empty on FULL; §4 EARS 'AC-<n> WHEN <trigger> THE SYSTEM SHALL <behavior>', one behaviour per line, concrete values; §5 Integration: EVERY in-repo claim carries '(cites <path>:L<a>-L<b>)' from a file you OPENED (Serena/GitNexus lookup THEN read the lines — search output alone is NOT evidence) or 'UNVERIFIED — <what you tried>'; carry the external research contracts from step 1 into §2/§C with their (source: <url>) or UNVERIFIED markers.
+(3) RE-DECOMPOSE FROM the spec's §6 Increments — each increment becomes ONE ROADMAP item carrying 'Spec: .opencode/specs/$_slug.md' then 'AC: <its AC ids>' BEFORE its 'Files:' hint (order: Spec: … AC: … Files: … deps: …). REPLACE this feature's old open items in place; keep items PATH-DISJOINT (no two OPEN items share a file — give a shared file to ONE and 'deps:' the rest); each item ≤~3 files / ≤~150-200 lines; accurate 'Files:' hint. Commit ROADMAP.md + '.opencode/specs/$_slug.md' (an uncommitted spec is invisible to swarm worktrees) on branch chore/plan and open/append its PR into main. THIS FEATURE ONLY."; then
+        _fdone=$((_fdone+1))
+      else
+        _ffail=$((_ffail+1)); say "reanalyze: feature '$_label' re-derive errored — prior breakdown kept, continuing to the next feature."
+      fi
+      phase_metric reanalyze-feature "$_label" "$(( $(date +%s) - _t0 ))" 0
+    done
+    say "reanalyze: re-derivation complete — $_fdone/$_ftot feature(s) reprocessed$([ "$_ffail" -gt 0 ] && printf ', %s errored' "$_ffail")."
     return 0
   fi
   [ -f OBJECTIVES.md ] || return 0

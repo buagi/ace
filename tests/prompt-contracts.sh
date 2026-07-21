@@ -232,6 +232,13 @@ has orchestrator "DELEGATION DEPTH LIMIT"          # B8 — stop delegating a re
 has debater "REPRODUCE, DO NOT READ"               # B6
 has debater "ASYMMETRY OF HARM"                    # C2
 
+
+# The researcher's fetch budget must support DEEP research (3-5 independent sources x search+scrape). The
+# old default of 6 throttled the reanalyze re-derive to 1-2 lookups. Assert the code default is >= 8.
+_rmf="$(bash -c 'set --; . lib/ui.sh >/dev/null 2>&1; . lib/core.sh >/dev/null 2>&1; . lib/install.sh >/dev/null 2>&1; unset ACE_RESEARCH_MAX_FETCHES; config_get(){ :; }; _research_max_fetches' 2>/dev/null)"
+case "$_rmf" in ''|*[!0-9]*) bad "research max-fetches default is non-numeric: [$_rmf]" ;;
+  *) [ "$_rmf" -ge 8 ] || bad "research max-fetches default is $_rmf (<8) — too shallow for deep per-feature research (3-5 sources x search+scrape)";; esac
+
 if [ "$fail" = 0 ]; then
   echo "prompt-contracts: PASS — 12 agents, valid JSON, all placeholders + load-bearing clauses intact"
   exit 0

@@ -248,4 +248,75 @@ _dbg="$(grep -cE 'phase_metric debate ' <<<"$(_al_code "$AL")")"
   && ok "both spec-debate and review-debate are timed ($_dbg call sites)" \
   || no "only ${_dbg:-0} debate call site(s) timed — the other debate path is unattributed"
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "exit-0-errored classifier:"
+_e0f="$(mktemp)"
+# The #14551 "exit 0 but errored" check grep'd the log tail for `\bfatal\b|^Error:|traceback` and fired on
+# CONTENT the step legitimately produced — a test named "NON-FATAL: ...", a handled research miss
+# ("Error: Tool 'firecrawl_search' execution failed"). Advisory (classify is `|| true`), so it never halted a
+# run, but it wrote a false crash label into failmode telemetry that then failed the acceptance harness.
+# autoloop.sh can't be sourced (it runs the loop), so EXTRACT the function and exercise both directions.
+awk '/^_exit0_errored\(\) \{/{f=1} f{print} f&&/^}/{exit}' "$AL" > "$_e0f"
+[ -s "$_e0f" ] || no "_exit0_errored not found in autoloop.sh"
+_e0chk(){ bash -c ". '$_e0f'; _exit0_errored '$1'" >/dev/null 2>&1 && echo ERRORED || echo clean; }
+_e0d="$(mktemp -d)"
+printf 'stderr | settings-route.test.ts > NON-FATAL: admin PUT ignores unknown keys\nci.sh GREEN\n' > "$_e0d/fp1"
+printf "Error: Tool 'firecrawl_search' execution failed: Invalid URL\nPR opened.\n"                 > "$_e0d/fp2"
+printf 'Error: StatusCode: non 2xx status code (404 GET https://stooq.com/)\nspec written.\n'       > "$_e0d/fp3"
+printf '  ✓ throws Error on bad config\nAll tests pass.\n'                                          > "$_e0d/fp4"
+printf 'node uncaughtException\n  at Object\n'                                                       > "$_e0d/c1"
+printf 'FATAL ERROR: Reached heap limit - JavaScript heap out of memory\n'                           > "$_e0d/c2"
+printf 'panic: runtime error: invalid memory address\n'                                              > "$_e0d/c3"
+_fpbad=0; for f in fp1 fp2 fp3 fp4; do [ "$(_e0chk "$_e0d/$f")" = clean ] || _fpbad=$((_fpbad+1)); done
+_crok=0;  for f in c1 c2 c3;   do [ "$(_e0chk "$_e0d/$f")" = ERRORED ] && _crok=$((_crok+1)); done
+rm -rf "$_e0d" "$_e0f"
+[ "$_fpbad" -eq 0 ] && ok "exit-0-errored does NOT fire on test output / handled tool errors (4/4 clean)" \
+                    || no "exit-0-errored false-positives on $_fpbad/4 benign logs (NON-FATAL test names, research misses)"
+[ "$_crok" -eq 3 ] && ok "exit-0-errored STILL catches real runtime crashes (uncaughtException / OOM / panic)" \
+                   || no "exit-0-errored missed $((3-_crok))/3 genuine crashes — the tightening went too far"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+echo "reanalyze per-feature iteration:"
+_alc(){ sed -E 's/(^|[[:space:]])#.*$//' "$AL" | grep -vE '^[[:space:]]*$'; }
+# STRUCTURE — the re-derive must LOOP over features, not be one giant drive. Each piece is revert-provable.
+grep -qE 'for _slug in \$_feats' <<<"$(_alc)" \
+  && ok "re-derive iterates per feature (for _slug in \$_feats …), not one drive over all items" \
+  || no "re-derive is not a per-feature loop — a single drive can't reliably cover a large backlog"
+grep -qE 'phase_metric reanalyze-feature' <<<"$(_alc)" \
+  && ok "each feature is TIMED (phase_metric reanalyze-feature) — coverage + cost are attributable" \
+  || no "per-feature re-derive emits no metric — a batch that stalls would be invisible"
+grep -qE 'REANALYZE_MAX_FEATURES' <<<"$(_alc)" \
+  && ok "REANALYZE_MAX_FEATURES batches a huge backlog across runs" \
+  || no "no REANALYZE_MAX_FEATURES — a 90-item backlog can't be split across quota windows"
+grep -q 'DEEP RESEARCH' <<<"$(_alc)" \
+  && ok "per-feature drive mandates DEEP research (breadth + depth), not a SHORT bounded pass" \
+  || no "the re-derive prompt lost its deep-research mandate — research stays shallow"
+grep -q 'THIS FEATURE ONLY' <<<"$(_alc)" \
+  && ok "each drive is SCOPED to one feature (THIS FEATURE ONLY) — no cross-feature bleed" \
+  || no "the per-feature drive is not scoped to a single feature"
+grep -qE '_ffail=\$\(\(_ffail\+1\)\)' <<<"$(_alc)" \
+  && ok "a feature that errors is counted and the loop CONTINUES (failure-tolerant)" \
+  || no "one failed feature aborts the whole re-derivation — not robust"
+
+# LOGIC — enumeration against a fixture: distinct slugs, DONE excluded, unspecced catch-all, batching.
+_rd="$(mktemp -d)"
+cat > "$_rd/ROADMAP.md" <<'RM'
+- [ ] [value] **A** — Spec: .opencode/specs/alpha.md AC: AC-1 Files: a.ts
+- [ ] [value] **B** — Spec: .opencode/specs/alpha.md AC: AC-2 Files: b.ts
+- [ ] [value] **C** — Spec: .opencode/specs/beta.md AC: AC-1 Files: c.ts
+- [ ] [infra] **D no spec** — Files: d.ts
+- [x] [value] **done** — Spec: .opencode/specs/gamma.md
+RM
+_feats="$(grep -E '^[[:space:]]*- \[ \] ' "$_rd/ROADMAP.md" | grep -oE 'Spec:[[:space:]]*[^ )]+\.md' | sed -E 's#.*/##; s/\.md$//' | sort -u)"
+_ot="$(grep -cE '^[[:space:]]*- \[ \] ' "$_rd/ROADMAP.md")"
+_os="$(grep -E '^[[:space:]]*- \[ \] ' "$_rd/ROADMAP.md" | grep -cE 'Spec:[[:space:]]*[^ )]+\.md')"
+_un=0; [ "$_ot" -gt "$_os" ] && _un=1
+_nslug="$(printf '%s\n' "$_feats" | grep -c .)"
+[ "$_nslug" = 2 ] && ok "enumeration: 2 distinct feature slugs (alpha, beta) — duplicate items collapse" || no "enumeration wrong: $_nslug distinct slugs, want 2"
+[ "$_un" = 1 ] && ok "enumeration: the un-spec'd item (D) is caught for a catch-all pass" || no "enumeration missed the un-spec'd open item"
+printf '%s\n' "$_feats" | grep -q gamma && no "a DONE item's spec (gamma) leaked into the worklist" || ok "DONE items are excluded from re-derivation"
+rm -rf "$_rd"
+
 [ "$fail" = 0 ] && { echo "✓ autoloop selftest OK"; exit 0; } || { echo "✗ autoloop selftest FAILED"; exit 1; }
