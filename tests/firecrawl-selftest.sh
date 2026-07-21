@@ -99,6 +99,17 @@ _invokes(){ grep -qE '(^|[;&|][[:space:]]*|&&[[:space:]]*)firecrawl_ensure([[:sp
 _invokes lib/autoloop.sh  || bad "firecrawl_ensure is never INVOKED in lib/autoloop.sh (a comment mentioning it does not count)"
 _invokes lib/swarm-run.sh || bad "firecrawl_ensure is never INVOKED in lib/swarm-run.sh (a comment mentioning it does not count)"
 
+# EMPTY-URL SCRUB — the firecrawl-mcp NPM process reads FIRECRAWL_API_URL raw; an empty-but-exported value
+# becomes its API base URL and every call fails "Invalid URL" (measured: a whole reanalyze fell back to
+# webfetch while the cloud key worked). firecrawl_ensure must UNSET an empty one so no MCP child inherits it.
+grep -q 'unset FIRECRAWL_API_URL' <<<"$(_code_only lib/consistency.sh)" \
+  || bad "firecrawl_ensure does not unset an empty FIRECRAWL_API_URL — the firecrawl MCP will fail every call with 'Invalid URL'"
+# behaviour: empty is unset, a real self-hosted URL survives
+_scrub(){ bash -c 'FIRECRAWL_API_URL="'"$1"'"; [ -n "${FIRECRAWL_API_URL+x}" ] && [ -z "$(printf %s "${FIRECRAWL_API_URL:-}" | tr -d "[:space:]")" ] && unset FIRECRAWL_API_URL; echo "${FIRECRAWL_API_URL-UNSET}"'; }
+[ "$(_scrub '')" = UNSET ]     || bad "empty FIRECRAWL_API_URL not scrubbed"
+[ "$(_scrub '   ')" = UNSET ]  || bad "whitespace-only FIRECRAWL_API_URL not scrubbed"
+[ "$(_scrub 'http://127.0.0.1:3002')" = 'http://127.0.0.1:3002' ] || bad "a real self-hosted FIRECRAWL_API_URL was wrongly scrubbed"
+
 
 # --- MODE RESOLUTION: cloud / self-hosted / none -------------------------------------------------------
 # firecrawl_mode is the single source of truth three layers now share (config generation, run preflight,

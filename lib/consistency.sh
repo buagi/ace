@@ -386,6 +386,15 @@ firecrawl_secret() {
 # answer must DEGRADE research to webfetch, never block the run. But it must SAY which one you got --
 # the silent fallback is the whole defect being fixed here.
 firecrawl_ensure() {
+  # SCRUB an empty-but-exported FIRECRAWL_API_URL from the environment. ACE's bash treats empty-as-unset
+  # (firecrawl_secret), but the firecrawl-mcp NPM process reads the raw env var and an empty string becomes
+  # its API base URL -> "Invalid URL" on EVERY call (measured: a whole reanalyze degraded to webfetch while
+  # the cloud key worked fine via a direct call). opencode spawns the MCP as a child of THIS process, so
+  # unsetting here means no child inherits the poison. A genuine self-hosted URL is non-empty and survives.
+  if [ -n "${FIRECRAWL_API_URL+x}" ] && [ -z "$(printf '%s' "${FIRECRAWL_API_URL:-}" | tr -d '[:space:]')" ]; then
+    unset FIRECRAWL_API_URL
+    say "research: scrubbed an empty FIRECRAWL_API_URL from the environment (it would break the firecrawl MCP with 'Invalid URL')."
+  fi
   local port url cfg n started=0 was_enabled
   port="${FIRECRAWL_PORT:-3002}"
   url="$(firecrawl_url)"                       # D2: the SAME resolution `ace firecrawl status` uses
