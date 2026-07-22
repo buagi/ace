@@ -74,3 +74,8 @@ jobs:
       # drift is a build failure rather than something noticed after a run has already merged.
       - name: run lifecycle (ace start policy defaults · precedence · double-start · ace stop covers both flows)
         run: bash tests/lifecycle-selftest.sh
+      # Folding four reports into one surface is only safe if the OLD forms survive byte-for-byte: people have
+      # `ace stats global` in scripts, and a new section name silently swallowing it is a regression with no
+      # error message. Both halves — the sections and the back-compat — are pinned.
+      - name: stats surface (4 sections · single-section filter · legacy args intact · sections isolated)
+        run: bash tests/statsall-selftest.sh

@@ -139,9 +139,14 @@ The BLOCK items (tested restore, rollback, env separation, reconciliation, spend
 **automerge, spec debate, review debate and cited-URL verification all default ON** under `ace start`, with
 `env > Settings > default` precedence and the resolved policy printed at run start.
 
-STILL OPEN from the original ask: folding `scorecard`/`reanalyze report`/`stats`/`quality` into one
-`ace report` **with sections** (owner's choice — old commands alias through), one `ace logs` surface, and
-making `scaffold` + first-run setup materially quicker.
+**ALSO SHIPPED 2026-07-22:** the one report surface, as **`ace stats`** rather than `ace report`
+(`lib/statsall.sh`, pinned by `tests/statsall-selftest.sh`). Owner's call: `ace report` already means "file a
+GitHub issue", and quietly redefining a live verb is worse than the problem it solves. Bare `ace stats` prints
+all four sections; `ace stats <section>` prints one; every legacy form (`global`/`N`/`task`/`--by`) still
+routes to the token table, and `ace quality` / `ace scorecard` / `ace reanalyze report` are untouched.
+
+STILL OPEN from the original ask: one `ace logs` surface, and making `scaffold` + first-run setup
+materially quicker.
 
 ### The problem, measured today
 
