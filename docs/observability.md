@@ -86,7 +86,10 @@ For a single loop these are in the repo root; for a swarm, each worker writes it
 
 ---
 
-## 3b. One-shot rollup — `ace scorecard`
+## 3b. One-shot rollup — `ace stats`
+
+**`ace stats`** prints four sections in reading order — ① tokens/cost · ② quality · ③ the 8-level run scorecard + VERDICT · ④ plan before→after. Each section is isolated, so one with no artifacts prints "no data yet" and the rest still render. `ace stats scorecard` prints just ③; `ace scorecard [--json]` still works standalone and is what ③ calls.
+
 
 Rather than reading the files below by hand, **`ace scorecard`** aggregates a finished run across 8 levels — research (used/grounded) · feature-breakdown (spec gaps) · subtask hit-rate + manageability · result quality · debate barter · logging completeness · anomalies · edge cases — into one report + a top-line VERDICT (`ace scorecard --json` for machine use). It's read-only and fail-soft (a missing artifact shows "—"). Use it first; drill into the raw files below when a number looks off.
 

@@ -111,6 +111,24 @@ o="$(run_start -- 9)"
 grep -qx 'SWARM_MAX=5' <<<"$o" || bad "'ace start 9' was not capped to 5 workers"
 grep -qi 'capping'     <<<"$o" || bad "'ace start 9' capped silently — the user still thinks they got 9"
 
+# `fg` IN EITHER SLOT, AND IT MUST NOT EAT THE WORKER COUNT. `ace start fg 5` silently used the DEFAULT
+# count: the `case` matched `fg`, reassigned arg, and a `case` does not re-test after an arm runs. The user
+# asked for 5, was told nothing, and got 3 — a silently-wrong worker count is invisible until the bill.
+o="$(run_start -- fg 5)"
+grep -qx 'SWARM_MAX=5' <<<"$o" || bad "'ace start fg 5' lost the worker count (got: $(grep -E '^SWARM_MAX=' <<<"$o" || echo NONE)) — it silently ran the default"
+grep -q  'ARGV=start$' <<<"$o" || bad "'ace start fg 5' did not run in the FOREGROUND (ARGV should be 'start', not 'startd')"
+o="$(run_start -- 5 fg)"
+grep -qx 'SWARM_MAX=5' <<<"$o" || bad "'ace start 5 fg' lost the worker count"
+grep -q  'ARGV=start$' <<<"$o" || bad "'ace start 5 fg' did not run in the foreground"
+# and `fg` alone still means "foreground, default workers"
+grep -q 'ARGV=start$' <<<"$(run_start -- fg)" || bad "'ace start fg' did not run in the foreground"
+
+# NEVER POINT THE USER AT `ace report`. It FILES A GITHUB ISSUE; the report surface is `ace stats`. Two
+# brand-new success strings said "ace report", re-introducing the exact confusion the split existed to avoid.
+o="$(run_start -- 2)"
+grep -q "ace report" <<<"$o" && bad "ace start tells the user to run 'ace report' — that files a GitHub issue; the report surface is 'ace stats'"
+grep -q "ace stats"  <<<"$o" || bad "ace start never points the user at 'ace stats' to read the run"
+
 # --- 5. DOUBLE-START REFUSAL ----------------------------------------------------------------------------
 # Two coordinators over one repo = two workers on one item, two branches, a merge race. The second start
 # must REFUSE, and must not reach the handoff.
@@ -154,6 +172,8 @@ o="$(_stop 0 0)"
 grep -q 'nothing is running' <<<"$o" || bad "ace stop with nothing running did not say so"
 grep -q 'RC=0'               <<<"$o" || bad "ace stop with nothing running must succeed, not error"
 grep -qi 'foreground'        <<<"$o" || bad "ace stop did not name the one flow it CANNOT stop (a foreground loop in another terminal)"
+o="$(_stop 1 0)"
+grep -q "ace report" <<<"$o" && bad "ace stop tells the user to run 'ace report' — that files a GitHub issue, not a run report"
 o="$(_stop 1 0)"
 grep -q 'ARGV=stop' <<<"$(cat "$WORK/stop.rec" 2>/dev/null)" || bad "ace stop did not stop a LIVE swarm"
 o="$(_stop 0 1)"

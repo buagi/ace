@@ -141,7 +141,7 @@ A self-contained TUI, no tmux required. It reads only the shared store, so you c
 | status bar | two lines — **run** (id · live workers · peak · a `◈ spend ~$X · N tok · overseer %` chip · pause/drain) and **progress** (live `done/total (%)` from `origin/main` · the done/in-flight/remaining bar · a **⇡ merge-pulse** sparkline with "last N ago" · an **ETA** from the recent merge rate · a `⚠ N serializing` chip when the ROADMAP is collision-heavy) |
 | worker box | one per live worker — its feature, the pipeline, the agents strip, wall/budget/lease, and its live loop feed |
 | pipeline | `PLAN · BUILD · GATE · REVIEW · MERGE` with the current stage lit `▸…◂`, inferred live from the worker's log so it advances through all stages |
-| agents strip | all 9 subagents — `✓` once run, `▸active◂` now, dim while pending (`plan·impl·test·gate·rev·ux·std·algn·rslv`) |
+| agents strip | all 11 roster agents — `✓` once run, `▸active◂` now, dim while pending (`plan·rsrch·impl·test·gate·rev·ux·std·algn·rslv·launch`). The `debater` is the one crew member with no strip cell |
 | ⚙ agent | the subagent working right now (reviewer / verifier / implementer …) |
 | BUS | cross-worker milestones (claimed · gate · merged · main-adv · conflict · gate-red · red-main · standby · abandoned · reaped) — a provider cap surfaces as `standby` |
 
@@ -197,7 +197,7 @@ If a worker or the coordinator's planning step hits a Claude/OpenAI usage cap, t
 | Guarantee | How |
 |---|---|
 | **Zero-credit by default** | the real loop refuses to run without `SWARM_LIVE=1`; `sandbox` / `selftest` are always DRY |
-| **Workers never deploy** | they run with `DEPLOY=0`, so they merge to `main` but never ship. Deploy stays milestone-gated (`DEPLOY_GATE`, see [deploy](deploy.md)) |
+| **Workers deploy only if you asked for it** | `DEPLOY` is **inherited from the coordinator** (`lib/swarm-run.sh:108`) and defaults to `0`, so they merge to `main` but never ship unless you set it. `MAX_FEATURES=1` and `MERGE_GATE=local` are the only structurally-forced worker values. Deploy stays milestone-gated (`DEPLOY_GATE`, see [deploy](deploy.md)) |
 | **Full review on auto-merge** | with `auto_merge: true` on a public/customer/enterprise project, the orchestrator's safety rail treats every change as high-risk — the full 4-critic panel plus the security gate — so nothing merges to `main` on a weak review |
 | **Predictable conflicts handled up front** | path-disjoint leases plus the [conflict policy](conflict-policy.md) resolve version, changelog, lockfile, and manifest collisions before they happen |
 | **Broke-together caught at the gate** | before a worker lands, the merge queue rebases its branch onto the freshest `main` and re-runs `./ci.sh --container` on the combined tree — a green-alone / broken-together integration break surfaces at the gate, not on `main` |

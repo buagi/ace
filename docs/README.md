@@ -8,8 +8,8 @@ The full guide, grouped by task. New here? Read the [root README](../README.md) 
 flowchart LR
   A[install the rig] --> B[scaffold or upgrade a project]
   B --> C[set OBJECTIVES.md]
-  C --> D[ace autorun]
-  D --> E[watch: ace loop dash]
+  C --> D[ace start]
+  D --> E[watch: ace dash]
   D --> F[scale: ace swarm]
 ```
 

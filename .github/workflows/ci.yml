@@ -79,3 +79,8 @@ jobs:
       # error message. Both halves — the sections and the back-compat — are pinned.
       - name: stats surface (4 sections · single-section filter · legacy args intact · sections isolated)
         run: bash tests/statsall-selftest.sh
+      # `ace arch` draws ANSI-coloured ASCII panels. Escapes have zero display width but count as characters,
+      # and emoji are the reverse — one character, two columns. Both make a panel silently ragged, so the
+      # widths are asserted in DISPLAY COLUMNS, with colour on and off. Also pins the menu<->dispatch numbering.
+      - name: architecture view (panels column-aligned · no double-width glyphs · menu matches dispatch arms)
+        run: bash tests/architecture-selftest.sh

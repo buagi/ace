@@ -72,14 +72,18 @@ ace_start() {
     err "the ace-loop service is already running — 'ace dash' to watch it, 'ace stop' to stop it."; return 1
   fi
 
+  # NORMALISE `fg` OUT OF BOTH SLOTS FIRST, then match what is left. The previous shape matched `fg` in the
+  # `case` and reassigned `arg="$arg2"` -- but a `case` does not re-test after an arm runs, so `ace start fg 5`
+  # fell straight through with n unset and silently used the DEFAULT worker count. The user asked for 5,
+  # was told nothing, and got 3.
+  [ "$arg"  = fg ] && { fg=1; arg="$arg2"; arg2=; }
+  [ "${arg2:-}" = fg ] && { fg=1; arg2=; }
   case "$arg" in
-    fg)          fg=1; arg="$arg2" ;;
     solo|1)      n=1 ;;
     [0-9]|[0-9][0-9]) n="$arg" ;;
     "")          : ;;
     *)           err "usage: ace start [N|solo] [fg]   (N = 1-5 parallel workers)"; return 1 ;;
   esac
-  [ "${arg2:-}" = fg ] && fg=1
   if [ -z "${n:-}" ]; then
     n="$(config_get SWARM_MAX 2>/dev/null)"; n="${n//[!0-9]/}"
     # DEFAULT 3, not the old 1-or-2. Grounded, not picked: on a real roadmap 78 of 91 items shared a file, so
@@ -105,7 +109,11 @@ ace_start() {
   info "  workers .............. $n $([ "$n" = 1 ] && echo '(single flow)' || echo '(parallel, path-disjoint)')"
   info "  self-merge ........... $(_onoff "$AUTOMERGE") [$src_am] — green PRs merge through the local container gate"
   info "  features ............. $([ "${MAX_FEATURES:-0}" = 0 ] && echo 'unlimited (until the roadmap is empty, or ace stop)' || echo "$MAX_FEATURES")"
-  info "  spec debate .......... $(_onoff "$SPEC_DEBATE") [$src_sd] — cross-model review of HIGH-risk specs before work starts"
+  # NOT "HIGH-risk specs": that describes the PRE-inversion gate. _debate_spec_eligible defaults to
+  # DEBATE_SCOPE=nontrivial, which debates every spec EXCEPT one that positively declares itself trivial
+  # (risk: LOW AND tier: FAST AND no live section). Understating the scope here understates the SPEND, at the
+  # one moment the user is deciding whether to accept it.
+  info "  spec debate .......... $(_onoff "$SPEC_DEBATE") [$src_sd] — cross-model review of every non-trivial spec (DEBATE_SCOPE=high narrows it)"
   info "  review debate ........ $(_onoff "$REVIEW_DEBATE") [$src_rd] — cross-model pass over the diff before merge"
   info "  verify citations ..... $(_onoff "$SPEC_LINT_NET") [$src_net] — cited URLs are fetched and checked"
   info "  deploy ............... $(_onoff "${DEPLOY:-0}") — 'ace deploy' ships; a run never does it for you"
@@ -131,7 +139,9 @@ ace_start() {
     ( cd "$root" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$root" bash "$ACE_DIR/lib/swarm-run.sh" start )
   else
     ( cd "$root" && SWARM_LIVE=1 DRY_RUN=0 SWARM_REPO="$root" bash "$ACE_DIR/lib/swarm-run.sh" startd ) || return 1
-    ok "swarm started — 'ace dash' to watch · 'ace stop' to stop · 'ace report' when it's done."
+    # 'ace stats', NOT 'ace report': `ace report` FILES A GITHUB ISSUE. Pointing at it here re-introduced
+    # the exact confusion the statsall split existed to avoid, in a brand-new string.
+    ok "swarm started — 'ace dash' to watch · 'ace stop' to stop · 'ace stats' when it's done."
     # AN `if`, NOT AN `&&` CHAIN. As the last command of the function, `[ -t 1 ] && ...` RETURNS ITS OWN
     # FALSE when stdout is not a terminal -- so a successful detached start exited 1 under any pipe, cron,
     # systemd unit or `ace start > log`, and every caller read a healthy swarm as a failed launch.
@@ -174,5 +184,5 @@ ace_stop() {
     info "(a loop running in the FOREGROUND of another terminal is stopped there with Ctrl-C.)"
     return 0
   fi
-  ok "stopped. 'ace report' for what the run produced · 'ace start' to resume where it left off."
+  ok "stopped. 'ace stats' for what the run produced · 'ace start' to resume where it left off."
 }
