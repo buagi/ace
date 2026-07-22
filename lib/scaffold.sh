@@ -1023,7 +1023,7 @@ ensure_agents_arch_pointer() {
 - The project profile is the source of truth: `.opencode/profile.yaml` (structured) + `ARCHITECTURE.md` (prose).
 - Read it before planning: serve the stated mission, values, audience, and throughput target.
 - Delivery policy (git / ci_cd / gitflow / merge_gate / auto_merge) is recorded there and drives the loop.
-- `docs/atlas.md` is the GENERATED human atlas (system map · data flow · feature map) — do NOT hand-edit it; it is rebuilt by `scripts/atlas-refresh.sh` (`ace atlas`). `docs/architecture.md` is the agent-facing code map (GitNexus/Serena).
+- `docs/atlas.md` is the GENERATED human atlas (system map · data flow · module map) — do NOT hand-edit it; it is rebuilt by `scripts/atlas-refresh.sh` (`ace atlas`). `docs/architecture.md` is the agent-facing code map (GitNexus/Serena).
 EOF
 }
 
@@ -2232,7 +2232,7 @@ atlas_refresh() {
   ensure_atlas_refresh   # write the generator if this repo predates it (kept-if-present)
   if [ -x scripts/atlas-refresh.sh ]; then spin "atlas → docs/atlas.md + README block" env ATLAS_FORCE=1 bash scripts/atlas-refresh.sh
   else warn "no scripts/atlas-refresh.sh here"; fi
-  ok "Atlas refreshed → docs/atlas.md (system map · data flow · feature map) + the README block."
+  ok "Atlas refreshed → docs/atlas.md (system map · data flow · module map) + the README block."
 }
 
 # live-refresh the map as files change; ace graph --watch

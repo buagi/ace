@@ -33,7 +33,7 @@ You describe the goal. The crew branches, builds, tests, reviews itself across u
 
 </div>
 
-Run N feature-streams at once, each in its own worktree, self-merging. `ace autorun` → pick 2–8, or `ace swarm start`. See [docs/swarm.md](docs/swarm.md).
+Run N feature-streams at once, each in its own worktree, self-merging. `ace start 3` (1–5 workers), or `ace autorun` → pick 2–5, or `ace swarm start`. See [docs/swarm.md](docs/swarm.md).
 
 ## Quickstart
 
@@ -50,7 +50,7 @@ ace install
 # 4. go hands-off
 cd <project>
 $EDITOR OBJECTIVES.md                  # set the north-star goals
-ace autorun                            # the loop takes over
+ace start                              # the loop takes over  (ace stop to end it)
 ```
 
 `ace status` confirms the rig is green. `ace --help` lists every command. `--dry-run` previews any command without changing anything.
@@ -59,11 +59,11 @@ ace autorun                            # the loop takes over
 > **Try it in ~2 minutes — $0, no keys, nothing installed.** `ace demo` (paced tour of every feature — `DEMO_AUTO=1` to auto-advance) · `ace loop dash --demo` (scripted preview) · `ace swarm sandbox` (live dry-run demo) · or add `--dry-run` to any command. Nothing is built, pushed, or spent. Recording a video? See [docs/demo/RECORDING.md](docs/demo/RECORDING.md).
 
 > [!NOTE]
-> **No Claude subscription required.** The overseer *defaults* to Claude Opus, but ACE runs end-to-end on a cheap DeepSeek API key alone — `ace keys --brain deepseek`. The 10 worker agents are always DeepSeek, so the crew is low-cost by design.
+> **No Claude subscription required.** The overseer *defaults* to Claude Opus, but ACE runs end-to-end on a cheap DeepSeek API key alone — `ace keys --brain deepseek`. The 11 non-orchestrator agents are always DeepSeek, so the crew is low-cost by design.
 
 ## What it is
 
-A self-driving build loop. One orchestrator plans and delegates; nine specialist subagents do the work and judge it. The orchestrator writes no code — it plans, delegates, and drives the loop to a complete result.
+A self-driving build loop. One orchestrator plans and delegates; ten specialist subagents do the work and judge it, and a twelfth — the `debater` — runs the cross-model review. The orchestrator writes no code — it plans, delegates, and drives the loop to a complete result.
 
 ```mermaid
 flowchart TD
@@ -143,7 +143,7 @@ The loop is built to protect `main` and survive limits, stalls, and crashes. Hig
 | **Self-healing CI** | Fixes red CI from `gh run --log-failed` at the root cause. Distinguishes a *blocked* CI (0 jobs executed — billing/outage) from a broken one and, with `LOCAL_CI_FALLBACK=1`, vouches via the local container gate to keep flowing. |
 | **Limit-resilient** | On an overseer rate-limit it waits and resumes on *your* model (never silently downgrading); opt into `ON_CLAUDE_LIMIT=deepseek` to keep going. Workers stay on DeepSeek throughout. |
 | **Clean stop** | Ctrl-C tears down the whole subtree — the in-flight opencode, its MCP servers, any podman build, the watchdog — so nothing is orphaned. |
-| **Observability** | Every step appends a row to `.opencode/metrics.csv` (agent · label · wall · active-think · build seconds · rc). Per-run token/cost via `ace stats`. |
+| **Observability** | Every step appends a row to `.opencode/metrics.csv` (agent · label · wall · active-think · build seconds · rc). One report surface: `ace stats` prints tokens/cost · quality · run scorecard · plan before→after (`ace stats <section>` for just one). |
 | **Housekeeping** | A throttled janitor reconciles git/GitNexus/opencode/podman drift each few laps; `ace consistency [fix]` runs it on demand. |
 
 ## Remote control
@@ -186,7 +186,7 @@ Global flags: `--dry-run` · `--watch` · `--version` · `--help`.
 |-------|--------|
 | **Restart opencode after config changes** | It loads config and `AGENTS.md` at launch, not live. |
 | **New terminal after `ace install`** | It adds a `~/.bashrc` block; `~/.local/bin` must be on `PATH` for the `ace` symlink. |
-| **DeepSeek runs the crew** | All 9 subagents are DeepSeek V4. The overseer defaults to Claude Opus and is switchable via `ace keys` → `opus` · `sonnet` · `gpt` · `deepseek`. Claude/OpenAI brains need `opencode auth login`. |
+| **DeepSeek runs the crew** | All 11 non-orchestrator agents are DeepSeek V4. The overseer defaults to Claude Opus and is switchable via `ace keys` → `opus` · `sonnet` · `gpt` · `deepseek`. Claude/OpenAI brains need `opencode auth login`. |
 | **Secrets never go in git** | Real values live in the VPS `.env` (gitignored); `env-merge` adds new keys on deploy without clobbering. CI builds with dummies. |
 | **Branch protection needs GitHub Pro** on private repos | `ace protect` detects the 403; local hooks (`main-guard`, the gate) enforce flow meanwhile. |
 | **Container engine required** | podman ships on Silverblue; on Arch, `ace` offers `pacman -S podman`. The `--container` gate needs it. |

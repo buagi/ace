@@ -19,7 +19,7 @@ This page describes the gate in a **generated/adopted project** (the `ci.sh` + `
 The **fast** tier is for quick pre-commit feedback and can scope tests to the change (`CI_SCOPE=affected` — Node/turbo only; the Python and Go `ci.sh` always run the full suite). The **full** tier is the authority: it runs the complete suite in the same pinned image CI uses, so a local pass means a CI pass. Both tiers run *all* the sections below; `--container` changes how step 1 builds and tests, and adds the parity-only checks.
 
 > [!NOTE]
-> Under the `merge_gate: local` policy, a green `./ci.sh --container` is what authorizes a self-merge — the loop never waits on remote CI. See [autorun.md](autorun.md).
+> Under the `merge_gate: local` policy — **the default under `ace start`** (`lib/lifecycle.sh`), opt-in under `ace autorun` where the default is `remote` — a green `./ci.sh --container` is what authorizes a self-merge — the loop never waits on remote CI. See [autorun.md](autorun.md).
 
 ## What blocks a commit
 

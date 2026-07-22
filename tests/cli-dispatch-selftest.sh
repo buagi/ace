@@ -96,6 +96,22 @@ for f in --dry-run --yes --confirm --watch --index --publish --explain --check -
   parse $f >/dev/null 2>&1 || bad "documented flag $f is now rejected by the unknown-flag arm"
 done
 
+# --- 3b. `ace stats` MODIFIERS MUST REACH DISPATCH -------------------------------------------------------
+# ace_stats() has parsed --days/--by/--task/--agent/--global/--all since it was written (lib/telemetry.sh),
+# but every one of them died HERE as an unknown flag -- so the documented flag forms were unreachable and only
+# the bare words ever worked. This is asserted against the REAL parser because that is the layer that broke: a
+# unit test of ace_stats_cmd passes happily while the CLI rejects the very same input.
+for f in --global --all --task --agent --days=7 --by=task; do
+  got="$(parse stats "$f")"
+  case "$got" in "stats|$f|"*) ;; *) bad "'ace stats $f' did not reach dispatch with its flag intact (got: '$got')" ;; esac
+done
+# a value-taking flag keeps its value in the NEXT slot, in order
+got="$(parse stats --by task)"
+case "$got" in "stats|--by|task|"*) ;; *) bad "'ace stats --by task' lost the flag or its value (got: '$got')" ;; esac
+# ...and an unknown flag stays FATAL. Widening the allow-list must not reopen the silent-swallow hole this
+# whole file exists to keep shut.
+parse stats --bogus >/dev/null 2>&1 && bad "'ace stats --bogus' was accepted — the unknown-flag guard regressed"
+
 # --- 4. `ace swarm` help and dispatch agree (both directions) -------------------------------------------
 # The usage() line and the typo-path fallback previously each omitted subcommands the other had, and both
 # omitted some the dispatch table implements. Derive the truth from the dispatch arms and compare.

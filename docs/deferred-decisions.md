@@ -181,10 +181,10 @@ ONE verb per job, with the prerequisites set for you:
 | verb | does |
 |---|---|
 | `ace start` | run the swarm with sane prerequisites resolved automatically (workers, automerge ON by default, debate/net-verification on, plan gates, research backend) — no env archaeology |
-| `ace stop` | stop whatever is running (solo, swarm, or service) — today there is NO `ace stop` at all (`ace:457` -> unknown command) |
+| `ace stop` | stop whatever is running (solo, swarm, or service) — ~~today there is NO `ace stop` at all~~ **(SHIPPED 2026-07-22, PR #166)** — was: (`ace:457` -> unknown command) |
 | `ace scaffold` | project setup, faster |
 | `ace dash` | already unified (`dash_auto`, auto-routes swarm vs solo) — keep |
-| `ace report` | one report surface (fold in `scorecard` / `reanalyze report` / `stats` / `quality`) |
+| ~~`ace report`~~ → **`ace stats`** | SHIPPED 2026-07-22 (PR #167) as `ace stats` with sections. `ace report` deliberately still means "file a GitHub issue" — redefining a live verb was rejected. |
 | `ace logs` | one log surface |
 
 Plus: **automerge ON by default**, and make **scaffold + first-run setup materially quicker**.

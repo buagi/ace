@@ -136,7 +136,7 @@ Before cutting a release or turning a fleet loose unattended:
 - [ ] **Coder models intended** — implementer/test_engineer on `deepseek-v4-pro` (default) unless you've deliberately set `MODEL_<agent>` and measured it (Experiment C).
 - [ ] **Firecrawl** — if research depends on it, `ace firecrawl status` shows it listening on loopback; else the gate falls back to webfetch (fine, just confirm the intent).
 - [ ] **`SPEC_RUBRIC`** — stays `0` unless `spec-rubric-goldens.sh --calibrate` prints **GO** for your labeled set.
-- [ ] **`SPEC_DEBATE` / `REVIEW_DEBATE`** — stay `0` unless `spec-debate-goldens.sh --calibrate` prints **GO**; enabling needs `OPENROUTER_API_KEY` + `DEBATE_MODEL_B`.
+- [ ] **`SPEC_DEBATE` / `REVIEW_DEBATE`** — **ON by default under `ace start`** (owner-signed-off). Confirm `OPENROUTER_API_KEY` + `DEBATE_MODEL_B` are set, or `ace start` warns that the gate **fails open**. To run without them: `SPEC_DEBATE=0 REVIEW_DEBATE=0 ace start`. `spec-debate-goldens.sh --calibrate` is still how you judge whether the debate earns its cost; enabling needs `OPENROUTER_API_KEY` + `DEBATE_MODEL_B`.
 - [ ] **Merge/deploy policy** — `ace autorun --explain` shows the intended `merge_gate` · `auto_merge` · `deploy_kind` · caps.
 - [ ] **Launch-readiness gate** — for a live-VPS promotion, the `launch_readiness_reviewer` has a GO (tested restore · rollback · secrets separation · spend caps).
 - [ ] **Nightly goldens** — last run green (or seeds only, if capture isn't provisioned yet).

@@ -15,48 +15,117 @@ _agent_counts() {  # echoes "<configurable> <total>"
   printf '%s %s' "$n" "$((n + 1))"
 }
 
+# ---------------------------------------------------------------- box drawing
+# The panels below are drawn through these helpers rather than hand-aligned, because hand-aligned ASCII with
+# ANSI colour in it drifts the moment anyone edits a line: the escape sequences have zero visible width but
+# count towards ${#str}, so the trailing │ ends up in a different column and nobody notices until the box is
+# visibly crooked. _arch_row measures the VISIBLE width (escapes stripped) and pads to it.
+# Emoji and other double-width glyphs are BANNED inside these panels: bash measures them as one character
+# while a terminal renders them as two, so the padding silently under-pads and the row overhangs its own box.
+# Single-width marks (✓ ✗ ▸ ▶ ─ │) only.
+_ARCH_W=70
+_arch_vis() { printf '%s' "$1" | sed -E 's/\x1b\[[0-9;]*m//g'; }
+# STRIP ANSI FROM THE TITLE TOO. The first version measured "${#1}" on the RAW argument, escapes included —
+# i.e. it committed the very mistake this helper exists to prevent, and every box lid came out 2 columns short
+# of its own body. Measure what is VISIBLE, in the header exactly as in the rows.
+_arch_top() {
+  local plain; plain="$(_arch_vis "${1:-}")"
+  printf '  ┌─ %s %s┐\n' "${1:-}" "$(_arch_pad "$(( _ARCH_W - 1 - ${#plain} ))" '─')"
+}
+_arch_bot() { printf '  └%s┘\n' "$(_arch_pad "$(( _ARCH_W + 2 ))" '─')"; }
+_arch_pad() { local n="${1:-0}" c="${2:- }" o=; [ "$n" -lt 0 ] && n=0; while [ "$n" -gt 0 ]; do o="$o$c"; n=$((n-1)); done; printf '%s' "$o"; }
+_arch_row() {
+  local plain; plain="$(_arch_vis "${1:-}")"
+  printf '  │ %s%s │\n' "${1:-}" "$(_arch_pad "$(( _ARCH_W - ${#plain} ))")"
+}
+
 show_architecture() {
   local n_all; n_all="$(_agent_counts | cut -d' ' -f2)"
   banner
-  cat <<ART
-${C_BOLD}The loop you're installing${C_RESET}    ${C_GREY}(two nested loops)${C_RESET}
+  printf '\n%sThe workflows you'"'"'re installing%s    %s(one rig — four ways to run it)%s\n\n' \
+    "${C_BOLD}" "${C_RESET}" "${C_GREY}" "${C_RESET}"
 
-  ${C_DIM}OUTER — the autorun (ace autorun): ship objectives unattended${C_RESET}
-  ┌─────────────────────────────────────────────────────────────────┐
-  │ ${C_BOLD}OBJECTIVES.md${C_RESET}  (you set the north star)                         │
-  │      │ planner decomposes the top objective when the board empties │
-  │      ▼                                                             │
-  │ ${C_BOLD}ROADMAP.md${C_RESET}  task queue ──▶ next item ──▶ INNER loop builds it   │
-  │      ▲                                         │                   │
-  │      │                                         ▼                   │
-  │      │   push PR ▸ watch CI ── 🔴 ─▶ feed log to opencode ─▶ fix ─▶┘│
-  │      │                       └─ 🟢 ─▶ merge-if-green ▸ pull main    │
-  │      └── progress ◀── refresh code-map ▸ deploy ▸ next ────────────┘│
-  └─────────────────────────────────────────────────────────────────┘
-        │ each ROADMAP item = one fresh session
-        ▼
-  ${C_DIM}INNER — the ${n_all}-agent build (one feature)${C_RESET}
-  ┌───────────────────────────────────────────────────────────────────┐
-  │ ${C_BOLD}orchestrator${C_RESET}  (Claude Opus ${C_GREY}· Sonnet/GPT/DS${C_RESET}; plans, never edits)    │
-  │   1. PLAN     break into small testable tasks (GitNexus impact)    │
-  │       └─ ${C_CYAN}researcher${C_RESET}     drafts the spec (high-risk only)           │
-  │   2. BRANCH   git checkout -b feat/<slug>                          │
-  │   3. PER TASK                                                      │
-  │       ├─ ${C_CYAN}implementer${C_RESET}    context-pass, then builds to Done          │
-  │       ├─ ${C_CYAN}test_engineer${C_RESET}  adversarial tests (high-risk tasks)        │
-  │       ├─ ${C_CYAN}verifier${C_RESET}       runs ./ci.sh (fast gate)                   │
-  │       ├─ 4 critics  ${C_CYAN}reviewer${C_RESET}·${C_CYAN}ux${C_RESET}·${C_CYAN}standards${C_RESET}·${C_CYAN}alignment${C_RESET}                │
-  │       ├─ fix loop    on red/changes, retry then stop               │
-  │       └─ commit      on PASS + all 4 critics APPROVE ──▶ re-index  │
-  │   4. PUBLISH  push branch · open PR · ${C_CYAN}conflict_resolver${C_RESET} on conflict │
-  │   5. PROMOTE  ${C_CYAN}launch_readiness_reviewer${C_RESET} GO/NO-GO before the VPS    │
-  │   ${C_GREY}opt-in${C_RESET}      ${C_CYAN}debater${C_RESET} ×2 — cross-model spec/diff debate            │
-  └───────────────────────────────────────────────────────────────────┘
+  # ── the map: which verb starts which workflow ──────────────────────────────────────────────────────────
+  _arch_top "${C_BOLD}PICK A WORKFLOW${C_RESET}"
+  _arch_row "${C_BOLD}ace start${C_RESET}        N parallel workers (default 3)      ${C_CYAN}▶ SWARM${C_RESET}"
+  _arch_row "${C_BOLD}ace start solo${C_RESET}   one flow, one feature at a time     ${C_CYAN}▶ SOLO${C_RESET}"
+  _arch_row "${C_BOLD}ace reanalyze${C_RESET}    re-derives the PLAN, builds nothing ${C_CYAN}▶ PLAN-ONLY${C_RESET}"
+  _arch_row "${C_BOLD}ace loop start${C_RESET}   detached systemd service            ${C_CYAN}▶ SERVICE${C_RESET}"
+  _arch_row ""
+  _arch_row "${C_GREY}ace stop${C_RESET} ends any of them · ${C_GREY}ace dash${C_RESET} watches · ${C_GREY}ace stats${C_RESET} reports"
+  _arch_row "${C_GREY}ace start prints the policy it resolved (self-merge · debate ·${C_RESET}"
+  _arch_row "${C_GREY}verification · deploy) BEFORE it spends anything.${C_RESET}"
+  _arch_bot
+  printf '\n'
 
-  ${C_GREY}context stays lean: each subagent runs in its own session; only short${C_RESET}
-  ${C_GREY}summaries return + the loop auto-compacts at ~80% of the 1M window.${C_RESET}
-  ${C_GREY}the agent never self-merges; the autorun SCRIPT merges only when safe.${C_RESET}
-ART
+  # ── 1. SOLO ────────────────────────────────────────────────────────────────────────────────────────────
+  printf '  %s① SOLO — the autorun loop: ship objectives unattended, one at a time%s\n' "${C_DIM}" "${C_RESET}"
+  _arch_top "${C_BOLD}OUTER${C_RESET}"
+  _arch_row "${C_BOLD}OBJECTIVES.md${C_RESET}  (you set the north star)"
+  _arch_row "     │ planner decomposes the top objective when the board empties"
+  _arch_row "     ▼"
+  _arch_row "${C_BOLD}ROADMAP.md${C_RESET}  task queue ──▶ next item ──▶ INNER loop builds it"
+  _arch_row "     ▲                                         │"
+  _arch_row "     │                                         ▼"
+  _arch_row "     │   push PR ▸ watch CI ── ✗ ─▶ feed log to opencode ─▶ fix ──┐"
+  _arch_row "     │                      └─ ✓ ─▶ merge-if-green ▸ pull main    │"
+  _arch_row "     └── progress ◀── refresh code-map ▸ deploy ▸ next ───────────┘"
+  _arch_bot
+  printf '\n'
+
+  # ── 2. SWARM ───────────────────────────────────────────────────────────────────────────────────────────
+  printf '  %s② SWARM — the same loop, N times over, on PATH-DISJOINT roadmap items%s\n' "${C_DIM}" "${C_RESET}"
+  _arch_top "${C_BOLD}COORDINATOR${C_RESET}"
+  _arch_row "reads ROADMAP.md ▸ ${C_BOLD}batches items that touch NO common file${C_RESET}"
+  _arch_row "     │            (two workers on one file = a guaranteed conflict)"
+  _arch_row "     ├──▶ ${C_CYAN}w1${C_RESET}  claim ▸ INNER loop ▸ own gate ▸ PR ▸ merge ▸ release"
+  _arch_row "     ├──▶ ${C_CYAN}w2${C_RESET}  claim ▸ INNER loop ▸ own gate ▸ PR ▸ merge ▸ release"
+  _arch_row "     └──▶ ${C_CYAN}wN${C_RESET}  …one ROADMAP item each, one fresh session each"
+  _arch_row "     ▲                                            │"
+  _arch_row "     └── re-batch as items free up ◀── merge queue ┘ ${C_GREY}(serialized)${C_RESET}"
+  _arch_row ""
+  _arch_row "${C_GREY}leases + fencing stop two workers claiming one item; a worker that${C_RESET}"
+  _arch_row "${C_GREY}dies is reaped and its item goes back on the board.${C_RESET}"
+  _arch_bot
+  printf '\n'
+
+  # ── 3. PLAN-ONLY ───────────────────────────────────────────────────────────────────────────────────────
+  printf '  %s③ PLAN-ONLY — re-derive the breakdown WITHOUT building it (cheap, safe)%s\n' "${C_DIM}" "${C_RESET}"
+  _arch_top "${C_BOLD}ace reanalyze${C_RESET}"
+  _arch_row "snapshot OPEN items ▸ then, ${C_BOLD}per feature${C_RESET}:"
+  _arch_row "   ${C_CYAN}researcher${C_RESET} ▸ re-spec (template · EARS · cited) ▸ spec-lint gate"
+  _arch_row "        ▸ cited-URL check ▸ ${C_CYAN}debater${C_RESET} ×2 ▸ bounded re-spec ▸ re-slice"
+  _arch_row "                                    │"
+  _arch_row "                                    ▼"
+  _arch_row "${C_BOLD}ace stats plan${C_RESET} — before ▸ after: did the breakdown get cleaner?"
+  _arch_row ""
+  _arch_row "${C_GREY}implements nothing, merges nothing — use it to judge a plan before${C_RESET}"
+  _arch_row "${C_GREY}committing credits to building it.${C_RESET}"
+  _arch_bot
+  printf '\n'
+
+  # ── the shared inner loop ──────────────────────────────────────────────────────────────────────────────
+  printf '  %sINNER — the %s-agent build. SOLO and every SWARM worker run this.%s\n' "${C_DIM}" "$n_all" "${C_RESET}"
+  _arch_top "${C_BOLD}one feature = one fresh session${C_RESET}"
+  _arch_row "${C_BOLD}orchestrator${C_RESET}  (Claude Opus ${C_GREY}· Sonnet/GPT/DS${C_RESET}; plans, never edits)"
+  _arch_row "  1. PLAN     break into small testable tasks (GitNexus impact)"
+  _arch_row "      └─ ${C_CYAN}researcher${C_RESET}     drafts the spec (high-risk / [value] only)"
+  _arch_row "  2. BRANCH   git checkout -b feat/<slug>"
+  _arch_row "  3. PER TASK"
+  _arch_row "      ├─ ${C_CYAN}implementer${C_RESET}    context-pass, then builds to Done"
+  _arch_row "      ├─ ${C_CYAN}test_engineer${C_RESET}  adversarial tests (high-risk tasks)"
+  _arch_row "      ├─ ${C_CYAN}verifier${C_RESET}       runs ./ci.sh (fast gate)"
+  _arch_row "      ├─ 4 critics  ${C_CYAN}reviewer${C_RESET}·${C_CYAN}ux${C_RESET}·${C_CYAN}standards${C_RESET}·${C_CYAN}alignment${C_RESET}"
+  _arch_row "      ├─ fix loop    on red/changes, retry then stop"
+  _arch_row "      └─ commit      on PASS + all 4 critics APPROVE ──▶ re-index"
+  _arch_row "  4. PUBLISH  push branch · open PR · ${C_CYAN}conflict_resolver${C_RESET} on conflict"
+  _arch_row "  5. PROMOTE  ${C_CYAN}launch_readiness_reviewer${C_RESET} GO/NO-GO before the VPS"
+  _arch_row "     ${C_CYAN}debater${C_RESET} ×2 — cross-model spec/diff debate ${C_GREY}(ON under ace start)${C_RESET}"
+  _arch_bot
+  printf '\n'
+  printf '  %scontext stays lean: each subagent runs in its own session; only short%s\n' "${C_GREY}" "${C_RESET}"
+  printf '  %ssummaries return + the loop auto-compacts at ~80%% of the 1M window.%s\n' "${C_GREY}" "${C_RESET}"
+  printf '  %sthe agent never self-merges; the SCRIPT merges only when safe.%s\n' "${C_GREY}" "${C_RESET}"
   explain_menu
 }
 
@@ -65,6 +134,7 @@ explain_menu() {
   while true; do
     menu "Learn more (on demand)" \
       "The $n_all agents::orchestrator / researcher / implementer / test_engineer / verifier / 4 critics / conflict_resolver / launch_readiness / debater" \
+      "The four workflows::solo vs swarm vs plan-only vs service — which to run, and how to stop it" \
       "The autorun loop::objectives -> roadmap -> CI self-heal -> merge -> deploy" \
       "The tiered gate::fast pre-commit vs container pre-push/CI" \
       "Code intelligence::GitNexus · Serena · Context7 — who updates when" \
@@ -72,9 +142,11 @@ explain_menu() {
       "VPS & deploy::ssh, runtime bootstrap, git deploy, CI secrets" \
       "Silverblue vs Arch::how install differs per distro" \
       "← back::"
+    # Keep these arms in step with the menu entries ABOVE, in the same edit: an inserted entry that does not
+    # get an arm here silently runs the WRONG explainer for every option below it.
     case "$MENU_CHOICE" in
-      1) explain_agents ;; 2) explain_autoloop ;; 3) explain_gate ;; 4) explain_codeintel ;;
-      5) explain_git ;; 6) explain_vps ;; 7) explain_distro ;; 8) return ;;
+      1) explain_agents ;; 2) explain_workflows ;; 3) explain_autoloop ;; 4) explain_gate ;;
+      5) explain_codeintel ;; 6) explain_git ;; 7) explain_vps ;; 8) explain_distro ;; 9) return ;;
     esac
     pause
   done
@@ -123,6 +195,46 @@ explain_agents() {
     "" \
     "${C_BOLD}Thinking discipline${C_RESET} (all agents, via AGENTS.md): 3 WHYS at design + acceptance-" \
     "criteria (reach the root need) · PRE-MORTEM at implement + review (assume it broke in prod — why?)."
+}
+explain_workflows() {
+  box "The four workflows — which one to run" \
+    "All four run the SAME inner build loop and the same gate. They differ only in HOW MANY" \
+    "features move at once, and whether anything is actually built." \
+    "" \
+    "${C_BOLD}① SWARM${C_RESET}  ${C_GREY}ace start [N]${C_RESET}  — the default. N workers (default 3) each take ONE" \
+    "  roadmap item, on a batch chosen so no two items touch a common file. Each worker" \
+    "  runs the full inner loop, its own gate, its own PR; merges are serialized through" \
+    "  one queue. Leases + fencing prevent two workers claiming an item, and a worker that" \
+    "  dies is reaped so its item returns to the board." \
+    "  ${C_DIM}Why 3 and not 8: path-disjointness is the limit, not CPU. On a real roadmap 78 of${C_RESET}" \
+    "  ${C_DIM}91 items shared a file, so extra workers queue rather than work.${C_RESET}" \
+    "" \
+    "${C_BOLD}② SOLO${C_RESET}  ${C_GREY}ace start solo${C_RESET}  — one feature at a time, in your terminal. Same" \
+    "  pipeline, no coordinator. Best for a small roadmap, a first run on a new repo, or" \
+    "  when you want to watch every step. ${C_GREY}(ace autorun / autoloop / loop / resume are this,${C_RESET}" \
+    "  ${C_GREY}and all still work — they are one dispatch arm, byte-identical.)${C_RESET}" \
+    "" \
+    "${C_BOLD}③ PLAN-ONLY${C_RESET}  ${C_GREY}ace reanalyze${C_RESET}  — re-derives the breakdown of your OPEN features" \
+    "  with the full planning pipeline (research ▸ re-spec ▸ lint ▸ cited-URL check ▸ debate" \
+    "  ▸ re-slice) and IMPLEMENTS NOTHING. Read the result with 'ace stats plan'. Use it to" \
+    "  judge whether a plan is worth building before spending credits building it." \
+    "" \
+    "${C_BOLD}④ SERVICE${C_RESET}  ${C_GREY}ace loop start${C_RESET}  — the solo loop as a detached systemd user service," \
+    "  so it survives closing the terminal and machine sleep. Steerable from Hermes/Signal." \
+    "  ${C_DIM}Note: 'ace loop start' is the SERVICE; bare 'ace loop' is the interactive launcher.${C_RESET}" \
+    "" \
+    "${C_BOLD}Starting and stopping${C_RESET}" \
+    "  ${C_BOLD}ace start${C_RESET}  resolves the prerequisites itself and PRINTS the policy it resolved —" \
+    "    self-merge, spec debate, review debate, cited-URL verification, deploy, feature cap" \
+    "    — with where each value came from ([env] / [config] / [default]) BEFORE it spends." \
+    "    Under 'ace start' the four quality gates default ON and deploy defaults OFF." \
+    "    Override per-run (AUTOMERGE=0 ace start) or in Settings; env beats config beats" \
+    "    default. It refuses to start over a run that is already live." \
+    "  ${C_BOLD}ace stop${C_RESET}   stops the swarm AND/OR the service — it checks both, because they are" \
+    "    independent and stopping only one leaves the other spending. A loop running in the" \
+    "    FOREGROUND of another terminal is the one case it cannot reach: Ctrl-C there." \
+    "  ${C_BOLD}ace dash${C_RESET}   one dashboard, auto-routing to the swarm cockpit or the solo dash." \
+    "  ${C_BOLD}ace stats${C_RESET}  one report: tokens/cost · quality · run scorecard · plan before→after."
 }
 explain_autoloop() {
   local n_all; n_all="$(_agent_counts | cut -d' ' -f2)"

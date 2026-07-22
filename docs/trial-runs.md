@@ -20,7 +20,7 @@ tests/spec-debate-goldens.sh --calibrate   # optional: only enable auto-gates on
 ```
 
 > [!IMPORTANT]
-> **This Setup enables nothing on its own.** `SPEC_DEBATE` and `REVIEW_DEBATE` both default to **0 (off)** in
+> **This Setup enables nothing on its own.** `SPEC_DEBATE` and `REVIEW_DEBATE` default to **0 (off)** under `ace autorun` / `ace swarm start` / the systemd service, and to **1 (ON)** under `ace start` in
 > every consumer (`lib/autoloop.sh:458` spec gate, `lib/autoloop.sh:1210` pre-merge gate, `lib/swarm-run.sh:614`
 > coordinator gate). Setting `DEBATE_MODEL_B` + `DEBATE_ONLY` only says *which* model and *which* slugs — a run
 > with neither toggle set to `1` does the whole pipeline with **no debate at all**, and there is no summary line
@@ -30,7 +30,11 @@ tests/spec-debate-goldens.sh --calibrate   # optional: only enable auto-gates on
 > defaults `SPEC_DEBATE=1` for its plan-only re-derivation (`ace:405`).
 >
 > Two more gates sit in front of a SPEC debate, both silent no-ops: `opencode` must be on PATH, and the spec
-> must be marked **`risk: HIGH`** — `lib/debate.sh:88` returns 0 for anything else. REVIEW debates have no risk
+> is gated by `_debate_spec_eligible` (`lib/debate.sh`), which was **INVERTED on 2026-07-20**: under the
+> default `DEBATE_SCOPE=nontrivial` every spec is debated **unless** it positively declares itself trivial
+> (`risk: LOW` **and** `tier: FAST` **and** no live C1–C6 section), so an unmarked or `risk: medium` spec IS
+> debated. `DEBATE_SCOPE=high` restores the old HIGH-only allowlist; `DEBATE_SCOPE=all` debates
+> unconditionally. Expect MORE debates than the old wording implied. REVIEW debates have no risk
 > gate; they run on every eligible branch diff.
 
 **Where the data lives** (per run, in the repo): `.opencode/cache/*-debate-*.md` (transcripts) · `.opencode/cache/debate-metrics.jsonl` (metrics) · `.opencode/metrics.csv` + `~/.config/ace/logs/` (loop/step timing) · `ace stats` (tokens/cost) · `ace quality` (critic FP/retry). Archive each run's `.opencode/cache/` between runs so you can compare.
@@ -72,7 +76,7 @@ ace debate report
 
 | # | Check | Metric | Pass line | Read it |
 |---|-------|--------|-----------|---------|
-| 1 | Debate fires ONLY on the 5 slugs | # debates | ≤ 5, and no slug outside the list — only the `risk: HIGH` ones of the 5 debate (`lib/debate.sh:88`), so pick 5 HIGH specs or expect fewer | `ace debate report` (SLUG column) |
+| 1 | Debate fires ONLY on the 5 slugs | # debates | ≤ 5, and no slug outside the list. **All 5 will debate** unless a spec declares itself trivial — pick 5 non-trivial specs, or set `DEBATE_SCOPE=high` to restrict to HIGH-risk only | `ace debate report` (SLUG column) |
 | 2 | Debates **converge** (not just hit the cap) | convergence rate | ≥ 60% converged (not wall-capped) | report: `converged` / `wall_capped` |
 | 3 | Rounds are sane | avg rounds | 2–4 (only complex ones near 10) | report: `avg_rounds` |
 | 4 | Arguments are **grounded** (anti-hallucination) | cited-vs-uncited points in transcript | every accepted issue cites spec/repo | read `.opencode/cache/spec-debate-<slug>.md` |

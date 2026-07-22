@@ -126,7 +126,7 @@ readiness_report() {
   printf '\n %sREADY NOW%s\n' "${C_GREEN}${C_BOLD:-}" "$C_RESET"; for x in "${ready[@]}"; do printf '   %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$x"; done
   [ ${#need[@]} -gt 0 ] && { printf '\n %sNEEDS SETUP before a live run%s\n' "${C_GOLD}${C_BOLD:-}" "$C_RESET"; for x in "${need[@]}"; do printf '   %s⚠%s %s\n' "$C_GOLD" "$C_RESET" "$x"; done; }
   [ ${#opt[@]} -gt 0 ] && { printf '\n %soptional%s\n' "$C_GREY" "$C_RESET"; for x in "${opt[@]}"; do printf '   %s◦%s %s\n' "$C_GREY" "$C_RESET" "$x"; done; }
-  if [ ${#need[@]} -eq 0 ]; then printf '\n %s✔ READY — you can run:  ace autorun   ·   ace swarm start%s\n' "${C_GREEN}${C_BOLD:-}" "$C_RESET"
+  if [ ${#need[@]} -eq 0 ]; then printf '\n %s✔ READY — you can run:  ace start   ·   ace stop%s\n' "${C_GREEN}${C_BOLD:-}" "$C_RESET"
   else printf '\n %s⚠ NOT READY — clear the %d item(s) above, then re-check with  ace status%s\n' "${C_GOLD}${C_BOLD:-}" "${#need[@]}" "$C_RESET"; fi
   printf ' %sfull log: %s%s\n' "$C_GREY" "${ACE_LOG_FILE:-$ACE_LOG_DIR/ace-<date>.log}" "$C_RESET"
 }
@@ -205,7 +205,7 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace import          import existing code/data into brownfield/ and map it (GitNexus+Serena)
   ace upgrade         adopt an EXISTING repo: add missing ACE machinery (additive, non-destructive)
   ace graph [--watch] refresh the code map (GitNexus + Serena); --watch = live on change
-  ace atlas           refresh the human architecture atlas (docs/atlas.md + README map): system map · data flow · feature map
+  ace atlas           refresh the human architecture atlas (docs/atlas.md + README map): system map · data flow · module map
   ace demo            paced, ZERO-CREDIT tour of ACE's features (for a demo video) — DEMO_AUTO=1 to auto-advance
   ace start [N|solo]  START A RUN — the one verb. N parallel workers (default 3), 'solo' = single flow.
                       Resolves the prerequisites and PRINTS the policy it resolved before spending anything:
@@ -349,6 +349,12 @@ while [ $# -gt 0 ]; do
     # parsed here, so the old catch-all ate them: `ace debate score --capture` silently scored STALE
     # snapshots and still printed a GO verdict, and `ace debate autotune --propose-prompt` exited 2.
     --capture|--stub|--diagnose|--emit-tsv|--propose-prompt) _ace_arg_push "$1" ;;
+    # `ace stats` modifiers. ace_stats() has parsed --days/--by/--task/--agent/--global/--all since it was
+    # written (lib/telemetry.sh), but NONE of them could ever reach it: an unrecognised `-*` is fatal here,
+    # above dispatch, so every documented flag form died at the parser and only the bare words worked. They
+    # are pushed positionally like the debate modifiers above -- a value-taking flag's value is the next bare
+    # word, which lands in the following slot on its own.
+    --days|--by|--global|--all|--task|--agent|--days=*|--by=*) _ace_arg_push "$1" ;;
     # Everything else starting with '-' is a TYPO, and must be fatal. This arm used to be `-*) ;;` — a
     # silent swallow, which made `ace autorun -explain` (one missing dash) skip the read-only policy print
     # and start a REAL autonomous build loop that commits, pushes and merges. Exiting here happens during

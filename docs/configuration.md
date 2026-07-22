@@ -2,6 +2,10 @@
 
 The knobs ACE reads: model and provider selection, the autorun loop's environment variables, the gates, appearance, and where settings are stored on disk. Anything not listed here is either internal or not read at all — if a variable name appears in a doc but not in this file, treat it as unsupported.
 
+
+> [!IMPORTANT]
+> **Defaults are path-dependent since 2026-07-22.** Under **`ace start`** the quality gates default **ON** — `AUTOMERGE=1`, `SPEC_DEBATE=1`, `REVIEW_DEBATE=1`, `SPEC_LINT_NET=1`, `MERGE_GATE=local`, `MAX_FEATURES=0` (unlimited), `SWARM_MAX=3`, `DEPLOY=0`. Under the older verbs (`ace autorun` / `autoloop` / `loop` / `resume`, `ace swarm start`, the systemd service) the defaults below are unchanged. Precedence is **env > stored config > path default**, and `ace start` prints each resolved value with its source before it spends anything.
+
 ## Precedence
 
 Settings resolve the same way everywhere: an environment variable overrides stored config or the project profile, which overrides the built-in default.
