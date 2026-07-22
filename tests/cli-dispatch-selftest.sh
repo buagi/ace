@@ -123,7 +123,7 @@ for sub in $impl; do
 done
 
 # --- 5. usage() lists every top-level command a user is told to run --------------------------------------
-for c in debate scorecard swarm autorun reanalyze quality stats; do
+for c in debate scorecard swarm autorun reanalyze quality stats start stop; do
   grep -qE "^  ace $c" ace || bad "'ace $c' is dispatched but absent from usage()"
 done
 
