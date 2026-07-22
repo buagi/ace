@@ -69,3 +69,8 @@ jobs:
       # downstream. Pins the classifier, its precision, and that the agents are told.
       - name: research honesty (denial pages · citation precision · agent rules)
         run: bash tests/research-honesty-selftest.sh
+      # `ace start`'s defaults (self-merge, both debates, cited-URL verification) are an OWNER-SIGNED-OFF
+      # policy: they decide what reaches main unattended and what a run costs. Each is pinned BY VALUE, so a
+      # drift is a build failure rather than something noticed after a run has already merged.
+      - name: run lifecycle (ace start policy defaults · precedence · double-start · ace stop covers both flows)
+        run: bash tests/lifecycle-selftest.sh

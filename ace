@@ -207,6 +207,11 @@ ${C_BOLD}ace${C_RESET} — Agentic Coding Environment setup (DeepSeek + OpenCode
   ace graph [--watch] refresh the code map (GitNexus + Serena); --watch = live on change
   ace atlas           refresh the human architecture atlas (docs/atlas.md + README map): system map · data flow · feature map
   ace demo            paced, ZERO-CREDIT tour of ACE's features (for a demo video) — DEMO_AUTO=1 to auto-advance
+  ace start [N|solo]  START A RUN — the one verb. N parallel workers (default 3), 'solo' = single flow.
+                      Resolves the prerequisites and PRINTS the policy it resolved before spending anything:
+                      self-merge ON, spec+review cross-model debate ON, cited-URL verification ON, deploy off.
+                      Overridable per-run (AUTOMERGE=0 ace start) or in Settings. Old verbs still work.
+  ace stop            STOP whatever is running here — swarm coordinator and/or the ace-loop service.
   ace autoloop|autorun  autonomous loop: build feature -> watch CI -> auto-fix -> merge when
                         all-green -> (deploy) -> next roadmap item. Fresh session per feature.
   ace autorun --explain print the resolved delivery policy (merge_gate/auto_merge/deploy_kind/caps) — no run
@@ -375,6 +380,11 @@ case "${cmd:-menu}" in
       --explain|explain) cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" 2>/dev/null || true; autorun_explain ;;
       *) autoloop_run ;;
     esac ;;
+    # ONE front door for a run. `start` resolves prerequisites + policy itself and PRINTS what it resolved;
+    # `stop` stops whatever is actually running (swarm or service) without you having to know which it was.
+    # The four legacy run verbs above are untouched and still work — this is an addition, not a replacement.
+    start)             . "$ACE_DIR/lib/lifecycle.sh"; ace_start "${ACE_ARG:-}" "${ACE_ARG2:-}" ;;
+    stop)              . "$ACE_DIR/lib/lifecycle.sh"; ace_stop ;;
   dash|watch)        dash_auto ;;   # one dashboard for one flow — shows whatever is running (solo loop or swarm)
   debate)            _sr="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; _sl="$(dirname "$(readlink -f "$0")")/lib"
                      case "${ACE_ARG:-}" in

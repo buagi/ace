@@ -134,7 +134,14 @@ The BLOCK items (tested restore, rollback, env separation, reconciliation, spend
 
 ## CLI unification: one `ace start` / `stop` / `scaffold` / `dash` / `report` / `logs`
 
-**Status: BACKLOG (raised 2026-07-21, by the owner). Ask before starting — scope and defaults are the owner's call.**
+**Status: PARTIALLY SHIPPED (2026-07-22).** `ace start` / `ace stop` and the default flips are in
+(`lib/lifecycle.sh`, pinned by `tests/lifecycle-selftest.sh`). The owner signed off on the policy change:
+**automerge, spec debate, review debate and cited-URL verification all default ON** under `ace start`, with
+`env > Settings > default` precedence and the resolved policy printed at run start.
+
+STILL OPEN from the original ask: folding `scorecard`/`reanalyze report`/`stats`/`quality` into one
+`ace report` **with sections** (owner's choice — old commands alias through), one `ace logs` surface, and
+making `scaffold` + first-run setup materially quicker.
 
 ### The problem, measured today
 

@@ -78,8 +78,13 @@ Every `ace` subcommand, grouped by what it touches. Run `ace` with no argument f
 
 ## The loop
 
+**Start here.** `ace start` is the one verb for a run and `ace stop` is the one verb to end it; everything
+below still works unchanged and is what `ace start` is built on.
+
 | Command | Does |
 |---------|------|
+| `ace start [N\|solo]` | **START A RUN.** `N` parallel workers (default **3**), `solo` = the single-flow loop, `fg` = don't detach. Resolves the prerequisites itself and **prints the policy it resolved before spending anything**, with the source of each value (`[env]` / `[config]` / `[default]`) — a default you can't see is a default you didn't choose. Defaults: **self-merge ON · spec debate ON · review debate ON · cited-URL verification ON · deploy off · features unlimited**. Precedence is **env > Settings > default**, so `AUTOMERGE=0 ace start` and the Settings toggles both win. Refuses to start over a run that is already live (two coordinators on one repo = two workers per item and a merge race), and says plainly when a debate is ON but has no `OPENROUTER_API_KEY`/`DEBATE_MODEL_B` and will therefore **fail open** rather than protect you. |
+| `ace stop` | **STOP whatever is running here** — the swarm coordinator and/or the `ace-loop` service, checking **both** rather than the first one it finds (they're independent, and stopping one leaves the other spending). A stop command that errors is reported as an error, never as "nothing was running". The one case it can't reach — a loop in the **foreground of another terminal** — it names explicitly. |
 | `ace autorun` / `autoloop` | the autonomous pipeline — see [autorun.md](autorun.md) |
 | `ace autorun --explain` | print the resolved delivery policy (`merge_gate` · `auto_merge` · `deploy_kind` · caps) — no run |
 | `ace resume` | resume after an interruption — rescues uncommitted gate-green work, then continues |
